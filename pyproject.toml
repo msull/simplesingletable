@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simplesingletable"
+version = "0.0.0"
+description = "A simple boto3/Pydantic implementation of DynamoDB Single Table Design and related utilities."
+readme = "README.md"
+authors = [{ name = "Sully", email = "sully@sadburger.com" }]
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+]
+keywords = ["dynamodb", "singletabledesign"]
+dependencies = ["boto3", "pydantic>2"]
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+dev = ["black", "bumpver", "isort", "ruff", "pip-tools", "pytest", "invoke" ]
+
+[project.urls]
+Homepage = "https://github.com/msull/simplesingletable"
+
+[tool.bumpver]
+current_version = "0.0.0"
+version_pattern = "MAJOR.MINOR.PATCH"
+commit_message  = "Bump version {old_version} -> {new_version}"
+commit          = true
+tag             = true
+push            = false
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = ['current_version = "{version}"', 'version = "{version}"']
+"src/simplesingletable/__init__.py" = ["{version}"]
+"README.md" = ["Latest Version: {version}"]
+
