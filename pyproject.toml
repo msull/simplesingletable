@@ -68,7 +68,7 @@ push            = false
 [tool.bumpver.file_patterns]
 "pyproject.toml" = ['current_version = "{version}"', 'version = "{version}"']
 "src/simplesingletable/__init__.py" = ["{version}"]
-"README.md" = ["Latest Version: {version}"]
+"README.md" = ["**Latest Version:** {version}"]
 
 
 [tool.pytest.ini_options]
