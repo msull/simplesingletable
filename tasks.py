@@ -8,21 +8,18 @@ def from_repo_root(c: Context):
 
 
 @task
-def compile_requirements(c: Context):
+def compile_requirements(c: Context, install=True):
     with from_repo_root(c):
-        c.run("pip-compile --extra dev pyproject.toml")
-
-
-@task
-def install_build_requirements(c: Context):
-    with from_repo_root(c):
-        c.run("python -m pip install build twine")
+        c.run("pip-compile --extra dev --extra build pyproject.toml")
+        if install:
+            c.run("pip-sync")
 
 
 @task
 def build(c: Context, clean=True):
     with from_repo_root(c):
-        c.run("rm -rf dist/*")
+        if clean:
+            c.run("rm -rf dist/*")
         c.run("python -m build")
         c.run("twine check dist/*")
 

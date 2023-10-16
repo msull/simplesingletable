@@ -15,14 +15,47 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 keywords = ["dynamodb", "singletabledesign"]
-dependencies = ["boto3", "pydantic>2"]
 requires-python = ">=3.10"
+dependencies = [
+    "boto3",
+    "humanize",
+    "pydantic>2",
+    "ulid-py",
+]
 
 [project.optional-dependencies]
-dev = ["black", "bumpver", "isort", "ruff", "pip-tools", "pytest", "invoke" ]
+dev = [
+    "black",
+    "boto3-stubs[dynamodb]",
+    "bumpver",
+    "invoke",
+    "isort",
+    "logzero",
+    "pip-tools",
+    "pytest",
+    "pytest-cov",
+    "pytest-docker",
+    "pytest-mock",
+    "ruff",
+]
+build = [
+    "build",
+    "twine",
+]
 
 [project.urls]
 Homepage = "https://github.com/msull/simplesingletable"
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
 
 [tool.bumpver]
 current_version = "0.1.0"
@@ -37,3 +70,16 @@ push            = false
 "src/simplesingletable/__init__.py" = ["{version}"]
 "README.md" = ["Latest Version: {version}"]
 
+
+[tool.pytest.ini_options]
+addopts = """
+-v -p no:warnings --no-header --durations=3 --strict-markers
+--cov-report=html:coverage_report --cov=simplesingletable
+"""
+pythonpath = ["src/"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "if TYPE_CHECKING:",
+    "if __name__ == \"__main__\"",
+]
