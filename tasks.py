@@ -20,8 +20,9 @@ def install_build_requirements(c: Context):
 
 
 @task
-def build(c: Context):
+def build(c: Context, clean=True):
     with from_repo_root(c):
+        c.run("rm -rf dist/*")
         c.run("python -m build")
         c.run("twine check dist/*")
 
