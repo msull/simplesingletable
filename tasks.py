@@ -10,9 +10,31 @@ def from_repo_root(c: Context):
 @task
 def compile_requirements(c: Context, install=True):
     with from_repo_root(c):
-        c.run("pip-compile --extra dev --extra build pyproject.toml")
+        c.run("pip-compile --extra dev --extra build pyproject.toml", pty=True)
         if install:
-            c.run("pip-sync")
+            c.run("pip-sync", pty=True)
+
+
+@task
+def bumpver(c: Context, major=False, minor=False, patch=False, dry=False):
+    num_set = 0
+    flag = ""
+    if major:
+        flag = "--major"
+        num_set += 1
+    if minor:
+        flag = "--minor"
+        num_set += 1
+    if patch:
+        flag = "--patch"
+        num_set += 1
+    if num_set != 1:
+        raise RuntimeError("Must specify exactly one of --major, --minor, --patch")
+    with from_repo_root(c):
+        dry_flag = ""
+        if dry:
+            dry_flag = "--dry"
+        c.run(f"bumpver update {flag} {dry_flag}", pty=True)
 
 
 @task
@@ -31,7 +53,7 @@ def publish(c: Context, testpypi=True):
     else:
         testpypi_flag = ""
     with from_repo_root(c):
-        c.run(f"twine upload {testpypi_flag} dist/*")
+        c.run(f"twine upload {testpypi_flag} dist/*", pty=True)
 
 
 @task
