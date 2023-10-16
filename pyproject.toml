@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplesingletable"
-version = "0.0.0"
+version = "0.1.0"
 description = "A simple boto3/Pydantic implementation of DynamoDB Single Table Design and related utilities."
 readme = "README.md"
 authors = [{ name = "Sully", email = "sully@sadburger.com" }]
@@ -25,7 +25,7 @@ dev = ["black", "bumpver", "isort", "ruff", "pip-tools", "pytest", "invoke" ]
 Homepage = "https://github.com/msull/simplesingletable"
 
 [tool.bumpver]
-current_version = "0.0.0"
+current_version = "0.1.0"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message  = "Bump version {old_version} -> {new_version}"
 commit          = true
