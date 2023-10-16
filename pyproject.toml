@@ -19,7 +19,7 @@ requires-python = ">=3.10"
 dependencies = [
     "boto3",
     "humanize",
-    "pydantic>2",
+    "pydantic",
     "ulid-py",
 ]
 
@@ -67,7 +67,7 @@ push            = false
 
 [tool.bumpver.file_patterns]
 "pyproject.toml" = ['current_version = "{version}"', 'version = "{version}"']
-"src/simplesingletable/__init__.py" = ["{version}"]
+"src/simplesingletable/__init__.py" = ['package_version = "{version}"']
 "README.md" = ["**Latest Version:** {version}"]
 
 
