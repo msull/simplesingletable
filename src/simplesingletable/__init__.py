@@ -25,7 +25,7 @@ class Constants:
     QUERY_DEFAULT_MAX_API_CALLS = 10
 
 
-package_version = "1.1.0"
+package_version = "1.2.0"
 
 
 _T = TypeVar("_T")
