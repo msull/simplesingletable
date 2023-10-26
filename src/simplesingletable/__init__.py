@@ -316,6 +316,7 @@ class DynamoDBMemory:
             existing_id=updated_resource.resource_id,
             data_class=updated_resource.__class__,
             version=updated_resource.version,
+            consistent_read=True,
         )
 
     @property
@@ -646,9 +647,11 @@ class DynamoDBMemory:
         items_returned = len(response_data)
 
         if this_call_count > 1:
-            self.logger.debug(f'Completed dynamodb recursive sub-query; {query_took_ms=} {items_returned=}')
+            self.logger.debug(f"Completed dynamodb recursive sub-query; {query_took_ms=} {items_returned=}")
         else:
             api_calls_required = _current_api_calls_on_stack
-            self.logger.info(f"Completed dynamodb query; {query_took_ms=} {items_returned=} {api_calls_required=} {rcus_consumed_by_query=}")
+            self.logger.info(
+                f"Completed dynamodb query; {query_took_ms=} {items_returned=} {api_calls_required=} {rcus_consumed_by_query=}"
+            )
 
         return response_data
