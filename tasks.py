@@ -29,7 +29,7 @@ def bumpver(c: Context, major=False, minor=False, patch=False, dry=False):
         flag = "--patch"
         num_set += 1
     if num_set != 1:
-        raise RuntimeError("Must specify exactly one of --major, --minor, --patch")
+        raise SystemExit("Must specify exactly one of --major, --minor, --patch")
     with from_repo_root(c):
         dry_flag = ""
         if dry:
