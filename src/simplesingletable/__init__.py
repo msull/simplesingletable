@@ -449,6 +449,41 @@ class DynamoDBMemory:
         filter_limit_multiplier: int = 3,
         _current_api_calls_on_stack: int = 0,
     ) -> PaginatedList[DbResource]:
+        """
+        Execute a paginated query against a DynamoDB table, supporting filters and optional post-retrieval filtering.
+
+        Parameters:
+            key_condition (ConditionBase): The condition used for querying the DynamoDB table.
+            resource_class (Type[DbResource], optional): The class type used to deserialize the DynamoDB items.
+            resource_class_fn (Callable[[dict], Type[DbResource]], optional): A function to determine the resource class
+                type dynamically based on the DynamoDB item data.
+            index_name (str, optional): The name of the secondary index to query. If not provided, the main table is queried.
+            filter_expression (optional): DynamoDB filter expression to limit results returned.
+            filter_fn (Callable[[DbResource], bool], optional): A post-retrieval filter function to apply to results.
+            results_limit (int, optional): The maximum number of results to return. Defaults to system default limit.
+            max_api_calls (int): The maximum number of API calls to make. Defaults to QUERY_DEFAULT_MAX_API_CALLS.
+            pagination_key (str, optional): Key to start pagination from, if continuing from a previous query.
+            ascending (bool): If True, return results in ascending order. Default is False (descending).
+            filter_limit_multiplier (int): Multiplier for results limit when using a filter. Default is 3.
+            _current_api_calls_on_stack (int, internal): Tracks the number of API calls made during recursive operations.
+
+        Returns:
+            PaginatedList[DbResource]: A paginated list of deserialized DynamoDB items.
+
+        Raises:
+            ValueError: If neither `resource_class` nor `resource_class_fn` is provided.
+            RuntimeError: If an unsupported index name is encountered.
+
+        Notes:
+            - This method handles DynamoDB's way of limiting results. In DynamoDB, the "Limit" specifies the max
+              number of items to evaluate, not the number of items to return. Therefore, if any filters are used,
+              this method increases the number of items it evaluates to try and reduce the number of API calls needed.
+            - The method supports both filtering at the DynamoDB level (using `filter_expression`) and post-retrieval
+              filtering using the provided `filter_fn` function.
+            - If the initial results don't meet the `results_limit` and there are more items in DynamoDB to query,
+              this method will recursively query until it either meets the desired results count, exhausts the items
+              in DynamoDB, or reaches the `max_api_calls` limit.
+        """
         if not (resource_class or resource_class_fn):
             raise ValueError("Must supply either resource_class or resource_class_fn")
         self.logger.info("Beginning paginated dynamodb query")
@@ -518,14 +553,11 @@ class DynamoDBMemory:
         rcus_consumed_by_query = query_result["ConsumedCapacity"]["CapacityUnits"]
 
         if _current_api_calls_on_stack >= max_api_calls:
-            if lek_data:
-                self.logger.debug(
-                    "Reached max API calls before finding requested number of "
-                    "results or exhausting search; stopping early"
-                )
-                lek_data = None
-
-        if current_count < results_limit:
+            self.logger.debug(
+                "Reached max API calls before finding requested number of "
+                "results or exhausting search; stopping early"
+            )
+        elif current_count < results_limit:
             # don't have enough results yet -- can we get more?
 
             if lek_data:
@@ -613,8 +645,10 @@ class DynamoDBMemory:
 
         items_returned = len(response_data)
 
-        self.logger.info(
-            f"Completed dynamodb query; {query_took_ms=} {items_returned=} {this_call_count=} {rcus_consumed_by_query=}"
-        )
+        if this_call_count > 1:
+            self.logger.debug(f'Completed dynamodb recursive sub-query; {query_took_ms=} {items_returned=}')
+        else:
+            api_calls_required = _current_api_calls_on_stack
+            self.logger.info(f"Completed dynamodb query; {query_took_ms=} {items_returned=} {api_calls_required=} {rcus_consumed_by_query=}")
 
         return response_data

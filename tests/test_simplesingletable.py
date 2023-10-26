@@ -213,10 +213,15 @@ def test_max_api_calls(dynamodb_memory: DynamoDBMemory, mocker):
 
     res = _q(max_api=1)
     assert not res
+    assert res.next_pagination_key
+
     res = _q(max_api=10)
+    assert res.next_pagination_key
     assert not res
+
     res = _q(max_api=11)
     assert res == [match_item]
+    assert res.next_pagination_key
 
     # with a higher multiplier, we can get it in fewer api calls
     res = _q(max_api=3, multiplier=3)
