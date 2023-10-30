@@ -476,11 +476,9 @@ class DynamoDBMemory:
             RuntimeError: If an unsupported index name is encountered.
 
         Notes:
-            - This method handles DynamoDB's way of limiting results. In DynamoDB, the "Limit" specifies the max
-              number of items to evaluate, not the number of items to return. Therefore, if any filters are used,
-              this method increases the number of items it evaluates to try and reduce the number of API calls needed.
             - The method supports both filtering at the DynamoDB level (using `filter_expression`) and post-retrieval
-              filtering using the provided `filter_fn` function.
+              filtering using the provided `filter_fn` function. The provided filter_fn will receive a single loaded
+              database item and should return True if the item should be included in the results, False if not.
             - If the initial results don't meet the `results_limit` and there are more items in DynamoDB to query,
               this method will recursively query until it either meets the desired results count, exhausts the items
               in DynamoDB, or reaches the `max_api_calls` limit.
@@ -594,11 +592,9 @@ class DynamoDBMemory:
                 self.logger.debug("Have too many results, replacing existing pagination key with new computed one")
             else:
                 self.logger.debug("Have too many results, adding a pagination key where one did not exist")
-            # todo: track this v0_object -- do I want this to be true? Always??? How can I better handle this
             db_item = response_data[-1].to_dynamodb_item(v0_object=True)
             # hardcoded key information based on index; should figure out how to compute this
-            # note: gsirev not currently deployed
-            if not index_name or index_name == "gsirev":
+            if not index_name:
                 lek_data = {"pk": db_item["pk"], "sk": db_item["sk"]}
             elif index_name == "gsitype":
                 lek_data = {
