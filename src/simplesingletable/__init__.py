@@ -1,19 +1,15 @@
-import gzip
-import json
+import decimal
 import time
-from abc import ABC
-from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, Optional, Type, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Optional, Type, TypeVar, Union
 
 import boto3
-import ulid
 from boto3.dynamodb.conditions import ConditionBase, Key
-from boto3.dynamodb.types import Binary, TypeSerializer
-from humanize import precisedelta
-from pydantic import BaseModel, Extra
+from pydantic import BaseModel
+
+from .models import DynamodbResource, DynamodbVersionedResource, PaginatedList
+from .utils import decode_pagination_key, encode_pagination_key, marshall
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
@@ -27,231 +23,11 @@ class Constants:
 
 package_version = "1.3.0"
 
-
-_T = TypeVar("_T")
-
-
-class PaginatedList(list[_T]):
-    limit: int
-    current_pagination_key: Optional[str] = None
-    next_pagination_key: Optional[str] = None
-    api_calls_made: int = 0
-    rcus_consumed_by_query: int = 0
-    query_time_ms: Optional[float] = None
-
-    def as_list(self) -> list[_T]:
-        return self
-
-
-def _now(tz: Any = False):
-    # this function exists only to make it easy to mock the utcnow call in date_id when creating resources in the tests
-
-    # explicitly check for False, so that `None` is a valid option to provide for the tz
-    if tz is False:
-        tz = timezone.utc
-    return datetime.now(tz=tz)
-
-
-def generate_date_sortable_id(now=None) -> str:
-    """Generates a ULID based on the provided timestamp, or the current time if not provided."""
-    now = now or _now()
-    return ulid.from_timestamp(now).str
-
-
-def marshall(python_obj: dict) -> dict:
-    """Convert a standard dict into a DynamoDB ."""
-    serializer = TypeSerializer()
-    return {k: serializer.serialize(v) for k, v in python_obj.items()}
-
-
-def encode_pagination_key(last_evaluated_key: dict) -> str:
-    """Turn the dynamodb LEK data into a pagination key we can send to clients."""
-    return urlsafe_b64encode(json.dumps(last_evaluated_key).encode()).decode()
-
-
-def decode_pagination_key(pagination_key: str) -> dict:
-    """Turn the pagination key back into the dynamodb LEK dict."""
-    return json.loads(urlsafe_b64decode(pagination_key).decode())
-
+AnyDbResource = TypeVar("AnyDbResource", bound=Union[DynamodbVersionedResource, DynamodbResource])
+VersionedDbResourceOnly = TypeVar("VersionedDbResourceOnly", bound=DynamodbVersionedResource)
+NonversionedDbResourceOnly = TypeVar("NonversionedDbResourceOnly", bound=DynamodbResource)
 
 _PlainBaseModel = TypeVar("_PlainBaseModel", bound=BaseModel)
-
-
-class DynamoDbVersionedItemKeys(TypedDict):
-    """The specific attributes on the dynamodb items we store"""
-
-    pk: str
-    sk: str
-    version: int
-    data: dict
-
-    # keys for the gsitype index that is automatically applied sparsely on v0 objects
-    # the sk value is the "updated_at" datetime value on the object, meaning the gsitype index
-    # sorts by modified time of the objects for any particular type
-    gsitype: Optional[str]
-    gsitypesk: Optional[str]
-
-    # user-defineable attributes, used sparsely on the v0 object to enable secondary lookups / access patterns
-    # gsi1 and gsi2 use the pk as the range key; using the default ID generation system, this means it automatically
-    # sorts by the creation time of the resources
-    # use this for access patterns like "all resources associated with a parent object"
-    # and set the pk value to "parent_id#<actual id value>"
-    # or use it for categories, or tracking COMPLETE/INCOMPLETE by setting static string values
-    # e.g. if you were managing a "Task" resource, you might want to easily be able to find all complete/incomplete
-    # tasks and set `gsi1pk` to "t|COMPLETE" or "t|INCOMPLETE" based on the "completed" attribute of the Task
-
-    # gsi3 has a separate sortkey the user defines, to enable lookups that sort by something other than created_at
-    gsi1pk: Optional[str]
-    gsi2pk: Optional[str]
-    gsi3pk: Optional[str]
-    gsi3sk: Optional[str]
-    metadata: Optional[dict]  # user supplied metadata for anything that needs to be accessible to dynamodb filter expr
-
-
-class DynamodbVersionedResource(BaseModel, ABC):
-    resource_id: str
-    version: int
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        extra = Extra.forbid
-
-    # override these in resource classes to enable secondary lookups on the latest version of the resource
-    def db_get_gsi1pk(self) -> str | None:
-        pass
-
-    def db_get_gsi2pk(self) -> str | None:
-        pass
-
-    def db_get_gsi3pk_and_sk(self) -> tuple[str, str] | None:
-        pass
-
-    def db_get_filter_metadata(self) -> tuple[str, str] | None:
-        pass
-
-    def resource_id_as_ulid(self) -> ulid.ULID:
-        return ulid.parse(self.resource_id)
-
-    def created_ago(self, now: Optional[datetime] = None) -> str:
-        now = now or _now(tz=self.created_at.tzinfo)
-        return precisedelta((now - self.created_at), minimum_unit="minutes", format="") + " ago"
-
-    def updated_ago(self, now: Optional[datetime] = None) -> str:
-        now = now or _now(tz=self.created_at.tzinfo)
-        return precisedelta((now - self.updated_at), minimum_unit="minutes", format="") + " ago"
-
-    @classmethod
-    def get_unique_key_prefix(cls) -> str:
-        # use the capital letters of the class name to build the prefix by default; override this method
-        # to specify something different for a particular resource
-        caps = [letter for letter in cls.__name__ if letter.isupper()]
-        if not caps:
-            raise RuntimeError(f"No capital letters detected in class name {cls.__name__}!")
-        return "".join(caps)
-
-    def to_dynamodb_item(self, v0_object: bool = False) -> dict:
-        prefix = self.get_unique_key_prefix()
-        dynamodb_data = {
-            "pk": f"{prefix}#{self.resource_id}",
-            "version": self.version,
-            "data": self.compress_model_content(),
-        }
-        if v0_object:
-            sk = "v0"
-        else:
-            sk = f"v{self.version}"
-        dynamodb_data["sk"] = sk
-
-        if v0_object:
-            # all v0 objects get gsitype applied to enable "get all <type> sorted by last updated"
-            dynamodb_data["gsitype"] = self.__class__.__name__
-            dynamodb_data["gsitypesk"] = self.updated_at.isoformat()
-
-            # check for the user-defineable key / filter fields
-            if gsi1pk := self.db_get_gsi1pk():
-                dynamodb_data["gsi1pk"] = gsi1pk
-            if gsi2pk := self.db_get_gsi2pk():
-                dynamodb_data["gsi2pk"] = gsi2pk
-            if filter_metadata := self.db_get_filter_metadata():
-                dynamodb_data["metadata"] = filter_metadata
-            if data := self.db_get_gsi3pk_and_sk():
-                gsi3pk, gsi3sk = data
-                dynamodb_data["gsi3pk"] = gsi3pk
-                dynamodb_data["gsi3sk"] = gsi3sk
-
-        return dynamodb_data
-
-    @classmethod
-    def from_dynamodb_item(
-        cls: Type["DynamodbVersionedResource"],
-        dynamodb_data: DynamoDbVersionedItemKeys | dict,
-    ) -> "DynamodbVersionedResource":
-        compressed_data = dynamodb_data["data"]
-        data = cls.decompress_model_content(compressed_data)  # noqa
-        return cls.parse_obj(data)
-
-    @classmethod
-    def dynamodb_lookup_keys_from_id(cls, existing_id: str, version: int = 0) -> dict:
-        return {
-            "pk": f"{cls.get_unique_key_prefix()}#{existing_id}",
-            "sk": f"v{version}",
-        }
-
-    def compress_model_content(self) -> bytes:
-        """Helper that can be used in to_dynamodb_item."""
-        return gzip.compress(self.json().encode())
-
-    @staticmethod
-    def decompress_model_content(content: bytes | Binary) -> dict:
-        if isinstance(content, Binary):
-            content = bytes(content)  # noqa
-        entry_data: str = gzip.decompress(content).decode()
-        return json.loads(entry_data)
-
-    @classmethod
-    def create_new(
-        cls: Type["DynamodbVersionedResource"],
-        create_data: _PlainBaseModel | dict,
-        override_id: Optional[str] = None,
-    ) -> "DynamodbVersionedResource":
-        if isinstance(create_data, BaseModel):
-            kwargs = create_data.dict()
-        else:
-            kwargs = {**create_data}
-        now = _now()
-        kwargs.update(
-            {
-                "version": 1,
-                "resource_id": override_id or generate_date_sortable_id(now),
-                "created_at": now,
-                "updated_at": now,
-            }
-        )
-        return cls.parse_obj(kwargs)
-
-    def update_existing(
-        self: "DynamodbVersionedResource", update_data: _PlainBaseModel | dict
-    ) -> "DynamodbVersionedResource":
-        now = _now()
-        if isinstance(update_data, BaseModel):
-            update_kwargs = update_data.dict(exclude_none=True)
-        else:
-            update_kwargs = {**update_data}
-        kwargs = self.dict()
-        kwargs.update(update_kwargs)
-        kwargs.update(
-            {
-                "version": self.version + 1,
-                "resource_id": self.resource_id,
-                "created_at": self.created_at,
-                "updated_at": now,
-            }
-        )
-        return self.__class__.parse_obj(kwargs)
-
-
-DbResource = TypeVar("DbResource", bound=DynamodbVersionedResource)
 
 
 def exhaust_pagination(query: Callable[[Optional[str]], PaginatedList]):
@@ -271,53 +47,72 @@ class DynamoDBMemory:
     _dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _dynamodb_table: Optional["Table"] = field(default=None, init=False)
 
-    def list_resources_of_type(
+    def get_existing(
         self,
-        data_class: Type[DbResource],
-        num: int = 10,
-        ascending: bool = False,
-        filter_expression=None,
-        filter_fn: Optional[Callable[[DbResource], bool]] = None,
-        pagination_key: Optional[str] = None,
-    ):
-        return self.paginated_dynamodb_query(
-            resource_class=data_class,
-            index_name="gsitype",
-            key_condition=Key("gsitype").eq(data_class.__name__),
-            ascending=ascending,
-            results_limit=num,
-            filter_expression=filter_expression,
-            filter_fn=filter_fn,
-            pagination_key=pagination_key,
-        )
+        existing_id: str,
+        data_class: Type[AnyDbResource],
+        version: int = 0,
+        consistent_read=False,
+    ) -> Optional[AnyDbResource]:
+        """Get object of the specified type with the provided key.
+
+        The `version` parameter is ignored on non-versioned resources.
+        """
+        if issubclass(data_class, DynamodbResource):
+            if version:
+                self.logger.warning(
+                    f"Version parameter ignored when fetching non-versioned resource; provided {version=}"
+                )
+            key = data_class.dynamodb_lookup_keys_from_id(existing_id)
+        elif issubclass(data_class, DynamodbVersionedResource):
+            key = data_class.dynamodb_lookup_keys_from_id(existing_id, version=version)
+        else:
+            raise ValueError("Invalid data_class provided")
+        response = self.dynamodb_table.get_item(Key=key, ConsistentRead=consistent_read)
+        item = response.get("Item")
+        if item:
+            return data_class.from_dynamodb_item(item)
 
     def read_existing(
         self,
         existing_id: str,
-        data_class: Type[DbResource],
+        data_class: Type[AnyDbResource],
         version: int = 0,
         consistent_read=False,
-    ) -> DbResource:
+    ) -> AnyDbResource:
+        """Return object of the specified type with the provided key.
+
+        The `version` parameter is ignored on non-versioned resources.
+
+        Raises a ValueError if no object with the provided id was found.
+        """
         if not (item := self.get_existing(existing_id, data_class, version, consistent_read=consistent_read)):
             raise ValueError("No item found with the provided key.")
         return item
 
-    def update_existing(self, existing_resource: DbResource, update_obj: _PlainBaseModel | dict) -> DbResource:
-        latest_resource = self.read_existing(
-            existing_id=existing_resource.resource_id,
-            data_class=existing_resource.__class__,
-        )
-        if existing_resource != latest_resource:
-            raise ValueError("Cannot update from non-latest version")
-
+    def update_existing(self, existing_resource: AnyDbResource, update_obj: _PlainBaseModel | dict) -> AnyDbResource:
+        data_class = existing_resource.__class__
         updated_resource = existing_resource.update_existing(update_obj)
-        self._update_existing_versioned(updated_resource, previous_version=latest_resource.version)
-        return self.read_existing(
-            existing_id=updated_resource.resource_id,
-            data_class=updated_resource.__class__,
-            version=updated_resource.version,
-            consistent_read=True,
-        )
+
+        if issubclass(data_class, DynamodbResource):
+            return self._put_nonversioned_resource(updated_resource)
+        elif issubclass(data_class, DynamodbVersionedResource):
+            latest_resource = self.read_existing(
+                existing_id=existing_resource.resource_id,
+                data_class=data_class,
+            )
+            if existing_resource != latest_resource:
+                raise ValueError("Cannot update from non-latest version")
+
+            self._update_existing_versioned(updated_resource, previous_version=latest_resource.version)
+            return self.read_existing(
+                existing_id=updated_resource.resource_id,
+                data_class=data_class,
+                version=updated_resource.version,
+                consistent_read=True,
+            )
+        else:
+            raise ValueError("Invalid data_class provided")
 
     @property
     def dynamodb_client(self) -> "DynamoDBClient":
@@ -336,13 +131,26 @@ class DynamoDBMemory:
 
     def create_new(
         self,
-        data_class: Type[DbResource],
+        data_class: Type[AnyDbResource],
         data: _PlainBaseModel | dict,
         override_id: Optional[str] = None,
-    ) -> DbResource:
+    ) -> AnyDbResource:
         new_resource = data_class.create_new(data, override_id=override_id)
-        main_item = new_resource.to_dynamodb_item()
-        v0_item = new_resource.to_dynamodb_item(v0_object=True)
+        if issubclass(data_class, DynamodbResource):
+            return self._put_nonversioned_resource(new_resource)
+        elif issubclass(data_class, DynamodbVersionedResource):
+            return self._create_new_versioned(new_resource)
+        else:
+            raise ValueError("Invalid data_class provided")
+
+    def _put_nonversioned_resource(self, resource: NonversionedDbResourceOnly) -> NonversionedDbResourceOnly:
+        item = resource.to_dynamodb_item()
+        self.dynamodb_table.put_item(Item=item)
+        return resource
+
+    def _create_new_versioned(self, resource: VersionedDbResourceOnly) -> VersionedDbResourceOnly:
+        main_item = resource.to_dynamodb_item()
+        v0_item = resource.to_dynamodb_item(v0_object=True)
         self.logger.debug("transact_write_items begin")
         self.dynamodb_client.transact_write_items(
             TransactItems=[
@@ -365,13 +173,13 @@ class DynamoDBMemory:
         self.logger.debug("transact_write_items complete")
 
         return self.read_existing(
-            existing_id=new_resource.resource_id,
-            data_class=new_resource.__class__,
-            version=new_resource.version,
+            existing_id=resource.resource_id,
+            data_class=resource.__class__,
+            version=resource.version,
             consistent_read=True,
         )
 
-    def _update_existing_versioned(self, resource: DbResource, previous_version: int):
+    def _update_existing_versioned(self, resource: VersionedDbResourceOnly, previous_version: int):
         main_item = resource.to_dynamodb_item()
         v0_item = resource.to_dynamodb_item(v0_object=True)
 
@@ -396,31 +204,18 @@ class DynamoDBMemory:
             ]
         )
 
-    def get_existing(
-        self,
-        existing_id: str,
-        data_class: Type[DbResource],
-        version: int = 0,
-        consistent_read=False,
-    ) -> Optional[DbResource]:
-        key = data_class.dynamodb_lookup_keys_from_id(existing_id, version)
-        response = self.dynamodb_table.get_item(Key=key, ConsistentRead=consistent_read)
-        item = response.get("Item")
-        if item:
-            return data_class.from_dynamodb_item(item)
-
     def list_type_by_updated_at(
         self,
-        data_class: Type[DbResource],
+        data_class: Type[AnyDbResource],
         *,
         filter_expression=None,
-        filter_fn: Optional[Callable[[DbResource], bool]] = None,
+        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
         results_limit: Optional[int] = None,
         max_api_calls: int = Constants.QUERY_DEFAULT_MAX_API_CALLS,
         pagination_key: Optional[str] = None,
         ascending=False,
         filter_limit_multiplier: int = 3,
-    ) -> PaginatedList[DbResource]:
+    ) -> PaginatedList[AnyDbResource]:
         return self.paginated_dynamodb_query(
             key_condition=Key("gsitype").eq(data_class.__name__),
             index_name="gsitype",
@@ -434,42 +229,80 @@ class DynamoDBMemory:
             filter_limit_multiplier=filter_limit_multiplier,
         )
 
+    def increment_counter(
+        self, existing_resource: NonversionedDbResourceOnly, field_name: str, incr_by: int = 1
+    ) -> int:
+        key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
+        field = existing_resource.model_fields.get(field_name)
+        if not field:
+            raise ValueError(f"Unknown field {field_name=}")
+        if not field.annotation == int:
+            raise TypeError(f"Field {field_name=} must be an int")
+        response = self.dynamodb_table.update_item(
+            Key=key,
+            UpdateExpression="ADD #attr1 :val1",
+            ExpressionAttributeNames={"#attr1": field_name},
+            ExpressionAttributeValues={":val1": decimal.Decimal(incr_by)},
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(response["Attributes"][field_name])
+
+    def add_to_set(self, key: str, val: Any, sub_key: str = "data"):
+        self.table.update_item(
+            Key={"pk": key},
+            UpdateExpression="ADD #attr1 :val1",
+            ExpressionAttributeNames={"#attr1": sub_key},
+            ExpressionAttributeValues={":val1": {val}},
+            ReturnValues="NONE",
+        )
+
+    def remove_from_set(self, key: str, val: Any, sub_key: str = "data"):
+        self.table.update_item(
+            Key={"pk": key},
+            UpdateExpression="DELETE #attr1 :val1",
+            ExpressionAttributeNames={"#attr1": sub_key},
+            ExpressionAttributeValues={":val1": {val}},
+            ReturnValues="NONE",
+        )
+
     def paginated_dynamodb_query(
         self,
         *,
         key_condition: ConditionBase,
-        resource_class: Type[DbResource] = None,
-        resource_class_fn: Callable[[dict], Type[DbResource]] = None,
+        resource_class: Type[AnyDbResource] = None,
+        resource_class_fn: Callable[[dict], Type[AnyDbResource]] = None,
         index_name: Optional[str] = None,
         filter_expression=None,
-        filter_fn: Optional[Callable[[DbResource], bool]] = None,
+        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
         results_limit: Optional[int] = None,
         max_api_calls: int = Constants.QUERY_DEFAULT_MAX_API_CALLS,
         pagination_key: Optional[str] = None,
         ascending=False,
         filter_limit_multiplier: int = 3,
         _current_api_calls_on_stack: int = 0,
-    ) -> PaginatedList[DbResource]:
+    ) -> PaginatedList[AnyDbResource]:
         """
         Execute a paginated query against a DynamoDB table, supporting filters and optional post-retrieval filtering.
 
         Parameters:
             key_condition (ConditionBase): The condition used for querying the DynamoDB table.
-            resource_class (Type[DbResource], optional): The class type used to deserialize the DynamoDB items.
-            resource_class_fn (Callable[[dict], Type[DbResource]], optional): A function to determine the resource class
-                type dynamically based on the DynamoDB item data.
-            index_name (str, optional): The name of the secondary index to query. If not provided, the main table is queried.
+            resource_class (Type[AnyDbResource], optional): The class type used to deserialize the DynamoDB items.
+            resource_class_fn (Callable[[dict], Type[AnyDbResource]], optional): A function to determine
+                the resource class type dynamically based on the DynamoDB item data.
+            index_name (str, optional): The name of the secondary index to query. If not provided,
+                the main table is queried.
             filter_expression (optional): DynamoDB filter expression to limit results returned.
-            filter_fn (Callable[[DbResource], bool], optional): A post-retrieval filter function to apply to results.
+            filter_fn (Callable[[AnyDbResource], bool], optional): A post-retrieval filter function to apply to results.
             results_limit (int, optional): The maximum number of results to return. Defaults to system default limit.
             max_api_calls (int): The maximum number of API calls to make. Defaults to QUERY_DEFAULT_MAX_API_CALLS.
             pagination_key (str, optional): Key to start pagination from, if continuing from a previous query.
             ascending (bool): If True, return results in ascending order. Default is False (descending).
             filter_limit_multiplier (int): Multiplier for results limit when using a filter. Default is 3.
-            _current_api_calls_on_stack (int, internal): Tracks the number of API calls made during recursive operations.
+            _current_api_calls_on_stack (int, internal): Tracks the number of API calls made
+                during recursive operations.
 
         Returns:
-            PaginatedList[DbResource]: A paginated list of deserialized DynamoDB items.
+            PaginatedList[AnyDbResource]: A paginated list of deserialized DynamoDB items.
 
         Raises:
             ValueError: If neither `resource_class` nor `resource_class_fn` is provided.
@@ -643,11 +476,14 @@ class DynamoDBMemory:
         items_returned = len(response_data)
 
         if this_call_count > 1:
-            self.logger.debug(f"Completed dynamodb recursive sub-query; {query_took_ms=} {items_returned=}")
+            self.logger.debug(
+                f"Completed dynamodb recursive sub-query; {query_took_ms=} {this_call_count=} {items_returned=}"
+            )
         else:
             api_calls_required = _current_api_calls_on_stack
             self.logger.info(
-                f"Completed dynamodb query; {query_took_ms=} {items_returned=} {api_calls_required=} {rcus_consumed_by_query=}"
+                f"Completed dynamodb query; {query_took_ms=} {items_returned=} {api_calls_required=} "
+                f"{rcus_consumed_by_query=}"
             )
 
         return response_data

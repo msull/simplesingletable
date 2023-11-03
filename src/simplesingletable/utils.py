@@ -1,7 +1,44 @@
-from typing import TYPE_CHECKING
+import json
+from base64 import urlsafe_b64decode, urlsafe_b64encode
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
+
+import ulid
+from boto3.dynamodb.types import TypeSerializer
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.service_resource import Table
+
+
+def _now(tz: Any = False):
+    # this function exists only to make it easy to mock the utcnow call in date_id when creating resources in the tests
+
+    # explicitly check for False, so that `None` is a valid option to provide for the tz
+    if tz is False:
+        tz = timezone.utc
+    return datetime.now(tz=tz)
+
+
+def generate_date_sortable_id(now=None) -> str:
+    """Generates a ULID based on the provided timestamp, or the current time if not provided."""
+    now = now or _now()
+    return ulid.from_timestamp(now).str
+
+
+def marshall(python_obj: dict) -> dict:
+    """Convert a standard dict into a DynamoDB ."""
+    serializer = TypeSerializer()
+    return {k: serializer.serialize(v) for k, v in python_obj.items()}
+
+
+def encode_pagination_key(last_evaluated_key: dict) -> str:
+    """Turn the dynamodb LEK data into a pagination key we can send to clients."""
+    return urlsafe_b64encode(json.dumps(last_evaluated_key).encode()).decode()
+
+
+def decode_pagination_key(pagination_key: str) -> dict:
+    """Turn the pagination key back into the dynamodb LEK dict."""
+    return json.loads(urlsafe_b64decode(pagination_key).decode())
 
 
 def truncate_dynamo_table(dynamo_table: "Table"):
