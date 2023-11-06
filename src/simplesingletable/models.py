@@ -106,7 +106,7 @@ class DynamodbResource(BaseModel, ABC):
         if self.Config.compress_data:
             dynamodb_data = {"data": self.compress_model_content()}
         else:
-            dynamodb_data = convert_datetimes_to_iso(self.model_dump(exclude_none=True))
+            dynamodb_data = clean_data(self.model_dump(exclude_none=True))
 
         dynamodb_data.update(
             {
@@ -341,10 +341,21 @@ def _now(tz: Any = False):
     return datetime.now(tz=tz)
 
 
-def convert_datetimes_to_iso(data):
+def clean_data(data: dict):
+    data = {**data}
+    del_keys = set()
     for key, value in data.items():
         if isinstance(value, datetime):
+            # convert datetimes to isoformat -- dynamodb has no native datetime
             data[key] = value.isoformat()
+        elif isinstance(value, set) and not value:
+            # clear out empty sets entirely from the data
+            del_keys.add(key)
         elif isinstance(value, dict):
-            data[key] = convert_datetimes_to_iso(value)
+            # run recursively on dicts
+            data[key] = clean_data(value)
+
+    for key in del_keys:
+        data.pop(key)
+
     return data

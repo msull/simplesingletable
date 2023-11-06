@@ -1,12 +1,14 @@
 import decimal
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, Optional, Type, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Optional, Type, TypeVar, Union
 
 import boto3
 from boto3.dynamodb.conditions import ConditionBase, Key
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from pydantic.fields import FieldInfo
 
 from .models import DynamodbResource, DynamodbVersionedResource, PaginatedList
 from .utils import decode_pagination_key, encode_pagination_key, marshall
@@ -38,12 +40,31 @@ def exhaust_pagination(query: Callable[[Optional[str]], PaginatedList]):
     yield result
 
 
+class InternalResourceBase(DynamodbResource):
+    @classmethod
+    def get_unique_key_prefix(cls) -> str:
+        return "_INTERNAL"
+
+    @classmethod
+    def ensure_exists(cls, memory: "DynamoDBMemory") -> "InternalResourceBase":
+        if not (existing := memory.get_existing(cls.pk, data_class=cls)):
+            return memory.create_new(cls, {}, override_id=cls.pk)
+        return existing
+
+
+class MemoryStats(InternalResourceBase):
+    pk: ClassVar[str] = "MemoryStats"
+
+    counts_by_type: dict[str, int] = Field(default_factory=dict)
+
+
 @dataclass
 class DynamoDBMemory:
     logger: Any
     table_name: str
     endpoint_url: Optional[str] = None
     connection_params: Optional[dict] = None
+    track_stats: bool = True
     _dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _dynamodb_table: Optional["Table"] = field(default=None, init=False)
 
@@ -137,11 +158,18 @@ class DynamoDBMemory:
     ) -> AnyDbResource:
         new_resource = data_class.create_new(data, override_id=override_id)
         if issubclass(data_class, DynamodbResource):
-            return self._put_nonversioned_resource(new_resource)
+            resource = self._put_nonversioned_resource(new_resource)
         elif issubclass(data_class, DynamodbVersionedResource):
-            return self._create_new_versioned(new_resource)
+            resource = self._create_new_versioned(new_resource)
         else:
             raise ValueError("Invalid data_class provided")
+        if self.track_stats:
+            stats = MemoryStats.ensure_exists(self)
+            self.increment_counter(stats, "counts_by_type." + data_class.__name__)
+        return resource
+
+    def get_stats(self) -> MemoryStats:
+        return MemoryStats.ensure_exists(self)
 
     def _put_nonversioned_resource(self, resource: NonversionedDbResourceOnly) -> NonversionedDbResourceOnly:
         item = resource.to_dynamodb_item()
@@ -229,23 +257,73 @@ class DynamoDBMemory:
             filter_limit_multiplier=filter_limit_multiplier,
         )
 
+    def _increment_mapped_counter(
+        self,
+        existing_resource: NonversionedDbResourceOnly,
+        field_name: str,
+        field: FieldInfo,
+        counter_name: str,
+        incr_by: int = 1,
+    ):
+        now = _now(tz=existing_resource.created_at.tzinfo)
+        key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
+
+        if not field.annotation == dict[str, int]:
+            raise TypeError(f"Field {field_name=} dict of ints; {field.annotation=}")
+
+        update_expression = (
+            f"SET {field_name}.#attr1 = if_not_exists({field_name}.#attr1, :start) + :incrval, "
+            "updated_at = :nowval, "
+            "gsitypesk = :nowval"
+        )
+        expression_values = {
+            ":incrval": decimal.Decimal(incr_by),
+            ":start": decimal.Decimal(0),
+            ":nowval": now.isoformat(),
+        }
+
+        response = self.dynamodb_table.update_item(
+            Key=key,
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_values,
+            ReturnValues="UPDATED_NEW",
+            ExpressionAttributeNames={"#attr1": counter_name},
+        )
+        return int(response["Attributes"][field_name][counter_name])
+
+    def _increment_nonmapped_counter(
+        self, existing_resource: NonversionedDbResourceOnly, field_name: str, field: FieldInfo, incr_by: int = 1
+    ):
+        now = _now(tz=existing_resource.created_at.tzinfo)
+        key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
+
+        if not field.annotation == int:
+            raise TypeError(f"Field {field_name=} must be an int; {field.annotation=}")
+
+        response = self.dynamodb_table.update_item(
+            Key=key,
+            UpdateExpression="SET updated_at = :nowval, gsitypesk = :nowval ADD #attr1 :val1",
+            ExpressionAttributeNames={"#attr1": field_name},
+            ExpressionAttributeValues={":val1": decimal.Decimal(incr_by), ":nowval": now.isoformat()},
+            ReturnValues="UPDATED_NEW",
+        )
+        self.logger.debug(response)
+        return int(response["Attributes"][field_name])
+
     def increment_counter(
         self, existing_resource: NonversionedDbResourceOnly, field_name: str, incr_by: int = 1
     ) -> int:
-        key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
-        field = existing_resource.model_fields.get(field_name)
-        if not field:
-            raise ValueError(f"Unknown field {field_name=}")
-        if not field.annotation == int:
-            raise TypeError(f"Field {field_name=} must be an int")
-        response = self.dynamodb_table.update_item(
-            Key=key,
-            UpdateExpression="ADD #attr1 :val1",
-            ExpressionAttributeNames={"#attr1": field_name},
-            ExpressionAttributeValues={":val1": decimal.Decimal(incr_by)},
-            ReturnValues="UPDATED_NEW",
-        )
-        return int(response["Attributes"][field_name])
+        if "." in field_name:
+            first_part, remainder = field_name.split(".", maxsplit=1)
+            field = existing_resource.model_fields.get(first_part)
+            if not field:
+                raise ValueError(f"Unknown field {first_part=}")
+            return self._increment_mapped_counter(existing_resource, first_part, field, remainder, incr_by)
+        else:
+            field = existing_resource.model_fields.get(field_name)
+            if not field:
+                raise ValueError(f"Unknown field {field_name=}")
+            return self._increment_nonmapped_counter(existing_resource, field_name, field, incr_by)
 
     def add_to_set(self, existing_resource: NonversionedDbResourceOnly, field_name: str, val: str):
         key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
@@ -499,3 +577,12 @@ class DynamoDBMemory:
             )
 
         return response_data
+
+
+def _now(tz: Any = False):
+    # this function exists only to make it easy to mock the utcnow call in date_id when creating resources in the tests
+
+    # explicitly check for False, so that `None` is a valid option to provide for the tz
+    if tz is False:
+        tz = timezone.utc
+    return datetime.now(tz=tz)

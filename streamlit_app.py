@@ -6,11 +6,14 @@ from pydantic import Field
 from streamlit_extras.echo_expander import echo_expander
 from logzero import logger
 
+from simplesingletable.utils import truncate_dynamo_table
+
 TABLE_DEFINITION = Path(__file__).parent / "example_tables" / "standard.yaml"
 
 st.header("Simple Single Table usage example")
 
-basic_tab, advanced_tab = st.tabs(("Basic usage", "Advanced Usage"))
+basic_tab, advanced_tab, admin_tab = st.tabs(("Basic usage", "Advanced Usage", "Admin"))
+
 
 with basic_tab:
     with st.expander('Start with imports and setting up the basic "memory" client'):
@@ -31,14 +34,25 @@ with basic_tab:
                     "region_name": "us-east-1",
                 },
             )
-        st.write(
-            """
-        In this example, I'm connecting to a local DynamoDB service running via docker, and have created 
-        a table named `standardexample` with the following definition:
-        """
-        )
-        st.code(TABLE_DEFINITION.read_text())
 
+            st.write(
+                """
+            In this example, I'm connecting to a local DynamoDB service running via docker, and have created 
+            a table named `standardexample` with the following definition:
+            """
+            )
+            st.code(TABLE_DEFINITION.read_text())
+
+with admin_tab:
+    stats_placeholder = st.empty()
+    if st.button("Truncate dynamodb table"):
+        with st.echo():
+            st.write(truncate_dynamo_table(memory.dynamodb_table))
+            st.session_state.clear()
+            st.rerun()
+
+
+with basic_tab:
     with st.expander("Model definition and basic create/update"):
         st.write(
             """
@@ -59,6 +73,8 @@ with basic_tab:
                 name: str
                 tags: Optional[set[str]] = None
                 num_followers: int = 0
+                other_set: set[str] = Field(default_factory=set)
+                what_about: str = "this"
 
             class JournalEntry(DynamodbResource):
                 content: str
@@ -148,3 +164,21 @@ with basic_tab:
                     memory.remove_from_set(created_user, "tags", tag)
                     created_user = memory.read_existing(created_user.resource_id, User, consistent_read=True)
                     st.write("Updated Tags", created_user.tags)
+
+        with st.form("Update other set"):
+            st.write("Current Values", created_user.other_set)
+            value = st.text_input("value")
+            if st.form_submit_button("Add Value") and value:
+                with st.echo():
+                    memory.add_to_set(created_user, "other_set", value)
+                    created_user = memory.read_existing(created_user.resource_id, User, consistent_read=True)
+                    st.write("Updated Values", created_user.values)
+            if st.form_submit_button("Remove Value") and value:
+                with st.echo():
+                    memory.remove_from_set(created_user, "other_set", value)
+                    created_user = memory.read_existing(created_user.resource_id, User, consistent_read=True)
+                    st.write("Updated Values", created_user.other_set)
+
+
+# update the stats on the admin tab as the last step
+stats_placeholder.code(memory.get_stats().model_dump_json(indent=2))
