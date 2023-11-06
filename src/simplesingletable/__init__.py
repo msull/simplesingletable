@@ -247,20 +247,32 @@ class DynamoDBMemory:
         )
         return int(response["Attributes"][field_name])
 
-    def add_to_set(self, key: str, val: Any, sub_key: str = "data"):
-        self.table.update_item(
-            Key={"pk": key},
+    def add_to_set(self, existing_resource: NonversionedDbResourceOnly, field_name: str, val: str):
+        key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
+        field = existing_resource.model_fields.get(field_name)
+        if not field:
+            raise ValueError(f"Unknown field {field_name=}")
+        if not (field.annotation == set[str] or field.annotation == Optional[set[str]]):
+            raise TypeError(f"Field {field_name=} must be set[str]")
+        self.dynamodb_table.update_item(
+            Key=key,
             UpdateExpression="ADD #attr1 :val1",
-            ExpressionAttributeNames={"#attr1": sub_key},
+            ExpressionAttributeNames={"#attr1": field_name},
             ExpressionAttributeValues={":val1": {val}},
             ReturnValues="NONE",
         )
 
-    def remove_from_set(self, key: str, val: Any, sub_key: str = "data"):
-        self.table.update_item(
-            Key={"pk": key},
+    def remove_from_set(self, existing_resource: NonversionedDbResourceOnly, field_name: str, val: str):
+        key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
+        field = existing_resource.model_fields.get(field_name)
+        if not field:
+            raise ValueError(f"Unknown field {field_name=}")
+        if not (field.annotation == set[str] or field.annotation == Optional[set[str]]):
+            raise TypeError(f"Field {field_name=} must be set[str]")
+        self.dynamodb_table.update_item(
+            Key=key,
             UpdateExpression="DELETE #attr1 :val1",
-            ExpressionAttributeNames={"#attr1": sub_key},
+            ExpressionAttributeNames={"#attr1": field_name},
             ExpressionAttributeValues={":val1": {val}},
             ReturnValues="NONE",
         )

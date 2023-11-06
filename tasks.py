@@ -94,3 +94,9 @@ def launch_dynamodb_local(c: Context, create_tables=False, clear_data=False):
 def halt_dynamodb_local(c: Context):
     """Run local dynamodb, with options to wipe data and create a table with required indices."""
     c.run("docker stop dynamodb-local || true", hide="both")
+
+
+@task
+def run_streamlit_app(c: Context):
+    with from_repo_root(c):
+        c.run("streamlit run ./streamlit_app.py --server.headless True")

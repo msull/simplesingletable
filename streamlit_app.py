@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Optional
 
 import streamlit as st
+from pydantic import Field
 from streamlit_extras.echo_expander import echo_expander
 from logzero import logger
 
@@ -24,6 +25,11 @@ with basic_tab:
                 logger=logger,
                 table_name="standardexample",
                 endpoint_url="http://localhost:8000",
+                connection_params={
+                    "aws_access_key_id": "unused",
+                    "aws_secret_access_key": "unused",
+                    "region_name": "us-east-1",
+                },
             )
         st.write(
             """
@@ -51,7 +57,7 @@ with basic_tab:
 
             class User(DynamodbResource):
                 name: str
-                tags: list[str]
+                tags: Optional[set[str]] = None
                 num_followers: int = 0
 
             class JournalEntry(DynamodbResource):
@@ -63,7 +69,7 @@ with basic_tab:
                 descr: Optional[str]
                 completed: bool
                 user_id: str
-                tags: list[str]
+                tags: set[str]
 
         st.write("Now we can begin storing and retrieving objects from the database")
 
@@ -73,19 +79,15 @@ with basic_tab:
         if RESOURCE_ID:
             st.session_state["resource_id"] = RESOURCE_ID
 
-        if RESOURCE_ID:
+        if not RESOURCE_ID:
+            with st.echo():
+                created_user = memory.create_new(User, {"name": "New User"})
+                st.json(created_user.model_dump_json())
+            st.session_state["resource_id"] = created_user.resource_id
+        else:
             with st.echo():
                 created_user = memory.read_existing(RESOURCE_ID, User)
                 st.json(created_user.model_dump_json())
-
-        else:
-            with st.echo():
-                created_user = memory.create_new(
-                    User,
-                    {"name": "New User", "tags": []},
-                )
-                st.json(created_user.model_dump_json())
-            st.session_state["resource_id"] = created_user.resource_id
         st.write(
             """
         The resource automatically includes a `resource_id`, as well as `created_at` and `updated_at` attributes.
@@ -122,13 +124,27 @@ with basic_tab:
             st.write(f"Object was updated {created_user.updated_ago('seconds')}.")
 
         st.write("Non-versioned resources support atomic counters with an easy increment method:")
-        increase_by = st.slider('Change Followers By', min_value=-10, max_value=10, value=1)
+        increase_by = st.slider("Change Followers By", min_value=-10, max_value=10, value=1)
         num_followers = created_user.num_followers
         st.metric("Followers before", num_followers)
 
-        if st.button('Update Followers'):
+        if st.button("Update Followers"):
             with st.echo():
-                num_followers = memory.increment_counter(created_user, 'num_followers', incr_by=increase_by)
+                num_followers = memory.increment_counter(created_user, "num_followers", incr_by=increase_by)
             st.session_state["resource_id"] = created_user.resource_id
             st.metric("Followers after", num_followers)
 
+        st.write("Non-versioned resources support atomic set push / pop as well:")
+        with st.form("Update tags"):
+            st.write("Current Tags", created_user.tags)
+            tag = st.text_input("tag")
+            if st.form_submit_button("Add Tag") and tag:
+                with st.echo():
+                    memory.add_to_set(created_user, "tags", tag)
+                    created_user = memory.read_existing(created_user.resource_id, User, consistent_read=True)
+                    st.write("Updated Tags", created_user.tags)
+            if st.form_submit_button("Remove Tag") and tag:
+                with st.echo():
+                    memory.remove_from_set(created_user, "tags", tag)
+                    created_user = memory.read_existing(created_user.resource_id, User, consistent_read=True)
+                    st.write("Updated Tags", created_user.tags)

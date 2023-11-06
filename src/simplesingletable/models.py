@@ -106,7 +106,7 @@ class DynamodbResource(BaseModel, ABC):
         if self.Config.compress_data:
             dynamodb_data = {"data": self.compress_model_content()}
         else:
-            dynamodb_data = json.loads(self.model_dump_json())
+            dynamodb_data = convert_datetimes_to_iso(self.model_dump(exclude_none=True))
 
         dynamodb_data.update(
             {
@@ -216,7 +216,6 @@ class DynamodbVersionedResource(BaseModel, ABC):
 
     def created_ago(self, now: Optional[datetime] = None) -> str:
         now = now or _now(tz=self.created_at.tzinfo)
-        breakpoint()
         return precisedelta((now - self.created_at), minimum_unit="minutes") + " ago"
 
     def updated_ago(self, now: Optional[datetime] = None) -> str:
@@ -282,7 +281,7 @@ class DynamodbVersionedResource(BaseModel, ABC):
 
     def compress_model_content(self) -> bytes:
         """Helper that can be used in to_dynamodb_item."""
-        return gzip.compress(self.json().encode())
+        return gzip.compress(self.model_dump_json().encode())
 
     @staticmethod
     def decompress_model_content(content: bytes | Binary) -> dict:
@@ -340,3 +339,12 @@ def _now(tz: Any = False):
     if tz is False:
         tz = timezone.utc
     return datetime.now(tz=tz)
+
+
+def convert_datetimes_to_iso(data):
+    for key, value in data.items():
+        if isinstance(value, datetime):
+            data[key] = value.isoformat()
+        elif isinstance(value, dict):
+            data[key] = convert_datetimes_to_iso(value)
+    return data

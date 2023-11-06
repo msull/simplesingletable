@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+* Added support for a non-versioned resource, including methods for atomic counters and set manipulation.
+* Added example streamlit_app.py as the start of some documentation.
+
 ### Changed
+
+* Refactored codebase a bit, started `models.py`
 
 ### Deprecated
 
