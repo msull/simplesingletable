@@ -1,12 +1,15 @@
 import ulid
 
 from simplesingletable import DynamoDBMemory, DynamodbResource
+from simplesingletable.models import ResourceConfig
 from simplesingletable.utils import generate_date_sortable_id
 
 
 class MyTestResource(DynamodbResource):
     name: str
     group_members: list[str]
+
+    resource_config = ResourceConfig(compress_data=True)
 
 
 def test_dynamodb_memory__basic(dynamodb_memory: DynamoDBMemory):

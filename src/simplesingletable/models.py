@@ -2,12 +2,12 @@ import gzip
 import json
 from abc import ABC
 from datetime import datetime, timezone
-from typing import Any, Optional, Type, TypedDict, TypeVar
+from typing import Any, ClassVar, Optional, Type, TypedDict, TypeVar
 
 import ulid
 from boto3.dynamodb.types import Binary
 from humanize import precisedelta
-from pydantic import BaseModel, Extra
+from pydantic import BaseModel, ConfigDict
 
 from .utils import generate_date_sortable_id
 
@@ -60,14 +60,20 @@ class DynamoDbVersionedItemKeys(TypedDict):
     metadata: Optional[dict]  # user supplied metadata for anything that needs to be accessible to dynamodb filter expr
 
 
-class DynamodbResource(BaseModel, ABC):
+class ResourceConfig(TypedDict, total=False):
+    """A TypedDict for configuring Resource behaviour."""
+
+    compress_data: bool | None
+    """Should the resource content be compress (gzip)."""
+
+
+class DynamoDbResource(BaseModel, ABC):
     resource_id: str
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        extra = Extra.forbid
-        compress_data = False
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False)
 
     # override these in resource classes to enable secondary lookups on the latest version of the resource
     def db_get_gsi1pk(self) -> str | None:
@@ -103,7 +109,7 @@ class DynamodbResource(BaseModel, ABC):
         prefix = self.get_unique_key_prefix()
         key = f"{prefix}#{self.resource_id}"
 
-        if self.Config.compress_data:
+        if self.resource_config["compress_data"]:
             dynamodb_data = {"data": self.compress_model_content()}
         else:
             dynamodb_data = clean_data(self.model_dump(exclude_none=True))
@@ -131,10 +137,10 @@ class DynamodbResource(BaseModel, ABC):
 
     @classmethod
     def from_dynamodb_item(
-        cls: Type["DynamodbResource"],
+        cls: Type["DynamoDbResource"],
         dynamodb_data: DynamoDbVersionedItemKeys | dict,
-    ) -> "DynamodbResource":
-        if cls.Config.compress_data:
+    ) -> "DynamoDbResource":
+        if cls.resource_config["compress_data"]:
             compressed_data = dynamodb_data["data"]
             data = cls.decompress_model_content(compressed_data)  # noqa
         else:
@@ -163,10 +169,10 @@ class DynamodbResource(BaseModel, ABC):
 
     @classmethod
     def create_new(
-        cls: Type["DynamodbResource"],
+        cls: Type["DynamoDbResource"],
         create_data: _PlainBaseModel | dict,
         override_id: Optional[str] = None,
-    ) -> "DynamodbResource":
+    ) -> "DynamoDbResource":
         if isinstance(create_data, BaseModel):
             kwargs = create_data.dict()
         else:
@@ -177,7 +183,7 @@ class DynamodbResource(BaseModel, ABC):
         )
         return cls.parse_obj(kwargs)
 
-    def update_existing(self: "DynamodbResource", update_data: _PlainBaseModel | dict) -> "DynamodbResource":
+    def update_existing(self: "DynamoDbResource", update_data: _PlainBaseModel | dict) -> "DynamoDbResource":
         now = _now()
         if isinstance(update_data, BaseModel):
             update_kwargs = update_data.dict(exclude_none=True)
@@ -189,14 +195,17 @@ class DynamodbResource(BaseModel, ABC):
         return self.__class__.parse_obj(kwargs)
 
 
-class DynamodbVersionedResource(BaseModel, ABC):
+# for backwards compatibility
+DynamodbResource = DynamoDbResource
+
+
+class DynamoDbVersionedResource(BaseModel, ABC):
     resource_id: str
     version: int
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        extra = Extra.forbid
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
     # override these in resource classes to enable secondary lookups on the latest version of the resource
     def db_get_gsi1pk(self) -> str | None:
@@ -265,9 +274,9 @@ class DynamodbVersionedResource(BaseModel, ABC):
 
     @classmethod
     def from_dynamodb_item(
-        cls: Type["DynamodbVersionedResource"],
+        cls: Type["DynamoDbVersionedResource"],
         dynamodb_data: DynamoDbVersionedItemKeys | dict,
-    ) -> "DynamodbVersionedResource":
+    ) -> "DynamoDbVersionedResource":
         compressed_data = dynamodb_data["data"]
         data = cls.decompress_model_content(compressed_data)  # noqa
         return cls.parse_obj(data)
@@ -292,10 +301,10 @@ class DynamodbVersionedResource(BaseModel, ABC):
 
     @classmethod
     def create_new(
-        cls: Type["DynamodbVersionedResource"],
+        cls: Type["DynamoDbVersionedResource"],
         create_data: _PlainBaseModel | dict,
         override_id: Optional[str] = None,
-    ) -> "DynamodbVersionedResource":
+    ) -> "DynamoDbVersionedResource":
         if isinstance(create_data, BaseModel):
             kwargs = create_data.dict()
         else:
@@ -312,8 +321,8 @@ class DynamodbVersionedResource(BaseModel, ABC):
         return cls.parse_obj(kwargs)
 
     def update_existing(
-        self: "DynamodbVersionedResource", update_data: _PlainBaseModel | dict
-    ) -> "DynamodbVersionedResource":
+        self: "DynamoDbVersionedResource", update_data: _PlainBaseModel | dict
+    ) -> "DynamoDbVersionedResource":
         now = _now()
         if isinstance(update_data, BaseModel):
             update_kwargs = update_data.dict(exclude_none=True)
@@ -330,6 +339,9 @@ class DynamodbVersionedResource(BaseModel, ABC):
             }
         )
         return self.__class__.parse_obj(kwargs)
+
+
+DynamodbVersionedResource = DynamoDbVersionedResource
 
 
 def _now(tz: Any = False):

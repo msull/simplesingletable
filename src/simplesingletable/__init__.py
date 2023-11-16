@@ -10,7 +10,13 @@ from boto3.dynamodb.conditions import ConditionBase, Key
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
-from .models import DynamodbResource, DynamodbVersionedResource, PaginatedList
+from .models import (
+    DynamoDbResource,
+    DynamodbResource,
+    DynamoDbVersionedResource,
+    DynamodbVersionedResource,
+    PaginatedList,
+)
 from .utils import decode_pagination_key, encode_pagination_key, marshall
 
 if TYPE_CHECKING:
@@ -23,11 +29,13 @@ class Constants:
     QUERY_DEFAULT_MAX_API_CALLS = 10
 
 
+_, _ = DynamodbResource, DynamodbVersionedResource
+
 package_version = "1.5.1"
 
-AnyDbResource = TypeVar("AnyDbResource", bound=Union[DynamodbVersionedResource, DynamodbResource])
-VersionedDbResourceOnly = TypeVar("VersionedDbResourceOnly", bound=DynamodbVersionedResource)
-NonversionedDbResourceOnly = TypeVar("NonversionedDbResourceOnly", bound=DynamodbResource)
+AnyDbResource = TypeVar("AnyDbResource", bound=Union[DynamoDbVersionedResource, DynamoDbResource])
+VersionedDbResourceOnly = TypeVar("VersionedDbResourceOnly", bound=DynamoDbVersionedResource)
+NonversionedDbResourceOnly = TypeVar("NonversionedDbResourceOnly", bound=DynamoDbResource)
 
 _PlainBaseModel = TypeVar("_PlainBaseModel", bound=BaseModel)
 
@@ -40,13 +48,13 @@ def exhaust_pagination(query: Callable[[Optional[str]], PaginatedList]):
     yield result
 
 
-class InternalResourceBase(DynamodbResource):
+class InternalResourceBase(DynamoDbResource):
     @classmethod
     def get_unique_key_prefix(cls) -> str:
         return "_INTERNAL"
 
     @classmethod
-    def ensure_exists(cls, memory: "DynamoDBMemory") -> "InternalResourceBase":
+    def ensure_exists(cls, memory: "DynamoDbMemory") -> "InternalResourceBase":
         if not (existing := memory.get_existing(cls.pk, data_class=cls)):
             return memory.create_new(cls, {}, override_id=cls.pk)
         return existing
@@ -59,7 +67,7 @@ class MemoryStats(InternalResourceBase):
 
 
 @dataclass
-class DynamoDBMemory:
+class DynamoDbMemory:
     logger: Any
     table_name: str
     endpoint_url: Optional[str] = None
@@ -79,13 +87,13 @@ class DynamoDBMemory:
 
         The `version` parameter is ignored on non-versioned resources.
         """
-        if issubclass(data_class, DynamodbResource):
+        if issubclass(data_class, DynamoDbResource):
             if version:
                 self.logger.warning(
                     f"Version parameter ignored when fetching non-versioned resource; provided {version=}"
                 )
             key = data_class.dynamodb_lookup_keys_from_id(existing_id)
-        elif issubclass(data_class, DynamodbVersionedResource):
+        elif issubclass(data_class, DynamoDbVersionedResource):
             key = data_class.dynamodb_lookup_keys_from_id(existing_id, version=version)
         else:
             raise ValueError("Invalid data_class provided")
@@ -115,9 +123,9 @@ class DynamoDBMemory:
         data_class = existing_resource.__class__
         updated_resource = existing_resource.update_existing(update_obj)
 
-        if issubclass(data_class, DynamodbResource):
+        if issubclass(data_class, DynamoDbResource):
             return self._put_nonversioned_resource(updated_resource)
-        elif issubclass(data_class, DynamodbVersionedResource):
+        elif issubclass(data_class, DynamoDbVersionedResource):
             latest_resource = self.read_existing(
                 existing_id=existing_resource.resource_id,
                 data_class=data_class,
@@ -157,9 +165,9 @@ class DynamoDBMemory:
         override_id: Optional[str] = None,
     ) -> AnyDbResource:
         new_resource = data_class.create_new(data, override_id=override_id)
-        if issubclass(data_class, DynamodbResource):
+        if issubclass(data_class, DynamoDbResource):
             resource = self._put_nonversioned_resource(new_resource)
-        elif issubclass(data_class, DynamodbVersionedResource):
+        elif issubclass(data_class, DynamoDbVersionedResource):
             resource = self._create_new_versioned(new_resource)
         else:
             raise ValueError("Invalid data_class provided")
@@ -577,6 +585,9 @@ class DynamoDBMemory:
             )
 
         return response_data
+
+
+DynamoDBMemory = DynamoDbMemory
 
 
 def _now(tz: Any = False):
