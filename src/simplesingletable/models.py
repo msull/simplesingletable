@@ -98,12 +98,7 @@ class DynamoDbResource(BaseModel, ABC):
 
     @classmethod
     def get_unique_key_prefix(cls) -> str:
-        # use the capital letters of the class name to build the prefix by default; override this method
-        # to specify something different for a particular resource
-        caps = [letter for letter in cls.__name__ if letter.isupper()]
-        if not caps:
-            raise RuntimeError(f"No capital letters detected in class name {cls.__name__}!")
-        return "".join(caps)
+        return cls.__name__
 
     def to_dynamodb_item(self) -> dict:
         prefix = self.get_unique_key_prefix()
@@ -233,12 +228,7 @@ class DynamoDbVersionedResource(BaseModel, ABC):
 
     @classmethod
     def get_unique_key_prefix(cls) -> str:
-        # use the capital letters of the class name to build the prefix by default; override this method
-        # to specify something different for a particular resource
-        caps = [letter for letter in cls.__name__ if letter.isupper()]
-        if not caps:
-            raise RuntimeError(f"No capital letters detected in class name {cls.__name__}!")
-        return "".join(caps)
+        return cls.__name__
 
     def to_dynamodb_item(self, v0_object: bool = False) -> dict:
         prefix = self.get_unique_key_prefix()
