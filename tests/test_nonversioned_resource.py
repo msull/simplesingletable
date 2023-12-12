@@ -23,3 +23,7 @@ def test_dynamodb_memory__basic(dynamodb_memory: DynamoDBMemory):
 
     resource_ulid = resource.resource_id_as_ulid()
     assert id_before_create.timestamp() <= resource_ulid.timestamp()
+
+    assert dynamodb_memory.list_type_by_updated_at(MyTestResource) == [resource]
+    dynamodb_memory.delete_existing(resource)
+    assert dynamodb_memory.list_type_by_updated_at(MyTestResource) == []

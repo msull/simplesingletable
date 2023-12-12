@@ -176,6 +176,18 @@ class DynamoDbMemory:
             self.increment_counter(stats, "counts_by_type." + data_class.__name__)
         return resource
 
+    def delete_existing(self, existing_resource: NonversionedDbResourceOnly):
+        self.logger.info(
+            f"Deleting resource:{existing_resource.__class__.__name__} "
+            f"with resource_id='{existing_resource.resource_id}"
+        )
+        self.dynamodb_table.delete_item(
+            Key=existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
+        )
+        if self.track_stats:
+            stats = MemoryStats.ensure_exists(self)
+            self.increment_counter(stats, "counts_by_type." + existing_resource.__class__.__name__, -1)
+
     def get_stats(self) -> MemoryStats:
         return MemoryStats.ensure_exists(self)
 
