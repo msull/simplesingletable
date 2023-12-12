@@ -85,6 +85,9 @@ class DynamoDbResource(BaseModel, ABC):
     def db_get_gsi3pk_and_sk(self) -> tuple[str, str] | None:
         pass
 
+    def db_get_gsitypesk(self) -> str:
+        return self.updated_at.isoformat()
+
     def resource_id_as_ulid(self) -> ulid.ULID:
         return ulid.parse(self.resource_id)
 
@@ -114,7 +117,7 @@ class DynamoDbResource(BaseModel, ABC):
                 "pk": key,
                 "sk": key,
                 "gsitype": self.__class__.__name__,
-                "gsitypesk": self.updated_at.isoformat(),
+                "gsitypesk": self.db_get_gsitypesk(),
             }
         )
 
@@ -215,6 +218,9 @@ class DynamoDbVersionedResource(BaseModel, ABC):
     def db_get_filter_metadata(self) -> tuple[str, str] | None:
         pass
 
+    def db_get_gsitypesk(self) -> str:
+        return self.updated_at.isoformat()
+
     def resource_id_as_ulid(self) -> ulid.ULID:
         return ulid.parse(self.resource_id)
 
@@ -246,7 +252,7 @@ class DynamoDbVersionedResource(BaseModel, ABC):
         if v0_object:
             # all v0 objects get gsitype applied to enable "get all <type> sorted by last updated"
             dynamodb_data["gsitype"] = self.__class__.__name__
-            dynamodb_data["gsitypesk"] = self.updated_at.isoformat()
+            dynamodb_data["gsitypesk"] = self.db_get_gsitypesk()
 
             # check for the user-defineable key / filter fields
             if gsi1pk := self.db_get_gsi1pk():
