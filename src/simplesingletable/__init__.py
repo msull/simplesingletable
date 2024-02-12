@@ -31,7 +31,7 @@ class Constants:
 
 _, _ = DynamodbResource, DynamodbVersionedResource
 
-package_version = "2.3.0"
+package_version = "2.3.1"
 
 AnyDbResource = TypeVar("AnyDbResource", bound=Union[DynamoDbVersionedResource, DynamoDbResource])
 VersionedDbResourceOnly = TypeVar("VersionedDbResourceOnly", bound=DynamoDbVersionedResource)
