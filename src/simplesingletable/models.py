@@ -68,17 +68,8 @@ class ResourceConfig(TypedDict, total=False):
     """Should the resource content be compress (gzip)."""
 
 
-class BaseDynamoDbResource(BaseModel):
+class BaseDynamoDbResource(BaseModel, ABC):
     """Exists only to provide a common parent for the resource classes."""
-
-
-class DynamoDbResource(BaseDynamoDbResource, ABC):
-    resource_id: str
-    created_at: datetime
-    updated_at: datetime
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-    resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False)
 
     # override these in resource classes to enable secondary lookups on the latest version of the resource
     def db_get_gsi1pk(self) -> str | None:
@@ -90,23 +81,53 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
     def db_get_gsi3pk_and_sk(self) -> tuple[str, str] | None:
         pass
 
+    def db_get_filter_metadata(self) -> tuple[str, str] | None:
+        pass
+
     def db_get_gsitypesk(self) -> str:
         return self.updated_at.isoformat()
 
     def resource_id_as_ulid(self) -> ulid.ULID:
         return ulid.parse(self.resource_id)
 
-    def created_ago(self, minimum_unit="minutes", now: Optional[datetime] = None) -> str:
+    def created_ago(self, now: Optional[datetime] = None) -> str:
         now = now or _now(tz=self.created_at.tzinfo)
-        return precisedelta((now - self.created_at), minimum_unit=minimum_unit) + " ago"
+        return precisedelta((now - self.created_at), minimum_unit="minutes") + " ago"
 
-    def updated_ago(self, minimum_unit="minutes", now: Optional[datetime] = None) -> str:
+    def updated_ago(self, now: Optional[datetime] = None) -> str:
         now = now or _now(tz=self.created_at.tzinfo)
-        return precisedelta((now - self.updated_at), minimum_unit=minimum_unit) + " ago"
+        return precisedelta((now - self.updated_at), minimum_unit="minutes") + " ago"
+
+    def get_db_item_size_in_bytes(self) -> int:
+        """Return the size of the database item, in bytes."""
+        return sys.getsizeof(self.to_dynamodb_item())
+
+    def get_db_item_size(self) -> str:
+        return naturalsize(self.get_db_item_size_in_bytes())
 
     @classmethod
     def get_unique_key_prefix(cls) -> str:
         return cls.__name__
+
+    def compress_model_content(self) -> bytes:
+        """Helper that can be used in to_dynamodb_item."""
+        return gzip.compress(self.model_dump_json().encode())
+
+    @staticmethod
+    def decompress_model_content(content: bytes | Binary) -> dict:
+        if isinstance(content, Binary):
+            content = bytes(content)  # noqa
+        entry_data: str = gzip.decompress(content).decode()
+        return json.loads(entry_data)
+
+
+class DynamoDbResource(BaseDynamoDbResource, ABC):
+    resource_id: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False)
 
     def to_dynamodb_item(self) -> dict:
         prefix = self.get_unique_key_prefix()
@@ -138,13 +159,6 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
 
         return dynamodb_data
 
-    def get_db_item_size_in_bytes(self) -> int:
-        """Return the size of the database item, in bytes."""
-        return sys.getsizeof(json.dumps(self.to_dynamodb_item()))
-
-    def get_db_item_size(self) -> str:
-        return naturalsize(self.get_db_item_size_in_bytes())
-
     @classmethod
     def from_dynamodb_item(
         cls: Type["DynamoDbResource"],
@@ -165,17 +179,6 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
     def dynamodb_lookup_keys_from_id(cls, existing_id: str) -> dict:
         key = f"{cls.get_unique_key_prefix()}#{existing_id}"
         return {"pk": key, "sk": key}
-
-    def compress_model_content(self) -> bytes:
-        """Helper that can be used in to_dynamodb_item."""
-        return gzip.compress(self.json().encode())
-
-    @staticmethod
-    def decompress_model_content(content: bytes | Binary) -> dict:
-        if isinstance(content, Binary):
-            content = bytes(content)  # noqa
-        entry_data: str = gzip.decompress(content).decode()
-        return json.loads(entry_data)
 
     @classmethod
     def create_new(
@@ -216,37 +219,6 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     updated_at: datetime
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
-    # override these in resource classes to enable secondary lookups on the latest version of the resource
-    def db_get_gsi1pk(self) -> str | None:
-        pass
-
-    def db_get_gsi2pk(self) -> str | None:
-        pass
-
-    def db_get_gsi3pk_and_sk(self) -> tuple[str, str] | None:
-        pass
-
-    def db_get_filter_metadata(self) -> tuple[str, str] | None:
-        pass
-
-    def db_get_gsitypesk(self) -> str:
-        return self.updated_at.isoformat()
-
-    def resource_id_as_ulid(self) -> ulid.ULID:
-        return ulid.parse(self.resource_id)
-
-    def created_ago(self, now: Optional[datetime] = None) -> str:
-        now = now or _now(tz=self.created_at.tzinfo)
-        return precisedelta((now - self.created_at), minimum_unit="minutes") + " ago"
-
-    def updated_ago(self, now: Optional[datetime] = None) -> str:
-        now = now or _now(tz=self.created_at.tzinfo)
-        return precisedelta((now - self.updated_at), minimum_unit="minutes") + " ago"
-
-    @classmethod
-    def get_unique_key_prefix(cls) -> str:
-        return cls.__name__
 
     def to_dynamodb_item(self, v0_object: bool = False) -> dict:
         prefix = self.get_unique_key_prefix()
@@ -295,17 +267,6 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
             "pk": f"{cls.get_unique_key_prefix()}#{existing_id}",
             "sk": f"v{version}",
         }
-
-    def compress_model_content(self) -> bytes:
-        """Helper that can be used in to_dynamodb_item."""
-        return gzip.compress(self.model_dump_json().encode())
-
-    @staticmethod
-    def decompress_model_content(content: bytes | Binary) -> dict:
-        if isinstance(content, Binary):
-            content = bytes(content)  # noqa
-        entry_data: str = gzip.decompress(content).decode()
-        return json.loads(entry_data)
 
     @classmethod
     def create_new(

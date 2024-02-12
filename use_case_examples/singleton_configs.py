@@ -65,3 +65,6 @@ if "user1" not in allowed_users:
     logger.info(config)
 else:
     logger.debug("User user1 already in allowed_users set")
+
+
+logger.info(f"Config Object Database Size: {config.get_db_item_size()} ")
