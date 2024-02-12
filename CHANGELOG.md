@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] 2024-02-12
+
+### Added
+
+* Added a new "extras" sub-package; added new Singleton resource models for storing / retrieving things that should only
+  be in the database once, like application configuration.
+* Added a "use_case_examples" top-level folder with examples of various features and access patterns; currently includes
+  a single script for the Singleton objects.
+
 ## [2.2.0] 2023-12-12
 
 ### Added

@@ -1,4 +1,5 @@
 from pathlib import Path
+from time import sleep
 
 from invoke import Context, task
 
@@ -83,6 +84,7 @@ def launch_dynamodb_local(c: Context, create_tables=False, clear_data=False):
             "$(pwd)/local/dynamodb:/data/ amazon/dynamodb-local -jar DynamoDBLocal.jar -sharedDb -dbPath /data"
         )
         if create_tables:
+            sleep(1)
             for file in Paths.example_tables.iterdir():
                 c.run(
                     f"AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=unused AWS_SECRET_ACCESS_KEY=unused "

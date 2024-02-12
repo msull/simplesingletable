@@ -1,12 +1,13 @@
 import gzip
 import json
+import sys
 from abc import ABC
 from datetime import datetime, timezone
 from typing import Any, ClassVar, Optional, Type, TypedDict, TypeVar
 
 import ulid
 from boto3.dynamodb.types import Binary
-from humanize import precisedelta
+from humanize import naturalsize, precisedelta
 from pydantic import BaseModel, ConfigDict
 
 from .utils import generate_date_sortable_id
@@ -67,7 +68,11 @@ class ResourceConfig(TypedDict, total=False):
     """Should the resource content be compress (gzip)."""
 
 
-class DynamoDbResource(BaseModel, ABC):
+class BaseDynamoDbResource(BaseModel):
+    """Exists only to provide a common parent for the resource classes."""
+
+
+class DynamoDbResource(BaseDynamoDbResource, ABC):
     resource_id: str
     created_at: datetime
     updated_at: datetime
@@ -133,6 +138,13 @@ class DynamoDbResource(BaseModel, ABC):
 
         return dynamodb_data
 
+    def get_db_item_size_in_bytes(self) -> int:
+        """Return the size of the database item, in bytes."""
+        return sys.getsizeof(json.dumps(self.to_dynamodb_item()))
+
+    def get_db_item_size(self) -> str:
+        return naturalsize(self.get_db_item_size_in_bytes())
+
     @classmethod
     def from_dynamodb_item(
         cls: Type["DynamoDbResource"],
@@ -197,7 +209,7 @@ class DynamoDbResource(BaseModel, ABC):
 DynamodbResource = DynamoDbResource
 
 
-class DynamoDbVersionedResource(BaseModel, ABC):
+class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     resource_id: str
     version: int
     created_at: datetime

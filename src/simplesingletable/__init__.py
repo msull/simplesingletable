@@ -278,12 +278,7 @@ class DynamoDbMemory:
         )
 
     def _increment_mapped_counter(
-        self,
-        existing_resource: NonversionedDbResourceOnly,
-        field_name: str,
-        field: FieldInfo,
-        counter_name: str,
-        incr_by: int = 1,
+        self, existing_resource, field_name: str, field: FieldInfo, counter_name: str, incr_by: int = 1
     ):
         now = _now(tz=existing_resource.created_at.tzinfo)
         key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
@@ -311,9 +306,7 @@ class DynamoDbMemory:
         )
         return int(response["Attributes"][field_name][counter_name])
 
-    def _increment_nonmapped_counter(
-        self, existing_resource: NonversionedDbResourceOnly, field_name: str, field: FieldInfo, incr_by: int = 1
-    ):
+    def _increment_nonmapped_counter(self, existing_resource, field_name: str, field: FieldInfo, incr_by: int = 1):
         now = _now(tz=existing_resource.created_at.tzinfo)
         key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
 
@@ -333,6 +326,8 @@ class DynamoDbMemory:
     def increment_counter(
         self, existing_resource: NonversionedDbResourceOnly, field_name: str, incr_by: int = 1
     ) -> int:
+        if not issubclass(existing_resource.__class__, DynamoDbResource):
+            raise TypeError("increment_counter can only be utilized with non-versioned resources")
         if "." in field_name:
             first_part, remainder = field_name.split(".", maxsplit=1)
             field = existing_resource.model_fields.get(first_part)
@@ -346,6 +341,8 @@ class DynamoDbMemory:
             return self._increment_nonmapped_counter(existing_resource, field_name, field, incr_by)
 
     def add_to_set(self, existing_resource: NonversionedDbResourceOnly, field_name: str, val: str):
+        if not issubclass(existing_resource.__class__, DynamoDbResource):
+            raise TypeError("add_to_set can only be utilized with non-versioned resources")
         key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
         field = existing_resource.model_fields.get(field_name)
         if not field:
@@ -361,6 +358,8 @@ class DynamoDbMemory:
         )
 
     def remove_from_set(self, existing_resource: NonversionedDbResourceOnly, field_name: str, val: str):
+        if not issubclass(existing_resource.__class__, DynamoDbResource):
+            raise TypeError("remove_from_set can only be utilized with non-versioned resources")
         key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
         field = existing_resource.model_fields.get(field_name)
         if not field:
