@@ -100,7 +100,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
 
     def get_db_item_size_in_bytes(self) -> int:
         """Return the size of the database item, in bytes."""
-        return sys.getsizeof(self.to_dynamodb_item())
+        return sys.getsizeof(json.dumps(self.to_dynamodb_item(), default=str))
 
     def get_db_item_size(self) -> str:
         return naturalsize(self.get_db_item_size_in_bytes())
