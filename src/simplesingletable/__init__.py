@@ -23,7 +23,7 @@ class Constants:
     QUERY_DEFAULT_MAX_API_CALLS = 10
 
 
-package_version = "2.3.2"
+package_version = "3.0.0"
 
 AnyDbResource = TypeVar("AnyDbResource", bound=Union[DynamoDbVersionedResource, DynamoDbResource])
 VersionedDbResourceOnly = TypeVar("VersionedDbResourceOnly", bound=DynamoDbVersionedResource)
