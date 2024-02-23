@@ -2,9 +2,9 @@ from pathlib import Path
 from typing import Optional
 
 import streamlit as st
+from logzero import logger
 from pydantic import Field
 from streamlit_extras.echo_expander import echo_expander
-from logzero import logger
 
 from simplesingletable.utils import truncate_dynamo_table
 
@@ -18,13 +18,9 @@ basic_tab, advanced_tab, admin_tab = st.tabs(("Basic usage", "Advanced Usage", "
 with basic_tab:
     with st.expander('Start with imports and setting up the basic "memory" client'):
         with echo_expander(expander=False, label="Basic Setup"):
-            from simplesingletable import (
-                DynamoDBMemory,
-                DynamodbResource,
-                DynamodbVersionedResource,
-            )
+            from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
 
-            memory = DynamoDBMemory(
+            memory = DynamoDbMemory(
                 logger=logger,
                 table_name="standardexample",
                 endpoint_url="http://localhost:8000",
@@ -57,8 +53,8 @@ with basic_tab:
         st.write(
             """
         Now define some resource classes for things you want to store in the database.
-        Resource classes are Pydantic models that inherit from either `DynamodbResource` or
-        `DynamodbVersionedResource`.
+        Resource classes are Pydantic models that inherit from either `DynamoDbResource` or
+        `DynamoDbVersionedResource`.
         The difference between these, as the name implies, is that one is versioned. 
         If the resource is "versioned" every time it is updated the full object is
         stored in the database again, allowing the full history of the object to be reviewed.
@@ -69,18 +65,18 @@ with basic_tab:
 
         with st.echo():
 
-            class User(DynamodbResource):
+            class User(DynamoDbResource):
                 name: str
                 tags: Optional[set[str]] = None
                 num_followers: int = 0
                 other_set: set[str] = Field(default_factory=set)
                 what_about: str = "this"
 
-            class JournalEntry(DynamodbResource):
+            class JournalEntry(DynamoDbResource):
                 content: str
                 user_id: str
 
-            class SimpleTask(DynamodbVersionedResource):
+            class SimpleTask(DynamoDbVersionedResource):
                 task: str
                 descr: Optional[str]
                 completed: bool
@@ -137,7 +133,6 @@ with basic_tab:
         with st.echo():
             st.write(f"Object was created {created_user.created_ago()}.")
             st.write(f"Object was updated {created_user.updated_ago()}.")
-            st.write(f"Object was updated {created_user.updated_ago('seconds')}.")
 
         st.write("Non-versioned resources support atomic counters with an easy increment method:")
         increase_by = st.slider("Change Followers By", min_value=-10, max_value=10, value=1)

@@ -2,18 +2,18 @@ from datetime import datetime, timedelta, timezone
 
 import ulid
 from boto3.dynamodb.conditions import Key
-from simplesingletable import DynamoDBMemory, DynamodbVersionedResource, DynamodbResource
+from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource, DynamoDbResource
 from simplesingletable.utils import generate_date_sortable_id
 
 
-class MyNonversionedTestResource(DynamodbResource):
+class MyNonversionedTestResource(DynamoDbResource):
     name: str
 
     def db_get_gsi1pk(self) -> str | None:
         return f"parent_id#{self.parent_id}"
 
 
-class MyVersionedTestResource(DynamodbVersionedResource):
+class MyVersionedTestResource(DynamoDbVersionedResource):
     some_field: str
     bool_field: bool
     list_of_things: list[str | int | bool | float]
@@ -34,7 +34,8 @@ def test_date_id(mocker):
 
     # You can also modify the mocked time as needed in subsequent calls.
 
-def test_dynamodb_memory__basic(dynamodb_memory: DynamoDBMemory):
+
+def test_dynamodb_memory__basic(dynamodb_memory: DynamoDbMemory):
     id_before_create = ulid.parse(generate_date_sortable_id())
     resource = dynamodb_memory.create_new(
         MyVersionedTestResource,
@@ -52,7 +53,7 @@ def test_dynamodb_memory__basic(dynamodb_memory: DynamoDBMemory):
     assert id_before_create.timestamp() <= resource_ulid.timestamp()
 
 
-def test_dynamodb_memory__queries(dynamodb_memory: DynamoDBMemory, mocker):
+def test_dynamodb_memory__queries(dynamodb_memory: DynamoDbMemory, mocker):
     """Somewhat comprehensive test suite that covers most of the basic
     functionality of create, retrieve, update, sorts, versioning, etc."""
     # use mocker to ensure the created objects appear at least 1 second apart, for sort testing purposes
@@ -150,12 +151,20 @@ def test_dynamodb_memory__queries(dynamodb_memory: DynamoDBMemory, mocker):
     assert by_type_asc == [new_resource_1, new_resource_3, updated_resource2]
 
     # read with version identifier
-    assert dynamodb_memory.read_existing(new_resource_2.resource_id, MyVersionedTestResource, version=0) == updated_resource2
-    assert dynamodb_memory.read_existing(new_resource_2.resource_id, MyVersionedTestResource, version=2) == updated_resource2
-    assert dynamodb_memory.read_existing(new_resource_2.resource_id, MyVersionedTestResource, version=1) == new_resource_2
+    assert (
+        dynamodb_memory.read_existing(new_resource_2.resource_id, MyVersionedTestResource, version=0)
+        == updated_resource2
+    )
+    assert (
+        dynamodb_memory.read_existing(new_resource_2.resource_id, MyVersionedTestResource, version=2)
+        == updated_resource2
+    )
+    assert (
+        dynamodb_memory.read_existing(new_resource_2.resource_id, MyVersionedTestResource, version=1) == new_resource_2
+    )
 
 
-def test_max_api_calls(dynamodb_memory: DynamoDBMemory, mocker):
+def test_max_api_calls(dynamodb_memory: DynamoDbMemory, mocker):
     """Ensure that max api calls is respected and calculated correctly,
     particularly when using a server side filter function.
 

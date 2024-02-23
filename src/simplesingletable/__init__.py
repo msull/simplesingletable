@@ -10,13 +10,7 @@ from boto3.dynamodb.conditions import ConditionBase, Key
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
-from .models import (
-    DynamoDbResource,
-    DynamodbResource,
-    DynamoDbVersionedResource,
-    DynamodbVersionedResource,
-    PaginatedList,
-)
+from .models import DynamoDbResource, DynamoDbVersionedResource, PaginatedList
 from .utils import decode_pagination_key, encode_pagination_key, marshall
 
 if TYPE_CHECKING:
@@ -28,8 +22,6 @@ class Constants:
     SYSTEM_DEFAULT_LIMIT = 250
     QUERY_DEFAULT_MAX_API_CALLS = 10
 
-
-_, _ = DynamodbResource, DynamodbVersionedResource
 
 package_version = "2.3.2"
 
@@ -596,9 +588,6 @@ class DynamoDbMemory:
             )
 
         return response_data
-
-
-DynamoDBMemory = DynamoDbMemory
 
 
 def _now(tz: Any = False):

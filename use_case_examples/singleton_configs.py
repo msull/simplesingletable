@@ -2,10 +2,10 @@ from typing import Optional
 
 from logzero import logger
 
-from simplesingletable import DynamoDBMemory
+from simplesingletable import DynamoDbMemory
 from simplesingletable.extras.singleton import SingletonResource, SingletonVersionedResource
 
-memory = DynamoDBMemory(
+memory = DynamoDbMemory(
     logger=logger,
     table_name="standardexample",
     endpoint_url="http://localhost:8000",
@@ -35,7 +35,7 @@ if "user1" not in (config.allowed_users or []):
     memory.add_to_set(config, "allowed_users", "user1")
     # re-reread config to get the updated listing; add_to_set doesn't automatically provide this
 
-    # ensure exists uses a consistent read by default
+    # ensure exists uses a consistent read by default, so reading after write will return the new info
     config = MyAppConfig.ensure_exists(memory)
     logger.info(config)
 else:

@@ -7,7 +7,7 @@ from logzero import logger
 import boto3
 import pytest
 from simplesingletable.utils import truncate_dynamo_table
-from simplesingletable import DynamoDBMemory
+from simplesingletable import DynamoDbMemory
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.service_resource import Table
@@ -132,9 +132,9 @@ def reset_local_dynamodb_test_table(table: "Table"):
 
 
 @pytest.fixture()
-def dynamodb_memory(local_dynamodb_test_table, dynamodb_via_docker) -> DynamoDBMemory:
+def dynamodb_memory(local_dynamodb_test_table, dynamodb_via_docker) -> DynamoDbMemory:
     reset_local_dynamodb_test_table(local_dynamodb_test_table)
-    yield DynamoDBMemory(
+    yield DynamoDbMemory(
         logger=logger,
         table_name=local_dynamodb_test_table.table_name,
         endpoint_url=dynamodb_via_docker,
