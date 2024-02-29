@@ -1,13 +1,15 @@
 """Basic implementation of resources and a manager class for defining and collecting various types data for Forms.
 
 Form data is similar to a spreadsheet in that it allows for tracking a grid of data (columns / rows).
-However, each entry into the form has its own metadata and can be of a complex type.
+However, each entry into the form has its own metadata, is independently versioned, and can be of a complex type.
+
+Each form supports multiple "groups" (similar to a spreadsheet "tab") -- all "groups" have the same columns.
 
 """
 
 from dataclasses import dataclass
 from logging import Logger
-from typing import Callable, Literal, Optional
+from typing import Callable, Literal, Mapping, Optional
 
 from boto3.dynamodb.conditions import Key
 from pydantic import BaseModel, Field
@@ -17,10 +19,14 @@ from simplesingletable.extras.singleton import SingletonResource
 
 
 class FormConfig(SingletonResource):
+    """Global form configration singleton."""
+
     categories: set[str] = Field(default_factory=set)
 
 
 class FormDataEntryField(BaseModel):
+    """Definition of a field within a form schema."""
+
     name: str
     field_type: Literal["int", "str", "float", "bool"]
     allowed_values: Optional[list]
@@ -34,6 +40,8 @@ class FormDataType(DynamoDbVersionedResource):
 
 
 class BaseFormData(BaseModel):
+    """Data being stored about a Form"""
+
     name: str
     category: str
     form_data_type_id: str
@@ -41,9 +49,7 @@ class BaseFormData(BaseModel):
     form_data_type_schema: list[FormDataEntryField]
     columns: list[str] = Field(min_items=1)
     groups: list[str] = Field(min_items=1)
-
-    # row_identifier_key: str
-    # group_identifier_key: str
+    user_metadata: dict = Field(default_factory=dict)
 
 
 class NewFormRequest(BaseFormData):
@@ -51,13 +57,21 @@ class NewFormRequest(BaseFormData):
 
 
 class UpdateFormRequest(BaseModel):
+    """Things that can be updated on a form directly."""
+
     name: Optional[str] = None
     category: Optional[str] = None
-    # row_identifier_key: Optional[str] = None
-    # group_identifier_key: Optional[str] = None
+    user_metadata: Optional[dict] = None
 
 
 class Form(BaseFormData, DynamoDbVersionedResource):
+    """DB Representation of a Form.
+
+    Includes additional handling to allow for columns to be displayed in a different order than they are created;
+    however because of the way the form data is stored in DynamoDB we need to leave the columns in their original
+    order in the main `columns` attribute.
+    """
+
     column_display_order: Optional[list[str]] = None
 
     def get_ordered_columns(self) -> list[str]:
@@ -70,6 +84,11 @@ class Form(BaseFormData, DynamoDbVersionedResource):
         This GSI automatically sorts by the pk / resource_id attribute, which sorts lexicographically by created_at.
         """
         return self.get_unique_key_prefix() + f"#{self.category}"
+
+    @property
+    def summary_column(self) -> str:
+        """Returns the name of the first field in the schema, which is the summary field."""
+        return self.form_data_type_schema[0].name
 
     @classmethod
     def list_by_category(
@@ -95,13 +114,17 @@ class Form(BaseFormData, DynamoDbVersionedResource):
 
 
 class StoredFormData(BaseModel):
-    col_idx: int
+    """Data that is being stored for each "cell" of the form."""
+
+    col_idx: int  # the numerical index of the column in the original column order of the Form
     row_identifier: str
     group_identifier: str
-    data: dict
+    data: dict  # this data is in the schema of the Form `form_data_type_schema`
 
 
 class FormEntry(StoredFormData, DynamoDbVersionedResource):
+    """The DB representation of the StoredFormData."""
+
     form_id: str
 
     @staticmethod
@@ -142,7 +165,6 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
             pk_value = cls.get_unique_key_prefix() + f"#{existing_form.resource_id}#{group}"
             if column:
                 pk_value += f"#{column}"
-            print("search pk ", pk_value)
             condition &= Key("pk").begins_with(pk_value)
         return memory.paginated_dynamodb_query(
             key_condition=condition,
@@ -156,8 +178,198 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
         )
 
 
+class FormDataRow(Mapping):
+    def __init__(
+        self,
+        form: Form,
+        form_manager: "FormDataManager",
+        group: str,
+        row_identifier: str,
+        column_data: Mapping[int, FormEntry] | None,
+    ):
+        self.form_manager = form_manager
+        self.form = form
+        self.group = group
+        self.row_identifier = row_identifier
+        self.column_data = column_data or {}
+
+    def __getitem__(self, key: str | int) -> FormEntry | None:
+        """Key can be provided as either the name of a column or as the numerical
+        0-based index of the column from the current display order."""
+        ordered_columns = self.form.get_ordered_columns()
+        match key:
+            case str():
+                if key not in ordered_columns:
+                    raise KeyError(key)
+                data_index = self.form.columns.index(key)
+            case int():
+                if key < 0 or key > (len(ordered_columns) - 1):
+                    raise KeyError(key)
+                # convert from index into ordered columns to index on data columns
+                data_index = self.form.columns.index(ordered_columns[key])
+            case _:
+                raise ValueError()
+        return self.column_data.get(data_index)
+
+    def __iter__(self):
+        return iter(self.form.get_ordered_columns())
+
+    def __len__(self):
+        return len(self.form.get_ordered_columns())
+
+    def __repr__(self):
+        form = self.form.name
+        group = self.group
+        row_id = self.row_identifier
+        return f'{self.__class__.__name__}({form=}, {group=}, {row_id=})")'
+
+
+class FormDataMapping(Mapping):
+    """Access the data in a Form using a Mapping interface.
+
+    Works with a single Form group at a time.
+    """
+
+    def __init__(
+        self,
+        form: Form,
+        form_manager: "FormDataManager",
+        active_group: str = "",
+        max_results=10000,
+        preload=False,
+        logger=None,
+    ):
+        self.form_manager = form_manager
+        self.form = form
+        self.max_results = max_results
+        self._data = None
+
+        # use the specified group, or the first one
+        self.active_group = ""
+        self.switch_active_group(active_group or self.form.groups[0])
+
+        if logger is None:
+            from logzero import logger
+
+        self.logger = logger
+
+        if preload:
+            self.load_data()
+
+    def load_data(self, reload=False):
+        """Load or reload the data for the active_group."""
+        if self._data is not None and not reload:
+            return
+        self.logger.debug(f"Loading data for {self.active_group}")
+        form_entries = FormEntry.retrieve_all_form_entries_for_form(
+            memory=self.form_manager.memory,
+            existing_form=self.form_manager.get_form(self.form.resource_id),
+            group=self.active_group,
+            results_limit=self.max_results,
+        )
+        self.logger.debug("Raw Entries received from DB, converting")
+        values_by_row_id = {}
+        for entry in form_entries:
+            rid = entry.row_identifier
+            if rid not in values_by_row_id:
+                values_by_row_id[rid] = {}
+            values_by_row_id[rid][entry.col_idx] = entry
+
+        # values_by_row_id = {
+        #     x.row_identifier: {y.col_idx: y for y in form_entries if y.row_identifier == x.row_identifier}
+        #     for x in form_entries
+        # }
+        self.logger.debug("Entries converted to nested dicts")
+
+        self._data = values_by_row_id
+
+    def switch_active_group(self, group: str):
+        assert group in self.form.groups
+        self.active_group = group
+        self._data = None
+
+    def to_list(
+        self,
+        summary_data=True,
+        extra_data_by_rowid: Optional[dict[str, dict | None] | Callable[[str], dict | None]] = None,
+        row_identifier_label="row_identifier",
+        group_identifier_label="group_identifier",
+    ) -> list[dict]:
+        # default to an empty dict if we have nothing
+        if row_identifier_label in self.form.columns:
+            raise ValueError("Cannot use a row_identifier_label that matches a column!")
+        if group_identifier_label in self.form.columns:
+            raise ValueError("Cannot use a group_identifier_label that matches a column!")
+        extra_data_by_rowid = extra_data_by_rowid or {}
+
+        # extra_data can be a dict or a callable -- both should take the row id, and return a dict or None
+        # if we have a dictionary, then use dict.get; otherwise we have a Callable, so use it directly
+
+        _get_extra = extra_data_by_rowid.get if isinstance(extra_data_by_rowid, dict) else extra_data_by_rowid
+
+        summary_column = self.form.summary_column
+
+        flat_data = []
+        for row_id in sorted(self):
+            row_data = {row_identifier_label: row_id, group_identifier_label: self.active_group}
+
+            # include additional columns the user provided, if any
+            # this is loaded first, so if there are any duplications
+            # with column names, the extra data will be overwritten
+            if extra_data := _get_extra(row_id):
+                if row_identifier_label in extra_data:
+                    raise ValueError("Cannot include key matching the `row_identifier_label` in extra data")
+                if group_identifier_label in extra_data:
+                    raise ValueError("Cannot include key matching the `group_identifier_label` in extra data")
+                row_data.update(extra_data)
+
+            for column in self[row_id]:
+                if col_data := self[row_id][column]:
+                    if summary_data:
+                        row_data[column] = col_data.data.get(summary_column)
+                    else:
+                        row_data[column] = col_data.data
+                else:
+                    row_data[column] = None
+
+            flat_data.append(row_data)
+        return flat_data
+
+    def __getitem__(self, key) -> FormDataRow:
+        # Retrieve an row given its identifier
+        self.load_data()
+        item_data: Mapping[int, FormEntry] = self._data.get(key)
+        return FormDataRow(
+            form=self.form,
+            form_manager=self.form_manager,
+            group=self.active_group,
+            row_identifier=key,
+            column_data=item_data,
+        )
+
+    def __iter__(self):
+        # Return an iterator over the keys of the mapping
+        self.load_data()
+        return iter(self._data)
+
+    def __len__(self):
+        # Return the number of items in the mapping
+        self.load_data()
+        return len(self._data)
+
+    # Optional: Implement this method to provide a meaningful representation
+    def __repr__(self):
+        form = self.form.name
+        group = self.active_group
+        return f'{self.__class__.__name__}({form=}, {group=})")'
+
+
 @dataclass
 class FormDataManager:
+    """This class handles all the database interactions.
+
+    This is the class one generally instantiates and works with to access form data."""
+
     memory: DynamoDbMemory
 
     @property
@@ -238,6 +450,9 @@ class FormDataManager:
     def update_form(self, existing_form: Form, update: UpdateFormRequest) -> Form:
         return self.memory.update_existing(existing_form, update)
 
+    def get_mapping(self, existing_form: Form):
+        return FormDataMapping(form=existing_form, form_manager=self, preload=False)
+
     def store_form_data(
         self,
         existing_form: Form,
@@ -254,6 +469,10 @@ class FormDataManager:
         for idx, item in enumerate(data):
             if isinstance(item, StoredFormData):
                 data[idx] = (None, item)
+
+        num = len(data)
+        s = "" if num == 1 else "s"
+        self.logger.info(f"Storing {num} cell{s} on FORM:{existing_form.resource_id}")
 
         new_entries = [form_data for entry, form_data in data if not entry]
         existing_entries = [(entry, form_data) for entry, form_data in data if entry]
@@ -277,6 +496,11 @@ class FormDataManager:
         if not isinstance(data, list):
             return_list = False
             data = [data]
+
+        num = len(data)
+        s = "" if num == 1 else "s"
+        self.logger.debug(f"Creating {num} new cell{s} on FORM:{existing_form.resource_id}")
+
         new_entries = []
 
         for entry in data:
@@ -296,4 +520,11 @@ class FormDataManager:
     def _update_existing_form_data(
         self, existing_form: Form, updates: list[tuple[FormEntry, StoredFormData]]
     ) -> list[FormEntry]:
-        return []
+        num = len(updates)
+        s = "" if num == 1 else "s"
+        self.logger.debug(f"Updating {num} existing cell{s} on FORM:{existing_form.resource_id}")
+        updated = []
+        for existing_entry, update in updates:
+            update_data = update.model_dump()
+            updated.append(self.memory.update_existing(existing_entry, update_data))
+        return updated

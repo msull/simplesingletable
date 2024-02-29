@@ -2,7 +2,6 @@ import random
 from typing import Any, Callable, Optional, TypeVar
 from uuid import uuid4
 
-import pandas as pd
 import streamlit as st
 from logzero import logger
 from pydantic import BaseModel, TypeAdapter
@@ -13,7 +12,6 @@ from simplesingletable.extras.form_data import (
     FormDataEntryField,
     FormDataManager,
     FormDataType,
-    FormEntry,
     NewFormRequest,
     StoredFormData,
 )
@@ -63,60 +61,38 @@ def render_single_form(fdm: FormDataManager, form_id):
 
     if st.toggle("Full object"):
         st.code(dbform.model_dump_json(indent=2))
-    filter_group = st.radio("Group", dbform.groups + ["all"], horizontal=True)
-    if filter_group == "all":
-        filter_group = None
+    filter_group = st.radio("Group", dbform.groups, horizontal=True)
+    summary_data = st.toggle("Summarize Data Cells", True)
 
-    # todo: extract this data manipulation into FDM class
-    all_entries = FormEntry.retrieve_all_form_entries_for_form(
-        fdm.memory, dbform, group=filter_group, results_limit=50000, max_api_calls=20
+    form_mapper = fdm.get_mapping(dbform)
+    form_mapper.switch_active_group(filter_group)
+    c1, c2 = st.columns((2, 1))
+    with c1:
+        st.header("Group " + filter_group)
+    with c2:
+        st.metric("Num Rows", len(form_mapper))
+    logger.info("Loading Data")
+    form_mapper.load_data()
+    logger.info("Flattening Data")
+
+    def _extra_data(row_id: str) -> dict | None:
+        data = {
+            "First Name": uuid4().hex,
+            "Last Name": uuid4().hex,
+        }
+        if row_id == "00e72419ecc74719b1fe71a9f779f248":
+            data["Name"] = "Jimbo"
+        return data
+
+    data = form_mapper.to_list(
+        summary_data,
+        extra_data_by_rowid=_extra_data,
+        row_identifier_label=st.text_input("Row ID Label", "Row"),
+        group_identifier_label=st.text_input("Group ID Label", "Group"),
     )
-    # build the final dict, which is a dict of dicts :
-    # {group_identifier: {row_identifier: {col1: val1, col2:val2}}}
-    base_cols_dict = {x: None for x in dbform.get_ordered_columns()}
-    if filter_group:
-        all_form_data = {filter_group: {}}
-    else:
-        all_form_data = {x: {} for x in dbform.groups}
-    for form_data_entry in all_entries:
-        group = form_data_entry.group_identifier
-        row = form_data_entry.row_identifier
-        column = dbform.columns[form_data_entry.col_idx]
-        value = form_data_entry.data
-        if row not in all_form_data[group]:
-            all_form_data[group][row] = base_cols_dict.copy()
-        all_form_data[group][row][column] = value
-
-    # df = pd.DataFrame(
-    #     [x.model_dump(mode="json", include={"col_idx", "group_identifier", "data"}) for x in all_entries],
-    #     index=[x.row_identifier for x in all_entries],
-    # )
-
-    schema_field = dbform.form_data_type_schema[0]
-
-    for group, group_data in all_form_data.items():
-        c1, c2 = st.columns((2, 1))
-        with c1:
-            st.header("Group " + group)
-        with c2:
-            st.metric("Num entries", len(group_data))
-        index = []
-        col_data = {x: [] for x in dbform.get_ordered_columns()}
-        for date, entry in sorted(group_data.items()):
-            index.append(date)
-            entry: FormEntry
-            for col_name in dbform.get_ordered_columns():
-                if col_value := entry.get(col_name):
-                    col_data[col_name].append(col_value.get(schema_field.name))
-                else:
-                    col_data[col_name].append(None)
-
-        df = pd.DataFrame(col_data, index=index)
-        # df = pd.DataFrame(group_data).transpose()
-
-        st.dataframe(df)
-    # st.write(df.loc[df.index == 'test1234'])
-    # st.table([x.model_dump(mode="json") for x in all_entries])
+    logger.info("Displaying Data")
+    st.dataframe(data)
+    logger.info("Done")
 
     with st.form("Add New Data"):
         group = st.selectbox("Group", dbform.groups)
@@ -131,7 +107,10 @@ def render_single_form(fdm: FormDataManager, form_id):
                 case "int":
                     field_val = int(st.number_input(field.name, step=1))
                 case "str":
-                    field_val = st.text_input(field.name)
+                    if field.allowed_values:
+                        field_val = st.selectbox(field.name, field.allowed_values)
+                    else:
+                        field_val = st.text_input(field.name)
                 case "float":
                     field_val = float(st.number_input(field.name, step=1.0))
                 case _:
