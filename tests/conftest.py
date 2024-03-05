@@ -6,7 +6,7 @@ import requests
 from logzero import logger
 import boto3
 import pytest
-from simplesingletable.utils import truncate_dynamo_table
+from simplesingletable.utils import truncate_dynamo_table, create_standard_dynamodb_table
 from simplesingletable import DynamoDbMemory
 
 if TYPE_CHECKING:
@@ -60,63 +60,9 @@ def local_dynamodb_test_table(dynamodb_via_docker) -> "Table":
         region_name=region_name,
     )
 
-    create_table_kwargs = {
-        "TableName": table_name,
-        "KeySchema": [
-            {"AttributeName": "pk", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
-        ],
-        "AttributeDefinitions": [
-            {"AttributeName": "pk", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
-            {"AttributeName": "gsitype", "AttributeType": "S"},
-            {"AttributeName": "gsitypesk", "AttributeType": "S"},
-            {"AttributeName": "gsi1pk", "AttributeType": "S"},
-            {"AttributeName": "gsi2pk", "AttributeType": "S"},
-            {"AttributeName": "gsi3pk", "AttributeType": "S"},
-            {"AttributeName": "gsi3sk", "AttributeType": "S"},
-        ],
-        "GlobalSecondaryIndexes": [
-            {
-                "IndexName": "gsitype",
-                "KeySchema": [
-                    {"AttributeName": "gsitype", "KeyType": "HASH"},
-                    {"AttributeName": "gsitypesk", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
-            },
-            {
-                "IndexName": "gsi1",
-                "KeySchema": [
-                    {"AttributeName": "gsi1pk", "KeyType": "HASH"},
-                    {"AttributeName": "pk", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
-            },
-            {
-                "IndexName": "gsi2",
-                "KeySchema": [
-                    {"AttributeName": "gsi2pk", "KeyType": "HASH"},
-                    {"AttributeName": "pk", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
-            },
-            {
-                "IndexName": "gsi3",
-                "KeySchema": [
-                    {"AttributeName": "gsi3pk", "KeyType": "HASH"},
-                    {"AttributeName": "gsi3sk", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
-            },
-        ],
-        "BillingMode": "PAY_PER_REQUEST",
-    }
     try:
-        resp = client.create_table(**create_table_kwargs)
-        dynamodb_table_arn = resp["TableDescription"]["TableArn"]
-        waiter = client.get_waiter("table_exists")
-        waiter.wait(TableName=table_name)
+        table = create_standard_dynamodb_table(table_name=table_name, dynamodb_resource=resource)
+        dynamodb_table_arn = table.table_arn
         logger.info(f"Dynamo Table Created {table_name=} {dynamodb_table_arn=}")
         table_created = True
         yield resource.Table(table_name)

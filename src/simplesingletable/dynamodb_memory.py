@@ -588,7 +588,6 @@ class DynamoDbMemory:
         return response_data
 
 
-
 def _now(tz: Any = False):
     # this function exists only to make it easy to mock the utcnow call in date_id when creating resources in the tests
 

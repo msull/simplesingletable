@@ -7,7 +7,7 @@ import ulid
 from boto3.dynamodb.types import TypeSerializer
 
 if TYPE_CHECKING:
-    from mypy_boto3_dynamodb.service_resource import Table, DynamoDBServiceResource
+    from mypy_boto3_dynamodb.service_resource import DynamoDBServiceResource, Table
 
 
 def _now(tz: Any = False):
