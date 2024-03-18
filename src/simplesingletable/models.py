@@ -1,7 +1,7 @@
 import gzip
 import json
 import sys
-from abc import ABC
+from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, ClassVar, Optional, Type, TypedDict, TypeVar
 
@@ -71,6 +71,17 @@ class ResourceConfig(TypedDict, total=False):
 class BaseDynamoDbResource(BaseModel, ABC):
     """Exists only to provide a common parent for the resource classes."""
 
+    @abstractmethod
+    def get_db_resource_base_keys(self) -> set[str]:
+        """Returns a set of the string values corresponding to all of attributes on the Base resource object.
+
+        For example, this will return something like {"resource_id", "created_at", "updated_at"} along with others,
+        depending on which resource class is being used (for example a versioned resource will have a "version"
+        attribute included.
+
+        This can be useful for filtering out all the base attributes, e.g. when calling pydantic's model_dump.
+        """
+
     # override these in resource classes to enable secondary lookups on the latest version of the resource
     def db_get_gsi1pk(self) -> str | None:
         pass
@@ -128,6 +139,9 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False)
+
+    def get_db_resource_base_keys(self) -> set[str]:
+        return {"resource_id", "created_at", "updated_at"}
 
     def to_dynamodb_item(self) -> dict:
         prefix = self.get_unique_key_prefix()
@@ -217,6 +231,9 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     version: int
     created_at: datetime
     updated_at: datetime
+
+    def get_db_resource_base_keys(self) -> set[str]:
+        return {"resource_id", "version", "created_at", "updated_at"}
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 

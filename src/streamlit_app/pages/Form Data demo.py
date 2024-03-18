@@ -1,3 +1,4 @@
+import json
 import random
 from typing import Any, Callable, Optional, TypeVar
 from uuid import uuid4
@@ -60,8 +61,28 @@ def render_single_form(fdm: FormDataManager, form_id):
         st.button("Add test data", use_container_width=True, type="primary", on_click=_add_test_data, args=(num_test,))
 
     if st.toggle("Full object"):
-        st.code(dbform.model_dump_json(indent=2))
-    filter_group = st.radio("Group", dbform.groups, horizontal=True)
+        with st.container(border=True):
+            edit_object = st.toggle("Edit")
+            if not edit_object:
+                st.code(dbform.model_dump_json(indent=2))
+            else:
+                st.warning("Manually editing can result in an unusable Form object!")
+                with st.form("edit_form", border=False):
+                    dumped = dbform.model_dump_json(indent=2, exclude=dbform.get_db_resource_base_keys())
+                    edited = st.text_area("Edit", dumped, height=800)
+                    save = st.form_submit_button("Save")
+                    if save and edited != dumped:
+                        st.info("Saving")
+                        dbform = fdm.memory.update_existing(dbform, json.loads(edited))
+                    elif save:
+                        st.warning("No change detected")
+
+    def _fmt(group):
+        if not group:
+            return "<No Group>"
+        return group
+
+    filter_group = st.radio("Group", dbform.groups, horizontal=True, format_func=_fmt)
     summary_data = st.toggle("Summarize Data Cells", True)
 
     form_mapper = fdm.get_mapping(dbform)
@@ -76,13 +97,14 @@ def render_single_form(fdm: FormDataManager, form_id):
     logger.info("Flattening Data")
 
     def _extra_data(row_id: str) -> dict | None:
-        data = {
-            "First Name": uuid4().hex,
-            "Last Name": uuid4().hex,
-        }
-        if row_id == "00e72419ecc74719b1fe71a9f779f248":
-            data["Name"] = "Jimbo"
-        return data
+        return None
+        # data = {
+        #     "First Name": uuid4().hex,
+        #     "Last Name": uuid4().hex,
+        # }
+        # if row_id == "00e72419ecc74719b1fe71a9f779f248":
+        #     data["Name"] = "Jimbo"
+        # return data
 
     data = form_mapper.to_list(
         summary_data,
@@ -97,7 +119,7 @@ def render_single_form(fdm: FormDataManager, form_id):
     with st.form("Add New Data"):
         group = st.selectbox("Group", dbform.groups)
         row_id = st.text_input("Row ID")
-        column = st.selectbox("Column", dbform.get_ordered_columns())
+        column = st.selectbox("Column", dbform.get_ordered_columns(group=filter_group))
         col_idx = dbform.columns.index(column)
         field_data = {}
         for field in dbform.form_data_type_schema:

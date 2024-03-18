@@ -50,6 +50,13 @@ class BaseFormData(BaseModel):
     form_data_type_schema: list[FormDataEntryField]
     columns: list[str] = Field(min_items=1)
     groups: list[str] = Field(min_items=1)
+    hide_columns_by_group: dict[str, list[int]] = Field(
+        default_factory=dict,
+        description=(
+            "Keys are group identifiers; values are a list of Column indexes for "
+            "columns that should be hidden from display for that particular group."
+        ),
+    )
     user_metadata: dict = Field(default_factory=dict)
 
 
@@ -75,9 +82,22 @@ class Form(BaseFormData, DynamoDbVersionedResource):
 
     column_display_order: Optional[list[str]] = None
 
-    def get_ordered_columns(self) -> list[str]:
-        """returns columns in the correct order for display purposes."""
-        return self.column_display_order or self.columns
+    def get_ordered_columns(self, group: Optional[str] = None) -> list[str]:
+        """Returns columns in the correct order for display purposes,
+        optionally taking into account a group's hidden columns."""
+        return_columns = self.column_display_order or self.columns
+        if group:
+            if group not in self.groups:
+                raise ValueError("Bad group")
+            col_indexes_to_hide: list[int] = self.hide_columns_by_group.get(group) or []
+
+            # build the filtered listing based on indexes from the original columns
+            filtered_col_list = [column for idx, column in enumerate(self.columns) if idx not in col_indexes_to_hide]
+
+            # now filter the final display listing
+            return_columns = [x for x in return_columns if x in filtered_col_list]
+
+        return return_columns
 
     def db_get_gsi1pk(self) -> str | None:
         """Utilize gsi1 to track forms by category;
@@ -197,7 +217,7 @@ class FormDataRow(Mapping):
     def __getitem__(self, key: str | int) -> FormEntry | None:
         """Key can be provided as either the name of a column or as the numerical
         0-based index of the column from the current display order."""
-        ordered_columns = self.form.get_ordered_columns()
+        ordered_columns = self.form.get_ordered_columns(self.group)
         match key:
             case str():
                 if key not in ordered_columns:
@@ -213,10 +233,10 @@ class FormDataRow(Mapping):
         return self.column_data.get(data_index)
 
     def __iter__(self):
-        return iter(self.form.get_ordered_columns())
+        return iter(self.form.get_ordered_columns(self.group))
 
     def __len__(self):
-        return len(self.form.get_ordered_columns())
+        return len(self.form.get_ordered_columns(self.group))
 
     def __repr__(self):
         form = self.form.name
