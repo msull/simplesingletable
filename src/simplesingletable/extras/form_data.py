@@ -14,7 +14,8 @@ from typing import Callable, Literal, Mapping, Optional
 from boto3.dynamodb.conditions import Key
 from pydantic import BaseModel, Field
 
-from simplesingletable import AnyDbResource, DynamoDbMemory, DynamoDbVersionedResource, PaginatedList
+from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource, PaginatedList
+from simplesingletable.dynamodb_memory import AnyDbResource
 from simplesingletable.extras.singleton import SingletonResource
 
 
