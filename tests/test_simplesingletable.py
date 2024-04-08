@@ -2,6 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 import ulid
 from boto3.dynamodb.conditions import Key
+from pydantic import BaseModel
+
 from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource, DynamoDbResource
 from simplesingletable.utils import generate_date_sortable_id
 
@@ -13,11 +15,16 @@ class MyNonversionedTestResource(DynamoDbResource):
         return f"parent_id#{self.parent_id}"
 
 
+class PydanticAttributeTest(BaseModel):
+    attribute_name: str = "default_attribute_name"
+
+
 class MyVersionedTestResource(DynamoDbVersionedResource):
     some_field: str
     bool_field: bool
     list_of_things: list[str | int | bool | float]
     parent_id: str
+    inner_class: PydanticAttributeTest
 
     def db_get_gsi1pk(self) -> str | None:
         return f"parent_id#{self.parent_id}"
@@ -45,6 +52,7 @@ def test_dynamodb_memory__basic(dynamodb_memory: DynamoDbMemory):
             "bool_field": True,
             # multiple types in the list
             "list_of_things": ["a", False, 1, 1.2],
+            "inner_class": PydanticAttributeTest(),
         },
     )
     assert dynamodb_memory.read_existing(resource.resource_id, MyVersionedTestResource) == resource
@@ -75,6 +83,7 @@ def test_dynamodb_memory__queries(dynamodb_memory: DynamoDbMemory, mocker):
             "some_field": "test",
             "bool_field": True,
             "list_of_things": [],
+            "inner_class": PydanticAttributeTest(),
         },
     )
     assert dynamodb_memory.read_existing(new_resource_1.resource_id, MyVersionedTestResource) == new_resource_1
@@ -88,6 +97,7 @@ def test_dynamodb_memory__queries(dynamodb_memory: DynamoDbMemory, mocker):
             "some_field": "test",
             "bool_field": False,
             "list_of_things": ["adsf"],
+            "inner_class": PydanticAttributeTest(),
         },
     )
 
@@ -120,6 +130,7 @@ def test_dynamodb_memory__queries(dynamodb_memory: DynamoDbMemory, mocker):
             "some_field": "test",
             "bool_field": True,
             "list_of_things": [1, 2, 3],
+            "inner_class": PydanticAttributeTest(),
         },
     )
 
@@ -190,6 +201,7 @@ def test_max_api_calls(dynamodb_memory: DynamoDbMemory, mocker):
                 "some_field": "test",
                 "bool_field": True,
                 "list_of_things": [],
+                "inner_class": PydanticAttributeTest(),
             },
         )
 
@@ -202,6 +214,7 @@ def test_max_api_calls(dynamodb_memory: DynamoDbMemory, mocker):
             "some_field": "test",
             "bool_field": False,
             "list_of_things": [],
+            "inner_class": PydanticAttributeTest(),
         },
     )
 
