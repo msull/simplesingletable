@@ -5,12 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] 2024-04-15
+
+### Added
+
+* FormEntry : Utilize gsi2 to track all data for a group / row combination, allowing efficient retrieval for a single
+  row.
+
 ## [3.3.1] 2024-03-18
 
 ### Fixed
 
 * Added `exhaust_pagination` to the core imports in `__init__.py`.
-
 
 ## [3.3.0] 2024-03-18
 

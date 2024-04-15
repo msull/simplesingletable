@@ -198,6 +198,40 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
             ascending=ascending,
         )
 
+    def db_get_gsi2pk(self) -> str | None:
+        """Utilize gsi2 to track all Form entries for a particular group / row identifier, allowing efficient retrieval
+        of a specific row's worth of data."""
+        return f"{self.get_unique_key_prefix()}#{self.resource_id}#{self.group_identifier}#{self.row_identifier}"
+
+    @classmethod
+    def retrieve_all_entries_for_row(
+        cls,
+        memory: DynamoDbMemory,
+        existing_form: Form,
+        *,
+        group_identifier: str,
+        row_identifier: str,
+        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
+        results_limit: Optional[int] = 1000,
+        max_api_calls: int = 10,
+        pagination_key: Optional[str] = None,
+        ascending=False,
+    ) -> PaginatedList["FormEntry"]:
+        key = f"{cls.get_unique_key_prefix()}#{existing_form.resource_id}#{group_identifier}#{row_identifier}"
+
+        condition = Key("gsi2pk").eq(key)
+
+        return memory.paginated_dynamodb_query(
+            key_condition=condition,
+            index_name="gsi2",
+            resource_class=cls,
+            filter_fn=filter_fn,
+            results_limit=results_limit,
+            max_api_calls=max_api_calls,
+            pagination_key=pagination_key,
+            ascending=ascending,
+        )
+
 
 class FormDataRow(Mapping):
     def __init__(
