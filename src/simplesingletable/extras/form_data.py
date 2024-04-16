@@ -201,6 +201,8 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
     def db_get_gsi2pk(self) -> str | None:
         """Utilize gsi2 to track all Form entries for a particular group / row identifier, allowing efficient retrieval
         of a specific row's worth of data."""
+        # row then group, to allow looking up across the resource_id across all groups as well as looking up by row_id
+        # without knowing the group
         return f"{self.get_unique_key_prefix()}#{self.resource_id}#{self.group_identifier}#{self.row_identifier}"
 
     @classmethod
@@ -209,17 +211,20 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
         memory: DynamoDbMemory,
         existing_form: Form,
         *,
-        group_identifier: str,
         row_identifier: str,
+        group_identifier: Optional[str] = None,
         filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
         results_limit: Optional[int] = 1000,
         max_api_calls: int = 10,
         pagination_key: Optional[str] = None,
         ascending=False,
     ) -> PaginatedList["FormEntry"]:
-        key = f"{cls.get_unique_key_prefix()}#{existing_form.resource_id}#{group_identifier}#{row_identifier}"
-
-        condition = Key("gsi2pk").eq(key)
+        if group_identifier:
+            key = f"{cls.get_unique_key_prefix()}#{existing_form.resource_id}#{row_identifier}#{group_identifier}"
+            condition = Key("gsi2pk").eq(key)
+        else:
+            key = f"{cls.get_unique_key_prefix()}#{existing_form.resource_id}#{row_identifier}#"
+            condition = Key("gsi2pk").begins_with(key)
 
         return memory.paginated_dynamodb_query(
             key_condition=condition,
