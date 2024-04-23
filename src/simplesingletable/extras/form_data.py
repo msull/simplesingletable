@@ -309,7 +309,13 @@ class FormDataMapping(Mapping):
         self.switch_active_group(active_group or self.form.groups[0])
 
         if logger is None:
-            from logzero import logger
+            try:
+                from logzero import logger
+            except ImportError:
+                import logging
+
+                logging.basicConfig(level=logging.DEBUG)
+                logger = logging.getLogger(__file__)
 
         self.logger = logger
 
@@ -511,7 +517,7 @@ class FormDataManager:
         return self.memory.update_existing(existing_form, update)
 
     def get_mapping(self, existing_form: Form):
-        return FormDataMapping(form=existing_form, form_manager=self, preload=False)
+        return FormDataMapping(form=existing_form, form_manager=self, preload=False, logger=self.logger)
 
     def store_form_data(
         self,
