@@ -203,7 +203,7 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
         of a specific row's worth of data."""
         # row then group, to allow looking up across the resource_id across all groups as well as looking up by row_id
         # without knowing the group
-        return f"{self.get_unique_key_prefix()}#{self.resource_id}#{self.group_identifier}#{self.row_identifier}"
+        return f"{self.get_unique_key_prefix()}#{self.form_id}#{self.row_identifier}#{self.group_identifier}"
 
     @classmethod
     def retrieve_all_entries_for_row(
