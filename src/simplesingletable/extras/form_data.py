@@ -253,10 +253,13 @@ class FormDataRow(Mapping):
         self.row_identifier = row_identifier
         self.column_data = column_data or {}
 
-    def __getitem__(self, key: str | int) -> FormEntry | None:
+    def get_item_by_key(self, key: str | int, *, ignore_hidden_columns=False) -> FormEntry | None:
         """Key can be provided as either the name of a column or as the numerical
         0-based index of the column from the current display order."""
-        ordered_columns = self.form.get_ordered_columns(self.group)
+
+        ordered_columns = (
+            self.form.get_ordered_columns() if ignore_hidden_columns else self.form.get_ordered_columns(self.group)
+        )
         match key:
             case str():
                 if key not in ordered_columns:
@@ -270,6 +273,9 @@ class FormDataRow(Mapping):
             case _:
                 raise ValueError()
         return self.column_data.get(data_index)
+
+    def __getitem__(self, key: str | int) -> FormEntry | None:
+        return self.get_item_by_key(key)
 
     def __iter__(self):
         return iter(self.form.get_ordered_columns(self.group))
