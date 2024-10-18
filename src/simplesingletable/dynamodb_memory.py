@@ -300,7 +300,7 @@ class DynamoDbMemory:
         now = _now(tz=existing_resource.created_at.tzinfo)
         key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
 
-        if not field.annotation == int:
+        if not field.annotation == int:  # noqa
             raise TypeError(f"Field {field_name=} must be an int; {field.annotation=}")
 
         response = self.dynamodb_table.update_item(

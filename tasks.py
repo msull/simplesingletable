@@ -69,7 +69,7 @@ def lint(c: Context):
     with from_repo_root(c):
         c.run("black src/ tasks.py")
         c.run("isort src/ tasks.py")
-        c.run("ruff src/ tasks.py --fix")
+        c.run("ruff check src/ tasks.py --fix")
 
 
 @task
