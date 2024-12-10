@@ -58,6 +58,7 @@ class BaseFormData(BaseModel):
         ),
     )
     user_metadata: dict = Field(default_factory=dict)
+    deleted_columns: list[int] = Field(default_factory=list, description="List of column indexes that are deleted.")
 
 
 class NewFormRequest(BaseFormData):
@@ -83,9 +84,13 @@ class Form(BaseFormData, DynamoDbVersionedResource):
     column_display_order: Optional[list[str]] = None
 
     def get_ordered_columns(self, group: Optional[str] = None) -> list[str]:
-        """Returns columns in the correct order for display purposes,
-        optionally taking into account a group's hidden columns."""
-        return_columns = self.column_display_order or self.columns
+        """Returns columns in the correct order for display purposes, taking into account deleted columns and
+        (optionally) columns hidden for a group."""
+        if self.column_display_order:
+            return_columns = self.column_display_order
+        else:
+            return_columns = [column for idx, column in enumerate(self.columns) if idx not in self.deleted_columns]
+
         if group:
             if group not in self.groups:
                 raise ValueError("Bad group")
@@ -98,6 +103,39 @@ class Form(BaseFormData, DynamoDbVersionedResource):
             return_columns = [x for x in return_columns if x in filtered_col_list]
 
         return return_columns
+
+    def delete_column(self, column_name: str):
+        """Mark a column as deleted by its name."""
+        if column_name not in self.columns:
+            raise ValueError(f"Column '{column_name}' does not exist.")
+        idx = self.columns.index(column_name)
+        if idx in self.deleted_columns:
+            # Already deleted
+            return
+        self.deleted_columns.append(idx)
+
+        # If it's in the display order, remove it from there as well
+        if self.column_display_order and column_name in self.column_display_order:
+            self.column_display_order.remove(column_name)
+
+    def restore_column(self, column_name: str):
+        """Restore a previously deleted column."""
+        if column_name not in self.columns:
+            raise ValueError(f"Column '{column_name}' does not exist.")
+        idx = self.columns.index(column_name)
+        if idx not in self.deleted_columns:
+            # Not deleted, nothing to restore
+            return
+        self.deleted_columns.remove(idx)
+
+        # Optionally, restore it to the column_display_order
+        # In this case, we append it to the end of the display order if the order is set.
+        if self.column_display_order is not None and column_name not in self.column_display_order:
+            self.column_display_order.append(column_name)
+
+    def get_deleted_columns(self) -> list[str]:
+        """Return a list of deleted column names."""
+        return [self.columns[i] for i in self.deleted_columns]
 
     def db_get_gsi1pk(self) -> str | None:
         """Utilize gsi1 to track forms by category;
@@ -521,6 +559,34 @@ class FormDataManager:
 
     def update_form(self, existing_form: Form, update: UpdateFormRequest) -> Form:
         return self.memory.update_existing(existing_form, update)
+
+    def update_form_column_display_order(self, existing_form: Form, new_display_order: list[str]) -> Form:
+        assert set(existing_form.get_ordered_columns()) == set(new_display_order)
+        return self.memory.update_existing(existing_form, {"column_display_order": new_display_order})
+
+    def delete_column_from_form(self, existing_form: Form, column_name: str) -> Form:
+        """Delete a column from a form and persist the change."""
+        updated = existing_form.model_copy(deep=True)
+        updated.delete_column(column_name)
+        return self.memory.update_existing(
+            existing_form,
+            {
+                "deleted_columns": updated.deleted_columns,
+                "column_display_order": updated.column_display_order,
+            },
+        )
+
+    def restore_column_to_form(self, existing_form: Form, column_name: str) -> Form:
+        """Restore a previously deleted column to a form and persist the change."""
+        updated = existing_form.model_copy(deep=True)
+        updated.restore_column(column_name)
+        return self.memory.update_existing(
+            existing_form,
+            {
+                "deleted_columns": updated.deleted_columns,
+                "column_display_order": updated.column_display_order,
+            },
+        )
 
     def get_mapping(self, existing_form: Form):
         return FormDataMapping(form=existing_form, form_manager=self, preload=False, logger=self.logger)

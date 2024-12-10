@@ -6,6 +6,7 @@ from uuid import uuid4
 import streamlit as st
 from logzero import logger
 from pydantic import BaseModel, TypeAdapter
+from streamlit_sortables import sort_items
 
 from simplesingletable import DynamoDbMemory
 from simplesingletable.extras.form_data import (
@@ -37,6 +38,40 @@ def main():
         render_form_management(fdm)
 
 
+@st.dialog("Manage form columns")
+def dialog_manage_form_cols(fdm: FormDataManager, form_id):
+    dbform = fdm.get_form(form_id)
+    with st.popover("Form Object"):
+        st.code(dbform.model_dump_json(indent=2))
+
+    original_items = [
+        {"header": "columns", "items": dbform.get_ordered_columns()},
+        {"header": "deleted columns", "items": dbform.get_deleted_columns()},
+    ]
+
+    sorted_items = sort_items(original_items, multi_containers=True)
+    new_column_display_order = sorted_items[0]["items"]
+    # deleted_columns
+    all_deleted_idxs = [dbform.columns.index(x) for x in sorted_items[1]["items"]]
+    to_be_deleted_idxs = [x for x in all_deleted_idxs if x not in dbform.deleted_columns]
+    to_be_restored_idx = [x for x in dbform.deleted_columns if x not in all_deleted_idxs]
+    st.write("**Delete:**", ", ".join(map(dbform.columns.__getitem__, to_be_deleted_idxs)))
+    st.write("**Restore:**", ", ".join(map(dbform.columns.__getitem__, to_be_restored_idx)))
+    st.write("**Final Display Order:**", ", ".join(new_column_display_order))
+    if st.button("Save", disabled=original_items == sorted_items):
+        if not new_column_display_order:
+            st.error("Must have at least one displayed column")
+            st.stop()
+        for col_idx in to_be_deleted_idxs:
+            col_name = dbform.columns[col_idx]
+            dbform = fdm.delete_column_from_form(dbform, col_name)
+        for col_idx in to_be_restored_idx:
+            col_name = dbform.columns[col_idx]
+            dbform = fdm.restore_column_to_form(dbform, col_name)
+        fdm.update_form_column_display_order(dbform, new_column_display_order)
+        st.rerun()
+
+
 def render_single_form(fdm: FormDataManager, form_id):
     def _close():
         st.query_params.pop("lf")
@@ -44,13 +79,17 @@ def render_single_form(fdm: FormDataManager, form_id):
     dbform = fdm.get_form(form_id)
 
     st.button("Close Form", use_container_width=True, type="primary", on_click=_close)
+
+    if st.button("Manage Form Columns"):
+        dialog_manage_form_cols(fdm, form_id)
+
     if st.toggle("Add test data"):
 
         def _add_test_data(number_to_add: int):
             for x in range(number_to_add):
                 group = random.choice(dbform.groups)
                 row_id = uuid4().hex
-                for col_idx in range(len(dbform.columns)):
+                for col_idx in range(len(dbform.get_ordered_columns())):
                     field_data = {"completed": bool(random.randint(0, 1)), "note": f"NOTE {uuid4()}"}
                     fdm.store_form_data(
                         dbform,
