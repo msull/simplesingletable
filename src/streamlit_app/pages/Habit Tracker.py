@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import streamlit as st
@@ -7,10 +7,15 @@ from pydantic import Field
 from streamlit_calendar import calendar as st_calendar
 
 from simplesingletable import DynamoDbMemory
-from simplesingletable.extras.habit_tracker import MonthlyHabitTracker
+from simplesingletable.extras.habit_tracker import MonthlyHabitTracker, MonthlyHabitTrackerV2
 
 
 class PersonalHabitsTracker(MonthlyHabitTracker):
+    m: Optional[set[str]] = Field(default=None)
+    s: Optional[set[str]] = Field(default=None)
+
+
+class PersonalHabitsTrackerV2(MonthlyHabitTrackerV2):
     m: Optional[set[str]] = Field(default=None)
     s: Optional[set[str]] = Field(default=None)
 
@@ -27,9 +32,37 @@ def main():
         },
     )
     month_viewer_input = st.date_input("View for month", format="YYYY/MM/DD")
+    view_time = st.time_input("habit_time")
     habits = PersonalHabitsTracker.get_for_month(memory, for_date=month_viewer_input)
+    st.sidebar.metric("old", habits.get_db_item_size())
+    habitsv2 = PersonalHabitsTrackerV2.get_for_month(memory, for_date=month_viewer_input)
+    st.sidebar.metric("new", habitsv2.get_db_item_size())
+
     with st.popover("full object"):
         st.write(habits)
+
+    if st.button("Add habit to each day"):
+        first = month_viewer_input.replace(day=1)
+        for x in range(100):
+            new_date = first + timedelta(days=x)
+            if new_date.month != first.month:
+                break
+            track_date = datetime.combine(new_date, view_time).astimezone()
+            habits.track_item_for_date(memory, "s", dt=track_date)
+        st.rerun()
+
+    if st.button("Copy to V2"):
+        for habit in {"s", "m"}:
+            for entry in getattr(habits, habit):
+                if "#" in entry:
+                    when, note = entry.split("#", maxsplit=1)
+                else:
+                    when = entry
+                    note = None
+                this_dt = datetime.fromisoformat(when)
+                habitsv2.track_item_for_date(memory, habit, dt=this_dt, note=note)
+
+        st.write(habits.summarize_by_date())
 
     view = st.selectbox("view", ("dayGridMonth", "listMonth", "listYear"))
 
@@ -51,7 +84,14 @@ def main():
             return event["tracker"] + ": " + event["note"]
         return event["tracker"]
 
-    events = [{"date": x["when"], "title": _fmt_title(x)} for x in habits.list_all()]
+    if st.toggle("V2"):
+        use_habits = habitsv2
+    else:
+        use_habits = habits
+
+    st.write(use_habits.summarize())
+
+    events = [{"date": x["when"], "title": _fmt_title(x)} for x in use_habits.list_all()]
     calendar = st_calendar(events=events, options=calendar_options)
     st.write(calendar)
     with st.popover("track habit"):
@@ -74,7 +114,7 @@ def main():
                     if include_date
                     else None
                 )
-                habits.track_item_for_date(memory, track_this, dt=track_date, note=track_note)
+                use_habits.track_item_for_date(memory, track_this, dt=track_date, note=track_note)
                 st.rerun()
 
     st.help(st_calendar)
