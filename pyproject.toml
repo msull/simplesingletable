@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0.0", "wheel"]
+requires = ["setuptools>=61.0.0,<69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,9 +8,8 @@ version = "5.4.0"
 description = "A simple boto3/Pydantic implementation of DynamoDB Single Table Design and related utilities."
 readme = "README.md"
 authors = [{ name = "Sully", email = "sully@sadburger.com" }]
-license = { file = "LICENSE" }
+license = { text = "MIT" }
 classifiers = [
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
 ]
