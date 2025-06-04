@@ -524,7 +524,10 @@ class DynamoDbMemory:
                 self.logger.debug("Have too many results, replacing existing pagination key with new computed one")
             else:
                 self.logger.debug("Have too many results, adding a pagination key where one did not exist")
-            db_item = response_data[-1].to_dynamodb_item(v0_object=True)
+            if issubclass(response_data[-1].__class__, DynamoDbVersionedResource):
+                db_item = response_data[-1].to_dynamodb_item(v0_object=True)
+            else:
+                db_item = response_data[-1].to_dynamodb_item()
             # hardcoded key information based on index; should figure out how to compute this
             if not index_name:
                 lek_data = {"pk": db_item["pk"], "sk": db_item["sk"]}
