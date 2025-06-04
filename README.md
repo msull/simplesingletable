@@ -1,6 +1,6 @@
 # Simple Single Table
 
-**Latest Version:** 5.3.0
+**Latest Version:** 5.4.0
 
 **simplesingletable** is a Python library that offers an abstraction layer for AWS DynamoDB operations, particularly for
 those tables using single-table design. It uses Pydantic to define the models, and tries to be as "batteries-included"
