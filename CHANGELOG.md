@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.0.0]
+
+### Changed
+
+* Enhanced `paginated_dynamodb_query` and `list_type_by_updated_at` to properly support boto3's ConditionBase for filter
+  expressions. This allows using `Attr` conditions (e.g., `Attr('status').eq('active')`) which automatically handle
+  expression attribute names and values, making filtering safer and more convenient.
+
 ## [6.0.0] 2025-06-04
 
 ### Fixed
@@ -15,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-* Added a V2 Habit tracker with better data storage. 
+* Added a V2 Habit tracker with better data storage.
 
 ## [5.2.0] 2025-01-22
 

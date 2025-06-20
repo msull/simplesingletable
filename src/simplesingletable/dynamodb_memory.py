@@ -246,7 +246,7 @@ class DynamoDbMemory:
         self,
         data_class: Type[AnyDbResource],
         *,
-        filter_expression=None,
+        filter_expression: Optional[ConditionBase] = None,
         filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
         results_limit: Optional[int] = None,
         max_api_calls: int = Constants.QUERY_DEFAULT_MAX_API_CALLS,
@@ -371,7 +371,7 @@ class DynamoDbMemory:
         resource_class: Type[AnyDbResource] = None,
         resource_class_fn: Callable[[dict], Type[AnyDbResource]] = None,
         index_name: Optional[str] = None,
-        filter_expression=None,
+        filter_expression: Optional[ConditionBase] = None,
         filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
         results_limit: Optional[int] = None,
         max_api_calls: int = Constants.QUERY_DEFAULT_MAX_API_CALLS,
@@ -390,7 +390,8 @@ class DynamoDbMemory:
                 the resource class type dynamically based on the DynamoDB item data.
             index_name (str, optional): The name of the secondary index to query. If not provided,
                 the main table is queried.
-            filter_expression (optional): DynamoDB filter expression to limit results returned.
+            filter_expression (ConditionBase, optional): DynamoDB filter expression to limit results returned.
+                Can be constructed using boto3's Attr class (e.g., Attr('status').eq('active')).
             filter_fn (Callable[[AnyDbResource], bool], optional): A post-retrieval filter function to apply to results.
             results_limit (int, optional): The maximum number of results to return. Defaults to system default limit.
             max_api_calls (int): The maximum number of API calls to make. Defaults to QUERY_DEFAULT_MAX_API_CALLS.
@@ -414,6 +415,23 @@ class DynamoDbMemory:
             - If the initial results don't meet the `results_limit` and there are more items in DynamoDB to query,
               this method will recursively query until it either meets the desired results count, exhausts the items
               in DynamoDB, or reaches the `max_api_calls` limit.
+
+        Example:
+            # Filter by status
+            active_items = memory.paginated_dynamodb_query(
+                key_condition=Key("gsitype").eq("MyResource"),
+                index_name="gsitype",
+                resource_class=MyResource,
+                filter_expression=Attr("status").eq("active")
+            )
+
+            # Compound filter with reserved word handling
+            filtered_items = memory.paginated_dynamodb_query(
+                key_condition=Key("gsitype").eq("MyResource"),
+                index_name="gsitype",
+                resource_class=MyResource,
+                filter_expression=Attr("status").eq("active") & Attr("size").gt(100)
+            )
         """
         if not (resource_class or resource_class_fn):
             raise ValueError("Must supply either resource_class or resource_class_fn")
