@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.2.0] - 2025-07-15
+
+### Added
+
+* **Repository Pattern Interface**: New `ResourceRepository` class in `simplesingletable.extras.repository` provides a 
+  simplified CRUD interface on top of `DynamoDbMemory`. Features include:
+  - Type-safe operations with Pydantic schema validation for create/update operations
+  - Support for both versioned and non-versioned resources
+  - Flexible ID generation with optional override functions
+  - Default object creation with customizable factory functions
+  - Traditional repository methods: `create()`, `get()`, `read()`, `update()`, `delete()`, `list()`, `get_or_create()`
+  - Comprehensive logging for debugging and monitoring
+
 ## [8.1.1] - 2025-07-15
 
 ### Added
