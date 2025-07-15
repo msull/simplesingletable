@@ -236,7 +236,15 @@ class DynamoDbMemory:
             self.increment_counter(stats, "counts_by_type." + data_class.__name__)
         return resource
 
-    def delete_existing(self, existing_resource: NonversionedDbResourceOnly):
+    def delete_existing(self, existing_resource: AnyDbResource):
+        if issubclass(existing_resource.__class__, DynamoDbResource):
+            self._delete_nonversioned_resource(existing_resource)
+        elif issubclass(existing_resource.__class__, DynamoDbVersionedResource):
+            self._delete_versioned_resource(existing_resource)
+        else:
+            raise ValueError("Invalid resource type provided")
+
+    def _delete_nonversioned_resource(self, existing_resource: NonversionedDbResourceOnly):
         self.logger.info(
             f"Deleting resource:{existing_resource.__class__.__name__} "
             f"with resource_id='{existing_resource.resource_id}"
@@ -247,6 +255,67 @@ class DynamoDbMemory:
         if self.track_stats:
             stats = MemoryStats.ensure_exists(self)
             self.increment_counter(stats, "counts_by_type." + existing_resource.__class__.__name__, -1)
+
+    def _delete_versioned_resource(self, existing_resource: VersionedDbResourceOnly):
+        """Delete a specific version of a versioned resource."""
+        self.logger.info(
+            f"Deleting versioned resource:{existing_resource.__class__.__name__} "
+            f"with resource_id='{existing_resource.resource_id}' version={existing_resource.version}"
+        )
+        self.dynamodb_table.delete_item(
+            Key=existing_resource.dynamodb_lookup_keys_from_id(
+                existing_resource.resource_id, version=existing_resource.version
+            )
+        )
+
+        # Also delete v0 if this is the latest version
+        latest_resource = self.get_existing(
+            existing_id=existing_resource.resource_id, data_class=existing_resource.__class__, version=0
+        )
+        if latest_resource and latest_resource.version == existing_resource.version:
+            self.logger.info(
+                f"Deleting v0 record for resource:{existing_resource.__class__.__name__} "
+                f"with resource_id='{existing_resource.resource_id}'"
+            )
+            self.dynamodb_table.delete_item(
+                Key=existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id, version=0)
+            )
+            if self.track_stats:
+                stats = MemoryStats.ensure_exists(self)
+                self.increment_counter(stats, "counts_by_type." + existing_resource.__class__.__name__, -1)
+
+    def delete_all_versions(self, resource_id: str, data_class: Type[VersionedDbResourceOnly]):
+        """Delete all versions of a versioned resource."""
+        if not issubclass(data_class, DynamoDbVersionedResource):
+            raise ValueError("delete_all_versions can only be used with versioned resources")
+
+        from boto3.dynamodb.conditions import Key
+
+        self.logger.info(
+            f"Deleting all versions of resource:{data_class.__name__} " f"with resource_id='{resource_id}'"
+        )
+
+        # Query all versions for this resource
+        versions = self.dynamodb_table.query(
+            KeyConditionExpression=Key("pk").eq(f"{data_class.get_unique_key_prefix()}#{resource_id}")
+            & Key("sk").begins_with("v"),
+            ProjectionExpression="pk, sk",
+        )["Items"]
+
+        if not versions:
+            self.logger.warning(f"No versions found for resource {resource_id}")
+            return
+
+        # Delete all versions using batch writer
+        with self.dynamodb_table.batch_writer() as batch:
+            for item in versions:
+                batch.delete_item(Key={"pk": item["pk"], "sk": item["sk"]})
+
+        self.logger.info(f"Deleted {len(versions)} versions for resource {resource_id}")
+
+        if self.track_stats:
+            stats = MemoryStats.ensure_exists(self)
+            self.increment_counter(stats, "counts_by_type." + data_class.__name__, -1)
 
     def get_stats(self) -> MemoryStats:
         return MemoryStats.ensure_exists(self)

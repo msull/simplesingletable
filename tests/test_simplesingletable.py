@@ -255,3 +255,124 @@ def test_max_api_calls(dynamodb_memory: DynamoDbMemory, mocker):
     assert res == [match_item]
     res = _q(max_api=1, multiplier=25)
     assert res == [match_item]
+
+
+def test_delete_versioned_resource(dynamodb_memory: DynamoDbMemory):
+    """Test deleting a specific version of a versioned resource."""
+    # Create a versioned resource
+    resource = dynamodb_memory.create_new(
+        MyVersionedTestResource,
+        {
+            "parent_id": "parent1",
+            "some_field": "test",
+            "bool_field": True,
+            "list_of_things": ["a", "b"],
+            "inner_class": PydanticAttributeTest(),
+        },
+    )
+    
+    # Update it to create version 2
+    updated_resource = dynamodb_memory.update_existing(resource, {"some_field": "updated"})
+    assert updated_resource.version == 2
+    
+    # Verify both versions exist
+    v1 = dynamodb_memory.read_existing(resource.resource_id, MyVersionedTestResource, version=1)
+    v2 = dynamodb_memory.read_existing(resource.resource_id, MyVersionedTestResource, version=2)
+    assert v1.some_field == "test"
+    assert v2.some_field == "updated"
+    
+    # Delete version 1
+    dynamodb_memory.delete_existing(v1)
+    
+    # Verify version 1 is gone but version 2 and v0 still exist
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=1) is None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=2) is not None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=0) is not None
+    
+    # Delete version 2 (latest version)
+    dynamodb_memory.delete_existing(v2)
+    
+    # Verify all versions are gone (including v0)
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=1) is None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=2) is None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=0) is None
+
+
+def test_delete_all_versions(dynamodb_memory: DynamoDbMemory):
+    """Test deleting all versions of a versioned resource."""
+    # Create a versioned resource
+    resource = dynamodb_memory.create_new(
+        MyVersionedTestResource,
+        {
+            "parent_id": "parent1",
+            "some_field": "test",
+            "bool_field": True,
+            "list_of_things": ["a", "b"],
+            "inner_class": PydanticAttributeTest(),
+        },
+    )
+    
+    # Update it multiple times to create multiple versions
+    updated_resource = dynamodb_memory.update_existing(resource, {"some_field": "updated"})
+    final_resource = dynamodb_memory.update_existing(updated_resource, {"some_field": "final"})
+    
+    # Verify all versions exist
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=0) is not None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=1) is not None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=2) is not None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=3) is not None
+    
+    # Delete all versions
+    dynamodb_memory.delete_all_versions(resource.resource_id, MyVersionedTestResource)
+    
+    # Verify all versions are gone
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=0) is None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=1) is None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=2) is None
+    assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=3) is None
+
+
+def test_delete_all_versions_nonexistent(dynamodb_memory: DynamoDbMemory):
+    """Test deleting all versions of a nonexistent resource."""
+    # This should not raise an error, just log a warning
+    dynamodb_memory.delete_all_versions("nonexistent_id", MyVersionedTestResource)
+
+
+def test_delete_all_versions_invalid_class(dynamodb_memory: DynamoDbMemory):
+    """Test that delete_all_versions raises an error for non-versioned resources."""
+    import pytest
+    
+    with pytest.raises(ValueError, match="delete_all_versions can only be used with versioned resources"):
+        dynamodb_memory.delete_all_versions("test_id", MyNonversionedTestResource)
+
+
+def test_delete_existing_stats_tracking(dynamodb_memory: DynamoDbMemory):
+    """Test that stats are properly tracked when deleting versioned resources."""
+    # Create a versioned resource
+    resource = dynamodb_memory.create_new(
+        MyVersionedTestResource,
+        {
+            "parent_id": "parent1",
+            "some_field": "test",
+            "bool_field": True,
+            "list_of_things": ["a", "b"],
+            "inner_class": PydanticAttributeTest(),
+        },
+    )
+    
+    # Check initial stats
+    stats = dynamodb_memory.get_stats()
+    initial_count = stats.counts_by_type.get("MyVersionedTestResource", 0)
+    
+    # Update to create version 2
+    updated_resource = dynamodb_memory.update_existing(resource, {"some_field": "updated"})
+    
+    # Delete version 1 (not latest) - should not affect stats
+    dynamodb_memory.delete_existing(resource)
+    stats = dynamodb_memory.get_stats()
+    assert stats.counts_by_type.get("MyVersionedTestResource", 0) == initial_count
+    
+    # Delete version 2 (latest) - should decrement stats
+    dynamodb_memory.delete_existing(updated_resource)
+    stats = dynamodb_memory.get_stats()
+    assert stats.counts_by_type.get("MyVersionedTestResource", 0) == initial_count - 1
