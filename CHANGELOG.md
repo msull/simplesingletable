@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.0.0] - Unreleased
+
+### Added
+
+* **Dynamic GSI Configuration**: Introduced declarative index configuration system using `gsi_config` class variable on resource models. This replaces hardcoded GSI logic and makes it easy to define custom indices:
+  ```python
+  gsi_config = {
+      'gsi1': {
+          'pk': lambda self: f"category#{self.category}",
+          'sk': lambda self: self.created_at.isoformat(),
+      }
+  }
+  ```
+* **Version Limit Enforcement**: Added `max_versions` configuration for `DynamoDbVersionedResource` to automatically clean up old versions:
+  ```python
+  model_config = ConfigDict(extra="forbid", max_versions=5)
+  ```
+* **Improved Transaction Error Handling**: New `transact_write_safe()` function provides detailed error messages when DynamoDB transactions fail, making debugging much easier.
+* **Dynamic Pagination Helper**: Added `build_lek_data()` function that dynamically constructs LastEvaluatedKey based on index configuration, eliminating 30+ lines of hardcoded logic.
+
+### Changed
+
+* Refactored `paginated_dynamodb_query` to use the new dynamic pagination helper, removing hardcoded index handling.
+* Updated `to_dynamodb_item()` methods to support both new dynamic GSI configuration and legacy GSI methods for backward compatibility.
+* All DynamoDB transactions now use the safer error handling wrapper.
+
+### Fixed
+
+* GSI field exclusion in `from_dynamodb_item()` now dynamically handles configured indices instead of using a hardcoded list.
+
 ## [7.0.0]
 
 ### Changed

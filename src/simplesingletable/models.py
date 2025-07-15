@@ -3,7 +3,7 @@ import json
 import sys
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Optional, Type, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Optional, Type, TypedDict, TypeVar
 
 import ulid
 from boto3.dynamodb.types import Binary
@@ -12,7 +12,17 @@ from pydantic import BaseModel, ConfigDict
 
 from .utils import generate_date_sortable_id
 
+if TYPE_CHECKING:
+    from .dynamodb_memory import DynamoDbMemory
+
 _T = TypeVar("_T")
+
+
+class IndexFieldConfig(TypedDict):
+    """Configuration for a single GSI's fields."""
+
+    pk: Callable[["BaseDynamoDbResource"], Optional[str]]
+    sk: Optional[Callable[["BaseDynamoDbResource"], Optional[str]]]
 
 
 class PaginatedList(list[_T]):
@@ -70,6 +80,8 @@ class ResourceConfig(TypedDict, total=False):
 
 class BaseDynamoDbResource(BaseModel, ABC):
     """Exists only to provide a common parent for the resource classes."""
+
+    gsi_config: ClassVar[Dict[str, IndexFieldConfig]] = {}
 
     @abstractmethod
     def get_db_resource_base_keys(self) -> set[str]:
@@ -161,7 +173,18 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             }
         )
 
-        # check for the user-defineable key / filter fields
+        # Apply dynamic GSI configuration
+        for index_name, fields in self.gsi_config.items():
+            pk_value = fields["pk"](self)
+            if pk_value:
+                dynamodb_data[f"{index_name}pk"] = pk_value
+            sk_func = fields.get("sk")
+            if sk_func:
+                sk_value = sk_func(self)
+                if sk_value:
+                    dynamodb_data[f"{index_name}sk"] = sk_value
+
+        # Legacy GSI methods for backward compatibility
         if gsi1pk := self.db_get_gsi1pk():
             dynamodb_data["gsi1pk"] = gsi1pk
         if gsi2pk := self.db_get_gsi2pk():
@@ -182,12 +205,17 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             compressed_data = dynamodb_data["data"]
             data = cls.decompress_model_content(compressed_data)  # noqa
         else:
-            data = {
-                k: v
-                for k, v in dynamodb_data.items()
-                if k not in {"pk", "sk", "gsitypesk", "gsitype", "gsi1pk", "gsi2pk", "gsi3pk", "gsi3sk"}
-            }
-        return cls.parse_obj(data)
+            # Filter out DynamoDB-specific keys
+            excluded_keys = {"pk", "sk", "gsitypesk", "gsitype"}
+            # Add any dynamic GSI fields to exclusion
+            for index_name in cls.gsi_config.keys():
+                excluded_keys.add(f"{index_name}pk")
+                excluded_keys.add(f"{index_name}sk")
+            # Also exclude legacy GSI fields
+            excluded_keys.update({"gsi1pk", "gsi2pk", "gsi3pk", "gsi3sk"})
+
+            data = {k: v for k, v in dynamodb_data.items() if k not in excluded_keys}
+        return cls.model_validate(data)
 
     @classmethod
     def dynamodb_lookup_keys_from_id(cls, existing_id: str) -> dict:
@@ -201,25 +229,25 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         override_id: Optional[str] = None,
     ) -> "DynamoDbResource":
         if isinstance(create_data, BaseModel):
-            kwargs = create_data.dict()
+            kwargs = create_data.model_dump()
         else:
             kwargs = {**create_data}
         now = _now()
         kwargs.update(
             {"resource_id": override_id or generate_date_sortable_id(now), "created_at": now, "updated_at": now}
         )
-        return cls.parse_obj(kwargs)
+        return cls.model_validate(kwargs)
 
     def update_existing(self: "DynamoDbResource", update_data: _PlainBaseModel | dict) -> "DynamoDbResource":
         now = _now()
         if isinstance(update_data, BaseModel):
-            update_kwargs = update_data.dict(exclude_none=True)
+            update_kwargs = update_data.model_dump(exclude_none=True)
         else:
             update_kwargs = {**update_data}
-        kwargs = self.dict()
+        kwargs = self.model_dump()
         kwargs.update(update_kwargs)
         kwargs.update({"resource_id": self.resource_id, "created_at": self.created_at, "updated_at": now})
-        return self.__class__.parse_obj(kwargs)
+        return self.__class__.model_validate(kwargs)
 
 
 # for backwards compatibility
@@ -235,7 +263,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     def get_db_resource_base_keys(self) -> set[str]:
         return {"resource_id", "version", "created_at", "updated_at"}
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", max_versions=None)
 
     def to_dynamodb_item(self, v0_object: bool = False) -> dict:
         prefix = self.get_unique_key_prefix()
@@ -255,7 +283,18 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
             dynamodb_data["gsitype"] = self.__class__.__name__
             dynamodb_data["gsitypesk"] = self.db_get_gsitypesk()
 
-            # check for the user-defineable key / filter fields
+            # Apply dynamic GSI configuration
+            for index_name, fields in self.gsi_config.items():
+                pk_value = fields["pk"](self)
+                if pk_value:
+                    dynamodb_data[f"{index_name}pk"] = pk_value
+                sk_func = fields.get("sk")
+                if sk_func:
+                    sk_value = sk_func(self)
+                    if sk_value:
+                        dynamodb_data[f"{index_name}sk"] = sk_value
+
+            # Legacy GSI methods for backward compatibility
             if gsi1pk := self.db_get_gsi1pk():
                 dynamodb_data["gsi1pk"] = gsi1pk
             if gsi2pk := self.db_get_gsi2pk():
@@ -276,7 +315,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     ) -> "DynamoDbVersionedResource":
         compressed_data = dynamodb_data["data"]
         data = cls.decompress_model_content(compressed_data)  # noqa
-        return cls.parse_obj(data)
+        return cls.model_validate(data)
 
     @classmethod
     def dynamodb_lookup_keys_from_id(cls, existing_id: str, version: int = 0) -> dict:
@@ -292,7 +331,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         override_id: Optional[str] = None,
     ) -> "DynamoDbVersionedResource":
         if isinstance(create_data, BaseModel):
-            kwargs = create_data.dict()
+            kwargs = create_data.model_dump()
         else:
             kwargs = {**create_data}
         now = _now()
@@ -304,17 +343,17 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
                 "updated_at": now,
             }
         )
-        return cls.parse_obj(kwargs)
+        return cls.model_validate(kwargs)
 
     def update_existing(
         self: "DynamoDbVersionedResource", update_data: _PlainBaseModel | dict
     ) -> "DynamoDbVersionedResource":
         now = _now()
         if isinstance(update_data, BaseModel):
-            update_kwargs = update_data.dict(exclude_none=True)
+            update_kwargs = update_data.model_dump(exclude_none=True)
         else:
             update_kwargs = {**update_data}
-        kwargs = self.dict()
+        kwargs = self.model_dump()
         kwargs.update(update_kwargs)
         kwargs.update(
             {
@@ -324,7 +363,38 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
                 "updated_at": now,
             }
         )
-        return self.__class__.parse_obj(kwargs)
+        return self.__class__.model_validate(kwargs)
+
+    @classmethod
+    def enforce_version_limit(cls, memory: "DynamoDbMemory", resource_id: str):
+        """Enforce the max_versions limit by deleting old versions."""
+        max_versions = cls.model_config.get("max_versions", None)
+        if not max_versions or max_versions < 1:
+            return
+
+        from boto3.dynamodb.conditions import Key
+
+        # Query all versions for this resource
+        versions = memory.dynamodb_table.query(
+            KeyConditionExpression=Key("pk").eq(f"{cls.get_unique_key_prefix()}#{resource_id}")
+            & Key("sk").begins_with("v"),
+            ScanIndexForward=True,  # Ascending order (oldest first)
+            ProjectionExpression="pk, sk, version",
+        )["Items"]
+
+        # Filter out v0 if present
+        versions = [v for v in versions if v["sk"] != "v0"]
+
+        if len(versions) <= max_versions:
+            return
+
+        # Delete oldest versions, keeping only the most recent max_versions
+        to_delete = versions[:-max_versions]
+        with memory.dynamodb_table.batch_writer() as batch:
+            for item in to_delete:
+                batch.delete_item(Key={"pk": item["pk"], "sk": item["sk"]})
+
+        memory.logger.info(f"Deleted {len(to_delete)} old versions for resource {resource_id}")
 
 
 DynamodbVersionedResource = DynamoDbVersionedResource

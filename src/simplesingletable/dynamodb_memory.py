@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar, Optional, Type, TypeV
 
 import boto3
 from boto3.dynamodb.conditions import ConditionBase, Key
+from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
@@ -36,6 +37,71 @@ def exhaust_pagination(query: Callable[[Optional[str]], PaginatedList]):
         yield result
         result = query(result.next_pagination_key)
     yield result
+
+
+def build_lek_data(db_item: dict, index_name: Optional[str], resource_class: Type[AnyDbResource]) -> dict:
+    """Build LastEvaluatedKey data dynamically based on index configuration."""
+    lek_data = {"pk": db_item["pk"], "sk": db_item["sk"]}
+
+    if not index_name:
+        return lek_data
+
+    # Handle built-in gsitype index
+    if index_name == "gsitype":
+        if "gsitype" in db_item:
+            lek_data["gsitype"] = db_item["gsitype"]
+        if "gsitypesk" in db_item:
+            lek_data["gsitypesk"] = db_item["gsitypesk"]
+        return lek_data
+
+    # Handle dynamic GSI configuration
+    if hasattr(resource_class, "gsi_config") and index_name in resource_class.gsi_config:
+        # Add pk field for this index
+        pk_field = f"{index_name}pk"
+        if pk_field in db_item:
+            lek_data[pk_field] = db_item[pk_field]
+
+        # Add sk field if it exists for this index
+        sk_field = f"{index_name}sk"
+        if sk_field in db_item:
+            lek_data[sk_field] = db_item[sk_field]
+
+        return lek_data
+
+    # Handle legacy hardcoded indices for backward compatibility
+    if index_name in ["gsi1", "gsi2", "gsi3"]:
+        pk_field = f"{index_name}pk"
+        if pk_field in db_item:
+            lek_data[pk_field] = db_item[pk_field]
+
+        if index_name == "gsi3":
+            sk_field = f"{index_name}sk"
+            if sk_field in db_item:
+                lek_data[sk_field] = db_item[sk_field]
+
+        return lek_data
+
+    raise RuntimeError(f"Unsupported index {index_name=}")
+
+
+def transact_write_safe(client: "DynamoDBClient", transact_items: list):
+    """Execute transact_write_items with better error handling."""
+    try:
+        return client.transact_write_items(TransactItems=transact_items)
+    except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code == "TransactionCanceledException":
+            cancellation_reasons = e.response.get("CancellationReasons", [])
+            detailed_reasons = []
+            for i, reason in enumerate(cancellation_reasons):
+                if reason and reason.get("Code"):
+                    detailed_reasons.append(f"Item {i}: {reason['Code']} - {reason.get('Message', 'No message')}")
+            if detailed_reasons:
+                raise ValueError(f"Transaction failed: {'; '.join(detailed_reasons)}") from e
+            else:
+                raise ValueError(f"Transaction failed: {cancellation_reasons}") from e
+        else:
+            raise
 
 
 class InternalResourceBase(DynamoDbResource):
@@ -124,6 +190,10 @@ class DynamoDbMemory:
                 raise ValueError("Cannot update from non-latest version")
 
             self._update_existing_versioned(updated_resource, previous_version=latest_resource.version)
+
+            # Enforce version limit if configured
+            data_class.enforce_version_limit(self, updated_resource.resource_id)
+
             return self.read_existing(
                 existing_id=updated_resource.resource_id,
                 data_class=data_class,
@@ -190,8 +260,9 @@ class DynamoDbMemory:
         main_item = resource.to_dynamodb_item()
         v0_item = resource.to_dynamodb_item(v0_object=True)
         self.logger.debug("transact_write_items begin")
-        self.dynamodb_client.transact_write_items(
-            TransactItems=[
+        transact_write_safe(
+            self.dynamodb_client,
+            [
                 {
                     "Put": {
                         "TableName": self.table_name,
@@ -206,7 +277,7 @@ class DynamoDbMemory:
                         "ConditionExpression": "attribute_not_exists(pk) and attribute_not_exists(sk)",
                     }
                 },
-            ]
+            ],
         )
         self.logger.debug("transact_write_items complete")
 
@@ -221,8 +292,9 @@ class DynamoDbMemory:
         main_item = resource.to_dynamodb_item()
         v0_item = resource.to_dynamodb_item(v0_object=True)
 
-        self.dynamodb_client.transact_write_items(
-            TransactItems=[
+        transact_write_safe(
+            self.dynamodb_client,
+            [
                 {
                     "Put": {
                         "TableName": self.table_name,
@@ -239,7 +311,7 @@ class DynamoDbMemory:
                         "ExpressionAttributeValues": marshall({":version": previous_version}),
                     }
                 },
-            ]
+            ],
         )
 
     def list_type_by_updated_at(
@@ -546,37 +618,8 @@ class DynamoDbMemory:
                 db_item = response_data[-1].to_dynamodb_item(v0_object=True)
             else:
                 db_item = response_data[-1].to_dynamodb_item()
-            # hardcoded key information based on index; should figure out how to compute this
-            if not index_name:
-                lek_data = {"pk": db_item["pk"], "sk": db_item["sk"]}
-            elif index_name == "gsitype":
-                lek_data = {
-                    "pk": db_item["pk"],
-                    "sk": db_item["sk"],
-                    "gsitype": db_item["gsitype"],
-                    "gsitypesk": db_item["gsitypesk"],
-                }
-            elif index_name == "gsi1":
-                lek_data = {
-                    "pk": db_item["pk"],
-                    "sk": db_item["sk"],
-                    "gsi1pk": db_item["gsi1pk"],
-                }
-            elif index_name == "gsi2":
-                lek_data = {
-                    "pk": db_item["pk"],
-                    "sk": db_item["sk"],
-                    "gsi2pk": db_item["gsi2pk"],
-                }
-            elif index_name == "gsi3":
-                lek_data = {
-                    "pk": db_item["pk"],
-                    "sk": db_item["sk"],
-                    "gsi3pk": db_item["gsi3pk"],
-                    "gsi3sk": db_item["gsi3sk"],
-                }
-            else:
-                raise RuntimeError(f"Unsupported index {index_name=}")
+            # Use dynamic helper to build LastEvaluatedKey
+            lek_data = build_lek_data(db_item, index_name, response_data[-1].__class__)
 
         if lek_data:
             next_pagination_key = encode_pagination_key(lek_data)

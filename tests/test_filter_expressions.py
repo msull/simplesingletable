@@ -189,12 +189,12 @@ def test_filter_expression_pagination(dynamodb_memory: DynamoDbMemory):
 def test_filter_expression_with_reserved_words(dynamodb_memory: DynamoDbMemory):
     # Test that we can filter on attributes with names that are DynamoDB reserved words
     # This demonstrates the benefit of using ConditionBase/Attr which handles this automatically
-    
+
     class ResourceWithReservedWords(DynamoDbResource):
         name: str
         size: int  # 'size' is a reserved word in DynamoDB
         data: dict  # 'data' is a reserved word in DynamoDB
-        
+
     # Create test resources
     resource1 = dynamodb_memory.create_new(
         ResourceWithReservedWords,
@@ -208,13 +208,13 @@ def test_filter_expression_with_reserved_words(dynamodb_memory: DynamoDbMemory):
         ResourceWithReservedWords,
         {"name": "Large", "size": 100, "data": {"type": "C"}},
     )
-    
+
     # Filter by size > 30 (size is a reserved word, but Attr handles this)
     large_resources = dynamodb_memory.list_type_by_updated_at(
         ResourceWithReservedWords,
         filter_expression=Attr("size").gt(30),
     )
-    
+
     assert len(large_resources) == 2
     assert resource2 in large_resources
     assert resource3 in large_resources

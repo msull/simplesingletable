@@ -161,13 +161,13 @@ with basic_tab:
                     st.write("Updated Tags", created_user.tags)
 
         with st.form("Update other set"):
-            st.write("Current Values", created_user.other_set)
+            st.write("Other Set", created_user.other_set)
             value = st.text_input("value")
             if st.form_submit_button("Add Value") and value:
                 with st.echo():
                     memory.add_to_set(created_user, "other_set", value)
                     created_user = memory.read_existing(created_user.resource_id, User, consistent_read=True)
-                    st.write("Updated Values", created_user.values)
+                    st.write("Updated Values", created_user.other_set)
             if st.form_submit_button("Remove Value") and value:
                 with st.echo():
                     memory.remove_from_set(created_user, "other_set", value)
