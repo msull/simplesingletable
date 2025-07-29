@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Optional, Type, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Optional, Set, Type, TypeVar, Union
 
 import boto3
 from boto3.dynamodb.conditions import ConditionBase, Key
@@ -175,9 +175,14 @@ class DynamoDbMemory:
             raise ValueError("No item found with the provided key.")
         return item
 
-    def update_existing(self, existing_resource: AnyDbResource, update_obj: _PlainBaseModel | dict) -> AnyDbResource:
+    def update_existing(
+        self,
+        existing_resource: AnyDbResource,
+        update_obj: _PlainBaseModel | dict,
+        clear_fields: Optional[Set[str]] = None,
+    ) -> AnyDbResource:
         data_class = existing_resource.__class__
-        updated_resource = existing_resource.update_existing(update_obj)
+        updated_resource = existing_resource.update_existing(update_obj, clear_fields=clear_fields)
 
         if issubclass(data_class, DynamoDbResource):
             return self._put_nonversioned_resource(updated_resource)

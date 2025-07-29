@@ -238,12 +238,20 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         )
         return cls.model_validate(kwargs)
 
-    def update_existing(self: "DynamoDbResource", update_data: _PlainBaseModel | dict) -> "DynamoDbResource":
+    def update_existing(
+        self: "DynamoDbResource", update_data: _PlainBaseModel | dict, clear_fields: Optional[set[str]] = None
+    ) -> "DynamoDbResource":
         now = _now()
         if isinstance(update_data, BaseModel):
             update_kwargs = update_data.model_dump(exclude_none=True)
         else:
             update_kwargs = {**update_data}
+
+        # Handle clear_fields
+        if clear_fields:
+            for field_name in clear_fields:
+                update_kwargs[field_name] = None
+
         kwargs = self.model_dump()
         kwargs.update(update_kwargs)
         kwargs.update({"resource_id": self.resource_id, "created_at": self.created_at, "updated_at": now})
@@ -346,13 +354,19 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         return cls.model_validate(kwargs)
 
     def update_existing(
-        self: "DynamoDbVersionedResource", update_data: _PlainBaseModel | dict
+        self: "DynamoDbVersionedResource", update_data: _PlainBaseModel | dict, clear_fields: Optional[set[str]] = None
     ) -> "DynamoDbVersionedResource":
         now = _now()
         if isinstance(update_data, BaseModel):
             update_kwargs = update_data.model_dump(exclude_none=True)
         else:
             update_kwargs = {**update_data}
+
+        # Handle clear_fields
+        if clear_fields:
+            for field_name in clear_fields:
+                update_kwargs[field_name] = None
+
         kwargs = self.model_dump()
         kwargs.update(update_kwargs)
         kwargs.update(

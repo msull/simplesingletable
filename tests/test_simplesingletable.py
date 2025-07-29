@@ -5,6 +5,7 @@ from boto3.dynamodb.conditions import Key
 from pydantic import BaseModel
 
 from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource, DynamoDbResource
+from typing import Optional
 from simplesingletable.utils import generate_date_sortable_id
 
 
@@ -28,6 +29,16 @@ class MyVersionedTestResource(DynamoDbVersionedResource):
 
     def db_get_gsi1pk(self) -> str | None:
         return f"parent_id#{self.parent_id}"
+
+
+class ResourceWithOptionalFields(DynamoDbResource):
+    """Test resource with optional fields for clear_fields testing."""
+
+    name: str
+    description: Optional[str] = None
+    tags: Optional[list[str]] = None
+    expires_at: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 def test_date_id(mocker):
@@ -270,32 +281,138 @@ def test_delete_versioned_resource(dynamodb_memory: DynamoDbMemory):
             "inner_class": PydanticAttributeTest(),
         },
     )
-    
+
     # Update it to create version 2
     updated_resource = dynamodb_memory.update_existing(resource, {"some_field": "updated"})
     assert updated_resource.version == 2
-    
+
     # Verify both versions exist
     v1 = dynamodb_memory.read_existing(resource.resource_id, MyVersionedTestResource, version=1)
     v2 = dynamodb_memory.read_existing(resource.resource_id, MyVersionedTestResource, version=2)
     assert v1.some_field == "test"
     assert v2.some_field == "updated"
-    
+
     # Delete version 1
     dynamodb_memory.delete_existing(v1)
-    
+
     # Verify version 1 is gone but version 2 and v0 still exist
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=1) is None
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=2) is not None
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=0) is not None
-    
+
     # Delete version 2 (latest version)
     dynamodb_memory.delete_existing(v2)
-    
+
     # Verify all versions are gone (including v0)
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=1) is None
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=2) is None
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=0) is None
+
+
+def test_clear_fields_functionality(dynamodb_memory: DynamoDbMemory):
+    """Test the clear_fields parameter in update_existing method."""
+    # Create resource with all fields populated
+    resource = dynamodb_memory.create_new(
+        ResourceWithOptionalFields,
+        {
+            "name": "Test Resource",
+            "description": "Initial description",
+            "tags": ["tag1", "tag2"],
+            "expires_at": "2024-12-31",
+            "metadata": {"key": "value"},
+        },
+    )
+
+    assert resource.description == "Initial description"
+    assert resource.tags == ["tag1", "tag2"]
+    assert resource.expires_at == "2024-12-31"
+    assert resource.metadata == {"key": "value"}
+
+    # Test 1: Clear single field
+    updated = dynamodb_memory.update_existing(
+        resource, {"name": "Updated Name", "expires_at": None}, clear_fields={"expires_at"}
+    )
+
+    assert updated.name == "Updated Name"
+    assert updated.description == "Initial description"  # unchanged
+    assert updated.tags == ["tag1", "tag2"]  # unchanged
+    assert updated.expires_at is None  # cleared
+    assert updated.metadata == {"key": "value"}  # unchanged
+
+    # Test 2: Clear multiple fields
+    updated2 = dynamodb_memory.update_existing(
+        updated, {"description": None, "tags": None}, clear_fields={"description", "tags"}
+    )
+
+    assert updated2.name == "Updated Name"
+    assert updated2.description is None  # cleared
+    assert updated2.tags is None  # cleared
+    assert updated2.expires_at is None  # still None
+    assert updated2.metadata == {"key": "value"}  # unchanged
+
+    # Test 3: Update and clear different fields
+    updated3 = dynamodb_memory.update_existing(
+        updated2, {"name": "Final Name", "description": "New description"}, clear_fields={"metadata"}
+    )
+
+    assert updated3.name == "Final Name"
+    assert updated3.description == "New description"  # updated
+    assert updated3.tags is None  # still None
+    assert updated3.expires_at is None  # still None
+    assert updated3.metadata is None  # cleared
+
+    # Test 4: Clear field not in update data
+    resource2 = dynamodb_memory.create_new(
+        ResourceWithOptionalFields, {"name": "Resource 2", "description": "Has description", "expires_at": "2025-01-01"}
+    )
+
+    updated4 = dynamodb_memory.update_existing(
+        resource2,
+        {"name": "Resource 2 Updated"},  # only updating name
+        clear_fields={"expires_at"},  # but clearing expires_at
+    )
+
+    assert updated4.name == "Resource 2 Updated"
+    assert updated4.description == "Has description"  # unchanged
+    assert updated4.expires_at is None  # cleared even though not in update data
+
+
+def test_clear_fields_with_versioned_resource(dynamodb_memory: DynamoDbMemory):
+    """Test clear_fields with versioned resources."""
+
+    # Add optional field to versioned resource for testing
+    class VersionedResourceWithOptional(DynamoDbVersionedResource):
+        name: str
+        optional_field: Optional[str] = None
+        another_optional: Optional[int] = None
+
+    # Create versioned resource
+    resource = dynamodb_memory.create_new(
+        VersionedResourceWithOptional,
+        {"name": "Versioned Resource", "optional_field": "Initial value", "another_optional": 42},
+    )
+
+    assert resource.version == 1
+    assert resource.optional_field == "Initial value"
+    assert resource.another_optional == 42
+
+    # Update and clear field
+    updated = dynamodb_memory.update_existing(resource, {"name": "Updated Versioned"}, clear_fields={"optional_field"})
+
+    assert updated.version == 2
+    assert updated.name == "Updated Versioned"
+    assert updated.optional_field is None  # cleared
+    assert updated.another_optional == 42  # unchanged
+
+    # Verify v0 reflects the latest state
+    v0 = dynamodb_memory.get_existing(resource.resource_id, VersionedResourceWithOptional, version=0)
+    assert v0.version == 2
+    assert v0.optional_field is None
+
+    # Verify version 1 still has the original value
+    v1 = dynamodb_memory.get_existing(resource.resource_id, VersionedResourceWithOptional, version=1)
+    assert v1.version == 1
+    assert v1.optional_field == "Initial value"
 
 
 def test_delete_all_versions(dynamodb_memory: DynamoDbMemory):
@@ -311,20 +428,20 @@ def test_delete_all_versions(dynamodb_memory: DynamoDbMemory):
             "inner_class": PydanticAttributeTest(),
         },
     )
-    
+
     # Update it multiple times to create multiple versions
     updated_resource = dynamodb_memory.update_existing(resource, {"some_field": "updated"})
     final_resource = dynamodb_memory.update_existing(updated_resource, {"some_field": "final"})
-    
+
     # Verify all versions exist
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=0) is not None
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=1) is not None
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=2) is not None
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=3) is not None
-    
+
     # Delete all versions
     dynamodb_memory.delete_all_versions(resource.resource_id, MyVersionedTestResource)
-    
+
     # Verify all versions are gone
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=0) is None
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=1) is None
@@ -341,7 +458,7 @@ def test_delete_all_versions_nonexistent(dynamodb_memory: DynamoDbMemory):
 def test_delete_all_versions_invalid_class(dynamodb_memory: DynamoDbMemory):
     """Test that delete_all_versions raises an error for non-versioned resources."""
     import pytest
-    
+
     with pytest.raises(ValueError, match="delete_all_versions can only be used with versioned resources"):
         dynamodb_memory.delete_all_versions("test_id", MyNonversionedTestResource)
 
@@ -359,19 +476,19 @@ def test_delete_existing_stats_tracking(dynamodb_memory: DynamoDbMemory):
             "inner_class": PydanticAttributeTest(),
         },
     )
-    
+
     # Check initial stats
     stats = dynamodb_memory.get_stats()
     initial_count = stats.counts_by_type.get("MyVersionedTestResource", 0)
-    
+
     # Update to create version 2
     updated_resource = dynamodb_memory.update_existing(resource, {"some_field": "updated"})
-    
+
     # Delete version 1 (not latest) - should not affect stats
     dynamodb_memory.delete_existing(resource)
     stats = dynamodb_memory.get_stats()
     assert stats.counts_by_type.get("MyVersionedTestResource", 0) == initial_count
-    
+
     # Delete version 2 (latest) - should decrement stats
     dynamodb_memory.delete_existing(updated_resource)
     stats = dynamodb_memory.get_stats()

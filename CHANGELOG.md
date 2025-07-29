@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+* **Explicit Field Clearing in Updates**: Added `clear_fields` parameter to update methods, enabling explicit clearing 
+  of optional fields to `None`. This solves the common REST API design problem where there's no way to distinguish 
+  between "don't change this field" vs "clear this field to null":
+  ```python
+  # Clear an optional field to None
+  updated = repo.update(
+      existing_resource,
+      {"name": "New Name"},
+      clear_fields={"expires_at", "description"}
+  )
+  ```
+  - Supported in both `DynamoDbMemory.update_existing()` and `ResourceRepository.update()`
+  - Works with both versioned and non-versioned resources
+  - Maintains backward compatibility - existing code continues to work unchanged
+
 ## [8.2.0] - 2025-07-15
 
 ### Added

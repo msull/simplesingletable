@@ -40,7 +40,7 @@ Example:
 """
 
 import logging
-from typing import Any, Callable, List, Optional, Type, TypeVar
+from typing import Any, Callable, List, Optional, Set, Type, TypeVar
 
 from pydantic import BaseModel
 
@@ -58,7 +58,6 @@ UpdateSchemaType = TypeVar("UpdateSchemaType", bound=UpdateSchema)
 
 
 class ResourceRepository:
-
     def __init__(
         self,
         ddb: DynamoDbMemory,
@@ -121,15 +120,23 @@ class ResourceRepository:
             raise ValueError(f"{self.model_class.__name__} with id {id} not found")
         return obj
 
-    def update(self, id_or_obj: Any, obj_in: UpdateSchemaType | dict) -> T:
+    def update(self, id_or_obj: Any, obj_in: UpdateSchemaType | dict, clear_fields: Optional[Set[str]] = None) -> T:
         """
         Update an existing record by its identifier with the update schema.
+
+        Args:
+            id_or_obj: Either the ID of the record to update or the record object itself
+            obj_in: Update data (None values normally excluded)
+            clear_fields: Set of field names to explicitly clear to None,
+                         even if they are None in obj_in
         """
         if isinstance(id_or_obj, self.model_class):
             id_val = id_or_obj.resource_id
         else:
             id_val = id_or_obj
         self.logger.debug(f"Updating {self.model_class.__name__} id={id_val} with: {obj_in}")
+        if clear_fields:
+            self.logger.debug(f"Clear fields: {clear_fields}")
         if isinstance(obj_in, dict):
             self.logger.debug("Converting dict into to schema model")
             obj_in = self.update_schema_class.model_validate(obj_in)
@@ -137,7 +144,7 @@ class ResourceRepository:
             existing = id_or_obj
         else:
             existing = self.read(id_or_obj)
-        return self._update(existing, obj_in)
+        return self._update(existing, obj_in, clear_fields=clear_fields)
 
     def delete(self, id: Any) -> None:
         """
@@ -166,8 +173,8 @@ class ResourceRepository:
     def _get(self, id: Any) -> Optional[T]:
         return self.ddb.get_existing(id, self.model_class)
 
-    def _update(self, existing_obj: T, obj_in: UpdateSchemaType) -> T:
-        return self.ddb.update_existing(existing_obj, obj_in)
+    def _update(self, existing_obj: T, obj_in: UpdateSchemaType, clear_fields: Optional[Set[str]] = None) -> T:
+        return self.ddb.update_existing(existing_obj, obj_in, clear_fields=clear_fields)
 
     def _delete(self, obj: T) -> None:
         self.ddb.delete_existing(obj)
