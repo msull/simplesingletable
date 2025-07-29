@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [9.0.0] - 2025-07-29
 
 ### Added
 
@@ -23,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Supported in both `DynamoDbMemory.update_existing()` and `ResourceRepository.update()`
   - Works with both versioned and non-versioned resources
   - Maintains backward compatibility - existing code continues to work unchanged
+
+### Fixed
+
+* **🚨 CRITICAL: Version Limit Enforcement Bug with Double-Digit Versions**: Fixed a critical bug in the 
+  `max_versions` functionality for `DynamoDbVersionedResource` where version numbers ≥10 were incorrectly 
+  deleted due to lexicographical sorting of version strings. Previously, when versions exceeded 9:
+  - Version "v10" would sort before "v2" lexicographically 
+  - This caused the wrong versions to be deleted when enforcing `max_versions` limits
+  - Resources would fail to update once reaching version 10
+  
+  **Impact**: This bug affected any versioned resources with `max_versions` configured that reached 10+ versions.
+  The fix changes the sorting logic in `enforce_version_limit()` to sort by actual version numbers instead of 
+  version string keys, ensuring the most recent versions are always preserved correctly.
+  
+  **Migration**: No migration required - the fix is backward compatible and automatically resolves the issue.
 
 ## [8.2.0] - 2025-07-15
 

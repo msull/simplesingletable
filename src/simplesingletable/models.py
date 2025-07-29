@@ -402,6 +402,9 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         if len(versions) <= max_versions:
             return
 
+        # Sort by actual version number (not SK) to handle double-digit versions correctly
+        versions.sort(key=lambda x: int(x["version"]))
+
         # Delete oldest versions, keeping only the most recent max_versions
         to_delete = versions[:-max_versions]
         with memory.dynamodb_table.batch_writer() as batch:
