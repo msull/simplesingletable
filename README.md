@@ -191,7 +191,7 @@ updated = memory.update_existing(retrieved, {"status": "inactive"})
 # List with filtering
 resources = memory.list_resources(
     MyResource,
-    filter_expression=lambda r: r.status == "active",
+    filter_fn=lambda r: r.status == "active",
     limit=50
 )
 ```
