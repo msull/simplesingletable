@@ -1,18 +1,17 @@
 """Test to demonstrate the version sorting bug when versions exceed 9."""
 
-import pytest
 from boto3.dynamodb.conditions import Key
 
 from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource
 
 
-class TestVersionedResource(DynamoDbVersionedResource):
+class ExampleVersionedResource(DynamoDbVersionedResource):
     """Test resource with max_versions to demonstrate the bug."""
     
     content: str
     
     # Set max_versions to 5 to demonstrate the issue
-    model_config = {"extra": "forbid", "max_versions": 5}
+    resource_config = {"max_versions": 5}
 
 
 def test_version_sorting_bug_with_double_digit_versions(dynamodb_memory: DynamoDbMemory):
@@ -20,10 +19,10 @@ def test_version_sorting_bug_with_double_digit_versions(dynamodb_memory: DynamoD
     
     # Create a versioned resource
     resource = dynamodb_memory.create_new(
-        TestVersionedResource,
+        ExampleVersionedResource,
         {"content": "Initial version"}
     )
-    
+
     # Store the resource_id for later queries
     resource_id = resource.resource_id
     
@@ -44,7 +43,7 @@ def test_version_sorting_bug_with_double_digit_versions(dynamodb_memory: DynamoD
     
     # Query all versions to see what's actually stored
     all_versions = dynamodb_memory.dynamodb_table.query(
-        KeyConditionExpression=Key("pk").eq(f"TestVersionedResource#{resource_id}") 
+        KeyConditionExpression=Key("pk").eq(f"ExampleVersionedResource#{resource_id}")
                             & Key("sk").begins_with("v"),
         ScanIndexForward=True,  # Ascending order
     )["Items"]
@@ -70,7 +69,7 @@ def test_version_sorting_bug_with_double_digit_versions(dynamodb_memory: DynamoD
     kept_versions = [item["version"] for item in all_versions if item["sk"] != "v0"]
     kept_versions.sort()
     
-    print(f"\nVersions that should be kept (last 5): [9, 10, 11, 12, 13]")
+    print("\nVersions that should be kept (last 5): [9, 10, 11, 12, 13]")
     print(f"Versions actually kept: {kept_versions}")
     
     # With the fix, we should be keeping the correct last 5 versions
@@ -102,7 +101,7 @@ def test_version_limit_fix_with_double_digits(dynamodb_memory: DynamoDbMemory):
     # Create a resource with max_versions=3 for quicker testing
     class FixedVersionedResource(DynamoDbVersionedResource):
         content: str
-        model_config = {"extra": "forbid", "max_versions": 3}
+        resource_config = {"max_versions": 3}
     
     # Create initial resource
     resource = dynamodb_memory.create_new(

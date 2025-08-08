@@ -77,11 +77,27 @@ class ResourceConfig(TypedDict, total=False):
     compress_data: bool | None
     """Should the resource content be compress (gzip)."""
 
+    max_versions: int | None
+    """For versioned resources, the maximum number of versions to keep."""
+
 
 class BaseDynamoDbResource(BaseModel, ABC):
     """Exists only to provide a common parent for the resource classes."""
 
     gsi_config: ClassVar[Dict[str, IndexFieldConfig]] = {}
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None)
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        # Merge base resource_config into child if it defines its own
+        if "resource_config" in cls.__dict__:
+            merged = BaseDynamoDbResource.resource_config.copy()
+            merged.update(cls.__dict__["resource_config"])
+            cls.resource_config = merged
+        else:
+            # Inherit from base if not defined
+            cls.resource_config = BaseDynamoDbResource.resource_config.copy()
 
     @abstractmethod
     def get_db_resource_base_keys(self) -> set[str]:
@@ -271,7 +287,8 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     def get_db_resource_base_keys(self) -> set[str]:
         return {"resource_id", "version", "created_at", "updated_at"}
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", max_versions=None)
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=True, max_versions=None)
 
     def to_dynamodb_item(self, v0_object: bool = False) -> dict:
         prefix = self.get_unique_key_prefix()
@@ -382,7 +399,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     @classmethod
     def enforce_version_limit(cls, memory: "DynamoDbMemory", resource_id: str):
         """Enforce the max_versions limit by deleting old versions."""
-        max_versions = cls.model_config.get("max_versions", None)
+        max_versions = cls.resource_config.get("max_versions", None)
         if not max_versions or max_versions < 1:
             return
 

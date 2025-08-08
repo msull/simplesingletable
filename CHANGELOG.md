@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.0.0] - 2025-08-08
+
+### Changed
+
+* **Refactored Version Limit Configuration**: Moved `max_versions` configuration from `model_config` to `resource_config` 
+  for better separation of concerns and consistency with other resource-level settings. This change:
+  - Aligns version limiting with other resource configuration options like `compress_data`
+  - Provides a cleaner API by separating Pydantic model configuration from resource-specific settings
+  - Maintains backward compatibility through automatic config merging in subclasses
+
 ## [9.1.0] - 2025-08-01
 
 ### Added

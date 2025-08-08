@@ -1,12 +1,9 @@
 """Tests for the refactoring features: dynamic GSI, version limits, and improved error handling."""
 
-from datetime import datetime
 from typing import ClassVar
 
 import pytest
 from boto3.dynamodb.conditions import Attr, Key
-from botocore.exceptions import ClientError
-from pydantic import BaseModel
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
 from simplesingletable.dynamodb_memory import build_lek_data, transact_write_safe
@@ -45,7 +42,7 @@ class VersionedTaskResource(DynamoDbVersionedResource):
     assignee: str
 
     # Override to enforce max 3 versions
-    model_config = {"extra": "forbid", "max_versions": 3}
+    resource_config = {"max_versions": 3}
 
     gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
         "gsi1": {
