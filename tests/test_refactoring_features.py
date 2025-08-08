@@ -20,16 +20,14 @@ class TaskResource(DynamoDbResource):
 
     gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
         "gsi1": {
-            "pk": lambda self: f"task|{'COMPLETE' if self.completed else 'INCOMPLETE'}",
-            "sk": None,
+            "gsi1pk": lambda self: f"task|{'COMPLETE' if self.completed else 'INCOMPLETE'}",
         },
         "gsi2": {
-            "pk": lambda self: f"category#{self.category}",
-            "sk": None,
+            "gsi2pk": lambda self: f"category#{self.category}",
         },
         "gsi3": {
-            "pk": lambda self: f"priority#{self.priority}",
-            "sk": lambda self: self.title,
+            "gsi3pk": lambda self: f"priority#{self.priority}",
+            "gsi3sk": lambda self: self.title,
         },
     }
 
@@ -44,14 +42,12 @@ class VersionedTaskResource(DynamoDbVersionedResource):
     # Override to enforce max 3 versions
     resource_config = {"max_versions": 3}
 
-    gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
+    gsi_config = {
         "gsi1": {
-            "pk": lambda self: f"assignee#{self.assignee}",
-            "sk": None,
+            "gsi1pk": lambda self: f"assignee#{self.assignee}",
         },
         "gsi2": {
-            "pk": lambda self: f"status#{self.status}",
-            "sk": None,
+            "gsi2pk": lambda self: f"status#{self.status}",
         },
     }
 
@@ -295,27 +291,27 @@ def test_backward_compatibility_with_legacy_gsi_methods(dynamodb_memory: DynamoD
 
 def test_gsi_config_classmethod_override(dynamodb_memory: DynamoDbMemory):
     """Test that overriding get_gsi_config() classmethod works correctly."""
-    
+
     class DynamicGSIResource(DynamoDbResource):
         """Resource that overrides get_gsi_config() instead of using classvar."""
+
         name: str
         status: str
         owner: str
-        
+
         @classmethod
         def get_gsi_config(cls) -> dict:
             """Override to provide dynamic GSI configuration."""
             return {
                 "gsi1": {
-                    "pk": lambda self: f"owner#{self.owner}",
-                    "sk": None,
+                    "gsi1pk": lambda self: f"owner#{self.owner}",
                 },
-                "gsi2": {
-                    "pk": lambda self: f"status#{self.status}",
-                    "sk": lambda self: self.name,
+                "gsi3": {
+                    "gsi3pk": lambda self: f"status#{self.status}",
+                    "gsi3sk": lambda self: self.name,
                 },
             }
-    
+
     # Create a resource using the classmethod override
     resource = dynamodb_memory.create_new(
         DynamicGSIResource,
@@ -325,14 +321,14 @@ def test_gsi_config_classmethod_override(dynamodb_memory: DynamoDbMemory):
             "owner": "alice",
         },
     )
-    
+
     # Verify GSI fields are set correctly
     db_item = resource.to_dynamodb_item()
     assert db_item["gsi1pk"] == "owner#alice"
     assert "gsi1sk" not in db_item  # No sort key for gsi1
-    assert db_item["gsi2pk"] == "status#active"
-    assert db_item["gsi2sk"] == "Project Alpha"
-    
+    assert db_item["gsi3pk"] == "status#active"
+    assert db_item["gsi3sk"] == "Project Alpha"
+
     # Create another resource with different values
     resource2 = dynamodb_memory.create_new(
         DynamicGSIResource,
@@ -342,7 +338,7 @@ def test_gsi_config_classmethod_override(dynamodb_memory: DynamoDbMemory):
             "owner": "bob",
         },
     )
-    
+
     # Query by owner using GSI1
     alice_results = dynamodb_memory.paginated_dynamodb_query(
         key_condition=Key("gsi1pk").eq("owner#alice"),
@@ -351,11 +347,11 @@ def test_gsi_config_classmethod_override(dynamodb_memory: DynamoDbMemory):
     )
     assert len(alice_results) == 1
     assert alice_results[0].name == "Project Alpha"
-    
-    # Query active projects using GSI2 (sorted by name)
+
+    # Query active projects using GSI3 (sorted by name)
     active_results = dynamodb_memory.paginated_dynamodb_query(
-        key_condition=Key("gsi2pk").eq("status#active"),
-        index_name="gsi2",
+        key_condition=Key("gsi3pk").eq("status#active"),
+        index_name="gsi3",
         resource_class=DynamicGSIResource,
         ascending=True,  # Ensure consistent sort order
     )
@@ -367,35 +363,32 @@ def test_gsi_config_classmethod_override(dynamodb_memory: DynamoDbMemory):
 
 def test_gsi_config_combined_approaches(dynamodb_memory: DynamoDbMemory):
     """Test that classmethod override takes precedence over classvar."""
-    
+
     class HybridGSIResource(DynamoDbResource):
         """Resource with both classvar and classmethod GSI config."""
+
         name: str
         category: str
         priority: int
-        
+
         # Define classvar config
         gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
-            "gsi1": {
-                "pk": lambda self: f"category#{self.category}",
-                "sk": None,
-            },
+            "gsi1": {"gsi1pk": lambda self: f"category#{self.category}"}
         }
-        
+
         @classmethod
         def get_gsi_config(cls) -> dict:
             """Override should take precedence over classvar."""
             return {
-                "gsi1": {
-                    "pk": lambda self: f"priority#{self.priority}",  # Different from classvar
-                    "sk": lambda self: self.name,
-                },
                 "gsi2": {
-                    "pk": lambda self: f"category#{self.category}",
-                    "sk": None,
+                    "gsi2pk": lambda self: f"category#{self.category}",
+                },
+                "gsi3": {
+                    "gsi3pk": lambda self: f"priority#{self.priority}",  # Different from classvar
+                    "gsi3sk": lambda self: self.name,
                 },
             }
-    
+
     # Create a resource
     resource = dynamodb_memory.create_new(
         HybridGSIResource,
@@ -405,17 +398,17 @@ def test_gsi_config_combined_approaches(dynamodb_memory: DynamoDbMemory):
             "priority": 1,
         },
     )
-    
+
     # Verify that classmethod override takes precedence
     db_item = resource.to_dynamodb_item()
-    assert db_item["gsi1pk"] == "priority#1"  # From classmethod, not "category#urgent" from classvar
-    assert db_item["gsi1sk"] == "Task X"  # From classmethod
+    assert db_item["gsi3pk"] == "priority#1"  # From classmethod, not "category#urgent" from classvar
+    assert db_item["gsi3sk"] == "Task X"  # From classmethod
     assert db_item["gsi2pk"] == "category#urgent"  # From classmethod
-    
+
     # Query should use the overridden configuration
     results = dynamodb_memory.paginated_dynamodb_query(
-        key_condition=Key("gsi1pk").eq("priority#1"),
-        index_name="gsi1",
+        key_condition=Key("gsi3pk").eq("priority#1"),
+        index_name="gsi3",
         resource_class=HybridGSIResource,
     )
     assert len(results) == 1

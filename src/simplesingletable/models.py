@@ -84,6 +84,10 @@ class ResourceConfig(TypedDict, total=False):
 class BaseDynamoDbResource(BaseModel, ABC):
     """Exists only to provide a common parent for the resource classes."""
 
+    resource_id: str
+    created_at: datetime
+    updated_at: datetime
+
     gsi_config: ClassVar[Dict[str, IndexFieldConfig]] = {}
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None)
 
@@ -171,6 +175,10 @@ class BaseDynamoDbResource(BaseModel, ABC):
         entry_data: str = gzip.decompress(content).decode()
         return json.loads(entry_data)
 
+    @abstractmethod
+    def to_dynamodb_item(self) -> dict:
+        pass
+
 
 class DynamoDbResource(BaseDynamoDbResource, ABC):
     resource_id: str
@@ -203,15 +211,13 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
 
         # Apply dynamic GSI configuration
         gsi_config = self.get_gsi_config()
-        for index_name, fields in gsi_config.items():
-            pk_value = fields["pk"](self)
-            if pk_value:
-                dynamodb_data[f"{index_name}pk"] = pk_value
-            sk_func = fields.get("sk")
-            if sk_func:
-                sk_value = sk_func(self)
-                if sk_value:
-                    dynamodb_data[f"{index_name}sk"] = sk_value
+        for fields in gsi_config.values():
+            for key, value_or_func in fields.items():
+                if value_or_func:
+                    if callable(value_or_func):
+                        dynamodb_data[key] = value_or_func(self)
+                    else:
+                        dynamodb_data[key] = value_or_func
 
         # Legacy GSI methods for backward compatibility
         if gsi1pk := self.db_get_gsi1pk():
@@ -238,9 +244,9 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             excluded_keys = {"pk", "sk", "gsitypesk", "gsitype"}
             # Add any dynamic GSI fields to exclusion
             gsi_config = cls.get_gsi_config()
-            for index_name in gsi_config.keys():
-                excluded_keys.add(f"{index_name}pk")
-                excluded_keys.add(f"{index_name}sk")
+            for fields in gsi_config.values():
+                for key in fields:
+                    excluded_keys.add(key)
             # Also exclude legacy GSI fields
             excluded_keys.update({"gsi1pk", "gsi2pk", "gsi3pk", "gsi3sk"})
 
@@ -324,15 +330,13 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
 
             # Apply dynamic GSI configuration
             gsi_config = self.get_gsi_config()
-            for index_name, fields in gsi_config.items():
-                pk_value = fields["pk"](self)
-                if pk_value:
-                    dynamodb_data[f"{index_name}pk"] = pk_value
-                sk_func = fields.get("sk")
-                if sk_func:
-                    sk_value = sk_func(self)
-                    if sk_value:
-                        dynamodb_data[f"{index_name}sk"] = sk_value
+            for fields in gsi_config.values():
+                for key, value_or_func in fields.items():
+                    if value_or_func:
+                        if callable(value_or_func):
+                            dynamodb_data[key] = value_or_func(self)
+                        else:
+                            dynamodb_data[key] = value_or_func
 
             # Legacy GSI methods for backward compatibility
             if gsi1pk := self.db_get_gsi1pk():

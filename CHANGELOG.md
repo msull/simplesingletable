@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [11.0.0]
+
+### Changed
+
+* **BREAKING: GSI Configuration**: Major refactoring of the GSI configuration system.
+  - **GSI Configuration Breaking Change**: The GSI configuration format has changed from nested dictionaries with 
+    `"pk"` and `"sk"` keys to a flat dictionary structure where keys are the actual DynamoDB attribute names:
+    ```python
+    # Old format (still works via legacy methods)
+    gsi_config = {
+        "gsi1": {"pk": lambda self: f"owner#{self.owner}", "sk": lambda self: self.created_at.isoformat()}
+    }
+    
+    # New format (required for classvar/classmethod approach)
+    gsi_config = {
+        "gsi1": {
+            "gsi1pk": lambda self: f"owner#{self.owner}",
+            "gsi1sk": lambda self: self.created_at.isoformat()
+        }
+    }
+    ```
+  - Simplified dynamic GSI field iteration to support arbitrary key names and both callables and static values
+  - Updated GSI field exclusion logic in `from_dynamodb_item()` to dynamically handle any configured GSI fields
+  
+  **Note**: This is a breaking change for the GSI configuration feature introduced in v8.0.0 and v10.1.0, but since this feature 
+  was very recently added and has limited adoption, the impact should be minimal.
+
 ## [10.1.0] - 2025-08-08
 
 ### Added
