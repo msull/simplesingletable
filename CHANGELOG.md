@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+* **GSI Configuration via Classmethod Override**: Added ability to override GSI configuration using a classmethod 
+  `get_gsi_config()` in addition to the existing classvar approach. This provides more flexibility for dynamic 
+  GSI configuration scenarios:
+  ```python
+  class MyResource(DynamoDbResource):
+      @classmethod
+      def get_gsi_config(cls) -> dict:
+          # Dynamic GSI configuration logic here
+          return {
+              "gsi1": {"pk": lambda self: f"owner#{self.owner}", "sk": None},
+          }
+  ```
+  - The classmethod takes precedence over the classvar when both are defined
+  - Maintains full backward compatibility with existing classvar and legacy method approaches
+  - Useful for cases where GSI configuration needs to be computed dynamically or based on environment
+
 ## [10.0.0] - 2025-08-08
 
 ### Changed

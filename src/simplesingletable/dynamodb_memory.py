@@ -55,7 +55,8 @@ def build_lek_data(db_item: dict, index_name: Optional[str], resource_class: Typ
         return lek_data
 
     # Handle dynamic GSI configuration
-    if hasattr(resource_class, "gsi_config") and index_name in resource_class.gsi_config:
+    gsi_config = resource_class.get_gsi_config()
+    if index_name in gsi_config:
         # Add pk field for this index
         pk_field = f"{index_name}pk"
         if pk_field in db_item:

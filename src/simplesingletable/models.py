@@ -99,6 +99,18 @@ class BaseDynamoDbResource(BaseModel, ABC):
             # Inherit from base if not defined
             cls.resource_config = BaseDynamoDbResource.resource_config.copy()
 
+    @classmethod
+    def get_gsi_config(cls) -> Dict[str, IndexFieldConfig]:
+        """Get the GSI configuration for this resource.
+
+        Override this method to provide dynamic GSI configuration.
+        By default, returns the class variable gsi_config.
+
+        Returns:
+            Dictionary mapping GSI names to their field configurations.
+        """
+        return cls.gsi_config
+
     @abstractmethod
     def get_db_resource_base_keys(self) -> set[str]:
         """Returns a set of the string values corresponding to all of attributes on the Base resource object.
@@ -190,7 +202,8 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         )
 
         # Apply dynamic GSI configuration
-        for index_name, fields in self.gsi_config.items():
+        gsi_config = self.get_gsi_config()
+        for index_name, fields in gsi_config.items():
             pk_value = fields["pk"](self)
             if pk_value:
                 dynamodb_data[f"{index_name}pk"] = pk_value
@@ -224,7 +237,8 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             # Filter out DynamoDB-specific keys
             excluded_keys = {"pk", "sk", "gsitypesk", "gsitype"}
             # Add any dynamic GSI fields to exclusion
-            for index_name in cls.gsi_config.keys():
+            gsi_config = cls.get_gsi_config()
+            for index_name in gsi_config.keys():
                 excluded_keys.add(f"{index_name}pk")
                 excluded_keys.add(f"{index_name}sk")
             # Also exclude legacy GSI fields
@@ -309,7 +323,8 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
             dynamodb_data["gsitypesk"] = self.db_get_gsitypesk()
 
             # Apply dynamic GSI configuration
-            for index_name, fields in self.gsi_config.items():
+            gsi_config = self.get_gsi_config()
+            for index_name, fields in gsi_config.items():
                 pk_value = fields["pk"](self)
                 if pk_value:
                     dynamodb_data[f"{index_name}pk"] = pk_value
