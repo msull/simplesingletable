@@ -196,6 +196,133 @@ resources = memory.list_resources(
 )
 ```
 
+### Paginated Queries
+
+The library provides powerful paginated query capabilities for efficient data retrieval from DynamoDB, supporting both primary key and GSI-based queries with filtering.
+
+#### Basic Paginated Query
+
+```python
+from simplesingletable import exhaust_pagination
+
+# Direct paginated query with GSI
+results = memory.paginated_dynamodb_query(
+    resource_class=MyResource,
+    index_name="gsi1",
+    key_condition=Key("gsi1pk").eq("status#active"),
+    results_limit=100,  # Items per page
+    pagination_key=None  # For first page
+)
+
+# Get all results (automatically handles pagination)
+all_results = []
+for page in exhaust_pagination(
+    lambda pk=None: memory.paginated_dynamodb_query(
+        resource_class=MyResource,
+        index_name="gsi1", 
+        key_condition=Key("gsi1pk").eq("status#active"),
+        results_limit=100,
+        pagination_key=pk
+    )
+):
+    all_results.extend(page)
+```
+
+#### Query Patterns with GSI
+
+Define query methods on your resource classes for reusable access patterns:
+
+```python
+class MyResource(DynamoDbVersionedResource):
+    status: str
+    category: str
+    
+    def db_get_gsi1pk(self) -> str | None:
+        # Sparse GSI - only index active items
+        if self.status == "active":
+            return f"{self.get_unique_key_prefix()}#{self.category}"
+        return None
+    
+    @classmethod
+    def query_by_category_kwargs(cls, category: str):
+        """Build query kwargs for category-based queries."""
+        return {
+            "index_name": "gsi1",
+            "key_condition": Key("gsi1pk").eq(f"{cls.get_unique_key_prefix()}#{category}")
+        }
+
+# Use the query pattern
+active_in_category = memory.paginated_dynamodb_query(
+    resource_class=MyResource,
+    **MyResource.query_by_category_kwargs("important"),
+    results_limit=50
+)
+```
+
+#### Advanced Filtering
+
+**Important Note on Versioned Resources**: Versioned resources use compression by default, which means DynamoDB filter expressions can only access attributes that are part of a GSI (pk, sk, gsi1pk, gsi1sk, etc.). For compressed resources, attribute-based filtering must be done client-side. Non-versioned resources don't have this limitation.
+
+```python
+from boto3.dynamodb.conditions import Attr
+
+# For NON-VERSIONED resources - DynamoDB-side filtering works
+filter_expression = Attr("status").eq("active") & Attr("priority").gt(5)
+
+# For VERSIONED resources - use client-side filtering or GSI design
+def custom_filter(resource: MyVersionedResource) -> bool:
+    return resource.status == "active" and resource.priority > 5
+
+# Combined approach (versioned resource example)
+results = memory.paginated_dynamodb_query(
+    resource_class=MyVersionedResource,
+    filter_fn=custom_filter,  # Client-side only for versioned
+    results_limit=100
+)
+```
+
+**Best Practices for Efficient Filtering**:
+1. **Design GSIs carefully** - For versioned resources, encode filterable attributes in GSI keys
+2. **Consider data volume** - Client-side filtering is acceptable for small result sets (< 1000 items)
+3. **Use `list_type_by_updated_at`** - Efficient for time-based queries with limited client-side filtering
+4. **Non-versioned for high-volume filtering** - Consider using non-versioned resources when you need extensive DynamoDB-side filtering
+
+#### Pagination Handling
+
+For UI-driven pagination or batch processing:
+
+```python
+# First page
+page1 = memory.paginated_dynamodb_query(
+    resource_class=MyResource,
+    results_limit=20
+)
+
+# Get pagination key for next page
+if page1.has_more:
+    next_key = page1.pagination_key
+    
+    # Fetch next page
+    page2 = memory.paginated_dynamodb_query(
+        resource_class=MyResource,
+        results_limit=20,
+        pagination_key=next_key
+    )
+```
+
+#### Query by Updated Time
+
+Special helper for time-based queries:
+
+```python
+# List resources by most recently updated
+recent = memory.list_type_by_updated_at(
+    MyResource,
+    results_limit=50,
+    filter_expression=Attr("status").eq("pending")
+)
+```
+
 ### Version Management
 
 ```python
