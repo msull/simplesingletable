@@ -215,7 +215,8 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             for key, value_or_func in fields.items():
                 if value_or_func:
                     if callable(value_or_func):
-                        dynamodb_data[key] = value_or_func(self)
+                        if value := value_or_func(self):
+                            dynamodb_data[key] = value
                     else:
                         dynamodb_data[key] = value_or_func
 
@@ -334,7 +335,8 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
                 for key, value_or_func in fields.items():
                     if value_or_func:
                         if callable(value_or_func):
-                            dynamodb_data[key] = value_or_func(self)
+                            if value := value_or_func(self):
+                                dynamodb_data[key] = value
                         else:
                             dynamodb_data[key] = value_or_func
 

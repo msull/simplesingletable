@@ -5,39 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [11.0.0]
+## [11.0.1] 2025-08-08
+
+### Fixed
+
+* **GSI Callable Handling**: Fixed issue where GSI callable functions returning `None` would incorrectly add fields with
+  `None` values to DynamoDB items, causing validation errors. Now, when a GSI callable returns `None`, the corresponding
+  field is properly excluded from the DynamoDB item.
+
+## [11.0.0] 2025-08-08
 
 ### Changed
 
 * **BREAKING: GSI Configuration**: Major refactoring of the GSI configuration system.
-  - **GSI Configuration Breaking Change**: The GSI configuration format has changed from nested dictionaries with 
-    `"pk"` and `"sk"` keys to a flat dictionary structure where keys are the actual DynamoDB attribute names:
-    ```python
-    # Old format (still works via legacy methods)
-    gsi_config = {
-        "gsi1": {"pk": lambda self: f"owner#{self.owner}", "sk": lambda self: self.created_at.isoformat()}
-    }
-    
-    # New format (required for classvar/classmethod approach)
-    gsi_config = {
-        "gsi1": {
-            "gsi1pk": lambda self: f"owner#{self.owner}",
-            "gsi1sk": lambda self: self.created_at.isoformat()
-        }
-    }
-    ```
-  - Simplified dynamic GSI field iteration to support arbitrary key names and both callables and static values
-  - Updated GSI field exclusion logic in `from_dynamodb_item()` to dynamically handle any configured GSI fields
-  
-  **Note**: This is a breaking change for the GSI configuration feature introduced in v8.0.0 and v10.1.0, but since this feature 
+    - **GSI Configuration Breaking Change**: The GSI configuration format has changed from nested dictionaries with
+      `"pk"` and `"sk"` keys to a flat dictionary structure where keys are the actual DynamoDB attribute names:
+      ```python
+      # Old format (still works via legacy methods)
+      gsi_config = {
+          "gsi1": {"pk": lambda self: f"owner#{self.owner}", "sk": lambda self: self.created_at.isoformat()}
+      }
+      
+      # New format (required for classvar/classmethod approach)
+      gsi_config = {
+          "gsi1": {
+              "gsi1pk": lambda self: f"owner#{self.owner}",
+              "gsi1sk": lambda self: self.created_at.isoformat()
+          }
+      }
+      ```
+    - Simplified dynamic GSI field iteration to support arbitrary key names and both callables and static values
+    - Updated GSI field exclusion logic in `from_dynamodb_item()` to dynamically handle any configured GSI fields
+
+  **Note**: This is a breaking change for the GSI configuration feature introduced in v8.0.0 and v10.1.0, but since this
+  feature
   was very recently added and has limited adoption, the impact should be minimal.
 
 ## [10.1.0] - 2025-08-08
 
 ### Added
 
-* **GSI Configuration via Classmethod Override**: Added ability to override GSI configuration using a classmethod 
-  `get_gsi_config()` in addition to the existing classvar approach. This provides more flexibility for dynamic 
+* **GSI Configuration via Classmethod Override**: Added ability to override GSI configuration using a classmethod
+  `get_gsi_config()` in addition to the existing classvar approach. This provides more flexibility for dynamic
   GSI configuration scenarios:
   ```python
   class MyResource(DynamoDbResource):
@@ -48,34 +57,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
               "gsi1": {"pk": lambda self: f"owner#{self.owner}", "sk": None},
           }
   ```
-  - The classmethod takes precedence over the classvar when both are defined
-  - Maintains full backward compatibility with existing classvar and legacy method approaches
-  - Useful for cases where GSI configuration needs to be computed dynamically or based on environment
+    - The classmethod takes precedence over the classvar when both are defined
+    - Maintains full backward compatibility with existing classvar and legacy method approaches
+    - Useful for cases where GSI configuration needs to be computed dynamically or based on environment
 
 ## [10.0.0] - 2025-08-08
 
 ### Changed
 
-* **Refactored Version Limit Configuration**: Moved `max_versions` configuration from `model_config` to `resource_config` 
+* **Refactored Version Limit Configuration**: Moved `max_versions` configuration from `model_config` to
+  `resource_config`
   for better separation of concerns and consistency with other resource-level settings. This change:
-  - Aligns version limiting with other resource configuration options like `compress_data`
-  - Provides a cleaner API by separating Pydantic model configuration from resource-specific settings
-  - Maintains backward compatibility through automatic config merging in subclasses
+    - Aligns version limiting with other resource configuration options like `compress_data`
+    - Provides a cleaner API by separating Pydantic model configuration from resource-specific settings
+    - Maintains backward compatibility through automatic config merging in subclasses
 
 ## [9.1.0] - 2025-08-01
 
 ### Added
 
-* **Versioned Repository with Version Management API**: New `VersionedResourceRepository` class in 
-  `simplesingletable.extras.versioned_repository` extends the repository pattern to provide comprehensive version 
+* **Versioned Repository with Version Management API**: New `VersionedResourceRepository` class in
+  `simplesingletable.extras.versioned_repository` extends the repository pattern to provide comprehensive version
   management capabilities for `DynamoDbVersionedResource` models.
 
 ## [9.0.0] - 2025-07-29
 
 ### Added
 
-* **Explicit Field Clearing in Updates**: Added `clear_fields` parameter to update methods, enabling explicit clearing 
-  of optional fields to `None`. This solves the common REST API design problem where there's no way to distinguish 
+* **Explicit Field Clearing in Updates**: Added `clear_fields` parameter to update methods, enabling explicit clearing
+  of optional fields to `None`. This solves the common REST API design problem where there's no way to distinguish
   between "don't change this field" vs "clear this field to null":
   ```python
   # Clear an optional field to None
@@ -85,37 +95,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       clear_fields={"expires_at", "description"}
   )
   ```
-  - Supported in both `DynamoDbMemory.update_existing()` and `ResourceRepository.update()`
-  - Works with both versioned and non-versioned resources
-  - Maintains backward compatibility - existing code continues to work unchanged
+    - Supported in both `DynamoDbMemory.update_existing()` and `ResourceRepository.update()`
+    - Works with both versioned and non-versioned resources
+    - Maintains backward compatibility - existing code continues to work unchanged
 
 ### Fixed
 
-* **🚨 CRITICAL: Version Limit Enforcement Bug with Double-Digit Versions**: Fixed a critical bug in the 
-  `max_versions` functionality for `DynamoDbVersionedResource` where version numbers ≥10 were incorrectly 
+* **🚨 CRITICAL: Version Limit Enforcement Bug with Double-Digit Versions**: Fixed a critical bug in the
+  `max_versions` functionality for `DynamoDbVersionedResource` where version numbers ≥10 were incorrectly
   deleted due to lexicographical sorting of version strings. Previously, when versions exceeded 9:
-  - Version "v10" would sort before "v2" lexicographically 
-  - This caused the wrong versions to be deleted when enforcing `max_versions` limits
-  - Resources would fail to update once reaching version 10
-  
+    - Version "v10" would sort before "v2" lexicographically
+    - This caused the wrong versions to be deleted when enforcing `max_versions` limits
+    - Resources would fail to update once reaching version 10
+
   **Impact**: This bug affected any versioned resources with `max_versions` configured that reached 10+ versions.
-  The fix changes the sorting logic in `enforce_version_limit()` to sort by actual version numbers instead of 
+  The fix changes the sorting logic in `enforce_version_limit()` to sort by actual version numbers instead of
   version string keys, ensuring the most recent versions are always preserved correctly.
-  
+
   **Migration**: No migration required - the fix is backward compatible and automatically resolves the issue.
 
 ## [8.2.0] - 2025-07-15
 
 ### Added
 
-* **Repository Pattern Interface**: New `ResourceRepository` class in `simplesingletable.extras.repository` provides a 
+* **Repository Pattern Interface**: New `ResourceRepository` class in `simplesingletable.extras.repository` provides a
   simplified CRUD interface on top of `DynamoDbMemory`. Features include:
-  - Type-safe operations with Pydantic schema validation for create/update operations
-  - Support for both versioned and non-versioned resources
-  - Flexible ID generation with optional override functions
-  - Default object creation with customizable factory functions
-  - Traditional repository methods: `create()`, `get()`, `read()`, `update()`, `delete()`, `list()`, `get_or_create()`
-  - Comprehensive logging for debugging and monitoring
+    - Type-safe operations with Pydantic schema validation for create/update operations
+    - Support for both versioned and non-versioned resources
+    - Flexible ID generation with optional override functions
+    - Default object creation with customizable factory functions
+    - Traditional repository methods: `create()`, `get()`, `read()`, `update()`, `delete()`, `list()`, `get_or_create()`
+    - Comprehensive logging for debugging and monitoring
 
 ## [8.1.1] - 2025-07-15
 
