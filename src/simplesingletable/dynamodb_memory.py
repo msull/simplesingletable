@@ -230,7 +230,7 @@ class DynamoDbMemory:
                 existing_id=existing_resource.resource_id,
                 data_class=data_class,
             )
-            if existing_resource != latest_resource:
+            if existing_resource.version != latest_resource.version:
                 raise ValueError("Cannot update from non-latest version")
 
             self._update_existing_versioned(updated_resource, previous_version=latest_resource.version)
@@ -775,10 +775,39 @@ class DynamoDbMemory:
             ScanIndexForward=ascending,
         )
 
-        if resource_class_fn:
-            loaded_data = (resource_class_fn(x).from_dynamodb_item(x) for x in query_result["Items"])
-        else:
-            loaded_data = (resource_class.from_dynamodb_item(x) for x in query_result["Items"])
+        def _load_item(item):
+            blob_placeholders = {}
+
+            if resource_class_fn:
+                data_class = resource_class_fn(item)
+            else:
+                data_class = resource_class
+            if "_blob_fields" in item and self.s3_blob_storage:
+                version = item.get("version")
+                if version is not None:
+                    version = int(version)
+                else:
+                    version = None
+                blob_fields_config = data_class.resource_config.get("blob_fields", {}) or {}
+                for field_name in item["_blob_fields"]:
+                    if field_name in blob_fields_config:
+                        # Build placeholder for this blob field
+                        s3_key = self.s3_blob_storage._build_s3_key(
+                            resource_type=data_class.__name__,
+                            resource_id=item["pk"].removeprefix(data_class.get_unique_key_prefix() + "#"),
+                            field_name=field_name,
+                            version=version,
+                        )
+                        blob_placeholders[field_name] = BlobPlaceholder(
+                            field_name=field_name,
+                            s3_key=s3_key,
+                            size_bytes=0,  # We don't track size in current implementation
+                            content_type=blob_fields_config[field_name].get("content_type"),
+                            compressed=blob_fields_config[field_name].get("compress", False),
+                        )
+            return data_class.from_dynamodb_item(item, blob_placeholders=blob_placeholders)
+
+        loaded_data = (_load_item(x) for x in query_result["Items"])
 
         # apply any post-retrieval filtration from the supplied function
         if filter_fn:

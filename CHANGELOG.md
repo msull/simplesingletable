@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [11.1.1] 2025-08-14
+
+### Fixed
+
+* **Blob Storage Bugfixes**: Fixed critical issues with the S3 blob storage feature introduced in v11.1.0:
+  - Fixed version comparison when updating versioned resources with blob fields. Changed from object equality check to version number comparison to avoid false mismatches when blob placeholders differ.
+  - Fixed `_blob_placeholders` initialization using Pydantic's `PrivateAttr` instead of `__init__` for proper private attribute handling and to prevent serialization issues.
+  - Fixed blob field placeholder handling in paginated queries (`list_type_by_updated_at`, etc.) to correctly set placeholders when loading items from query results.
+  - Fixed version number parsing in paginated queries - now correctly handles Decimal values from DynamoDB instead of assuming string format with 'v' prefix.
+
+  **Known Limitation**: When updating a versioned resource without modifying its blob fields, the blob field metadata is not preserved in the new version. This means blob fields become regular `None` values after such updates. To preserve blob references, you must re-supply the blob data in the update. This will be addressed in a future release.
+
 ## [11.1.0] 2025-08-14
 
 ### Added

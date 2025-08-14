@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Optional, Type,
 import ulid
 from boto3.dynamodb.types import Binary
 from humanize import naturalsize, precisedelta
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from .utils import generate_date_sortable_id
 
@@ -117,9 +117,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
     gsi_config: ClassVar[Dict[str, IndexFieldConfig]] = {}
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None, blob_fields=None)
 
-    def __pydantic_post_init__(self):
-        # Track blob fields that haven't been loaded yet
-        self._blob_placeholders: Dict[str, BlobPlaceholder] = {}
+    _blob_placeholders: Dict[str, BlobPlaceholder] = PrivateAttr(default_factory=dict)
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
