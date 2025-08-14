@@ -11,7 +11,8 @@ from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
-from .models import DynamoDbResource, DynamoDbVersionedResource, PaginatedList
+from .blob_storage import S3BlobStorage
+from .models import BlobPlaceholder, DynamoDbResource, DynamoDbVersionedResource, PaginatedList
 from .utils import decode_pagination_key, encode_pagination_key, marshall
 
 if TYPE_CHECKING:
@@ -130,8 +131,11 @@ class DynamoDbMemory:
     endpoint_url: Optional[str] = None
     connection_params: Optional[dict] = None
     track_stats: bool = True
+    s3_bucket: Optional[str] = None
+    s3_key_prefix: Optional[str] = None
     _dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _dynamodb_table: Optional["Table"] = field(default=None, init=False)
+    _s3_blob_storage: Optional["S3BlobStorage"] = field(default=None, init=False)
 
     def get_existing(
         self,
@@ -139,10 +143,12 @@ class DynamoDbMemory:
         data_class: Type[AnyDbResource],
         version: int = 0,
         consistent_read=False,
+        load_blobs: bool = False,
     ) -> Optional[AnyDbResource]:
         """Get object of the specified type with the provided key.
 
         The `version` parameter is ignored on non-versioned resources.
+        If load_blobs is True, blob fields will be loaded from S3.
         """
         if issubclass(data_class, DynamoDbResource):
             if version:
@@ -157,7 +163,34 @@ class DynamoDbMemory:
         response = self.dynamodb_table.get_item(Key=key, ConsistentRead=consistent_read)
         item = response.get("Item")
         if item:
-            return data_class.from_dynamodb_item(item)
+            # Build blob placeholders if blob fields are present
+            blob_placeholders = {}
+            if "_blob_fields" in item and self.s3_blob_storage:
+                blob_fields_config = data_class.resource_config.get("blob_fields", {}) or {}
+                for field_name in item["_blob_fields"]:
+                    if field_name in blob_fields_config:
+                        # Build placeholder for this blob field
+                        s3_key = self.s3_blob_storage._build_s3_key(
+                            resource_type=data_class.__name__,
+                            resource_id=existing_id,
+                            field_name=field_name,
+                            version=version if issubclass(data_class, DynamoDbVersionedResource) else None,
+                        )
+                        blob_placeholders[field_name] = BlobPlaceholder(
+                            field_name=field_name,
+                            s3_key=s3_key,
+                            size_bytes=0,  # We don't track size in current implementation
+                            content_type=blob_fields_config[field_name].get("content_type"),
+                            compressed=blob_fields_config[field_name].get("compress", False),
+                        )
+
+            resource = data_class.from_dynamodb_item(item, blob_placeholders)
+
+            # Load blobs if requested
+            if load_blobs and resource and resource.has_unloaded_blobs():
+                resource.load_blob_fields(self)
+
+            return resource
 
     def read_existing(
         self,
@@ -165,6 +198,7 @@ class DynamoDbMemory:
         data_class: Type[AnyDbResource],
         version: int = 0,
         consistent_read=False,
+        load_blobs: bool = False,
     ) -> AnyDbResource:
         """Return object of the specified type with the provided key.
 
@@ -172,7 +206,11 @@ class DynamoDbMemory:
 
         Raises a ValueError if no object with the provided id was found.
         """
-        if not (item := self.get_existing(existing_id, data_class, version, consistent_read=consistent_read)):
+        if not (
+            item := self.get_existing(
+                existing_id, data_class, version, consistent_read=consistent_read, load_blobs=load_blobs
+            )
+        ):
             raise ValueError("No item found with the provided key.")
         return item
 
@@ -224,6 +262,17 @@ class DynamoDbMemory:
             self._dynamodb_table = dynamodb.Table(self.table_name)
         return self._dynamodb_table
 
+    @property
+    def s3_blob_storage(self) -> Optional[S3BlobStorage]:
+        if self.s3_bucket and not self._s3_blob_storage:
+            self._s3_blob_storage = S3BlobStorage(
+                bucket_name=self.s3_bucket,
+                key_prefix=self.s3_key_prefix,
+                connection_params=self.connection_params,
+                endpoint_url=self.endpoint_url,
+            )
+        return self._s3_blob_storage
+
     def create_new(
         self,
         data_class: Type[AnyDbResource],
@@ -258,6 +307,15 @@ class DynamoDbMemory:
         self.dynamodb_table.delete_item(
             Key=existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
         )
+
+        # Delete blob fields from S3 if configured
+        if self.s3_blob_storage:
+            blob_fields_config = existing_resource.resource_config.get("blob_fields", {}) or {}
+            if blob_fields_config:
+                self.s3_blob_storage.delete_all_blobs(
+                    resource_type=existing_resource.__class__.__name__, resource_id=existing_resource.resource_id
+                )
+
         if self.track_stats:
             stats = MemoryStats.ensure_exists(self)
             self.increment_counter(stats, "counts_by_type." + existing_resource.__class__.__name__, -1)
@@ -273,6 +331,17 @@ class DynamoDbMemory:
                 existing_resource.resource_id, version=existing_resource.version
             )
         )
+
+        # Delete blob fields for this version from S3 if configured
+        if self.s3_blob_storage:
+            blob_fields_config = existing_resource.resource_config.get("blob_fields", {}) or {}
+            for field_name in blob_fields_config:
+                self.s3_blob_storage.delete_blob(
+                    resource_type=existing_resource.__class__.__name__,
+                    resource_id=existing_resource.resource_id,
+                    field_name=field_name,
+                    version=existing_resource.version,
+                )
 
         # Also delete v0 if this is the latest version
         latest_resource = self.get_existing(
@@ -319,6 +388,16 @@ class DynamoDbMemory:
 
         self.logger.info(f"Deleted {len(versions)} versions for resource {resource_id}")
 
+        # Delete all blob fields from S3 if configured
+        if self.s3_blob_storage:
+            blob_fields_config = data_class.resource_config.get("blob_fields", {}) or {}
+            if blob_fields_config:
+                deleted_blobs = self.s3_blob_storage.delete_all_blobs(
+                    resource_type=data_class.__name__, resource_id=resource_id
+                )
+                if deleted_blobs:
+                    self.logger.info(f"Deleted {deleted_blobs} blob fields for resource {resource_id}")
+
         if self.track_stats:
             stats = MemoryStats.ensure_exists(self)
             self.increment_counter(stats, "counts_by_type." + data_class.__name__, -1)
@@ -327,13 +406,43 @@ class DynamoDbMemory:
         return MemoryStats.ensure_exists(self)
 
     def _put_nonversioned_resource(self, resource: NonversionedDbResourceOnly) -> NonversionedDbResourceOnly:
-        item = resource.to_dynamodb_item()
+        result = resource.to_dynamodb_item()
+        # Handle both return types for backward compatibility
+        if isinstance(result, tuple):
+            item, blob_fields_data = result
+        else:
+            item, blob_fields_data = result, {}
         self.dynamodb_table.put_item(Item=item)
+
+        # Store blob fields in S3 if configured
+        if blob_fields_data and self.s3_blob_storage:
+            blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
+            for field_name, value in blob_fields_data.items():
+                if field_name in blob_fields_config:
+                    self.s3_blob_storage.put_blob(
+                        resource_type=resource.__class__.__name__,
+                        resource_id=resource.resource_id,
+                        field_name=field_name,
+                        value=value,
+                        config=blob_fields_config[field_name],
+                        version=None,
+                    )
+
         return resource
 
     def _create_new_versioned(self, resource: VersionedDbResourceOnly) -> VersionedDbResourceOnly:
-        main_item = resource.to_dynamodb_item()
-        v0_item = resource.to_dynamodb_item(v0_object=True)
+        # Handle both return types for backward compatibility
+        result = resource.to_dynamodb_item()
+        if isinstance(result, tuple):
+            main_item, blob_fields_data = result
+        else:
+            main_item, blob_fields_data = result, {}
+
+        v0_result = resource.to_dynamodb_item(v0_object=True)
+        if isinstance(v0_result, tuple):
+            v0_item, _ = v0_result  # v0 uses same blob data
+        else:
+            v0_item = v0_result
         self.logger.debug("transact_write_items begin")
         transact_write_safe(
             self.dynamodb_client,
@@ -356,6 +465,20 @@ class DynamoDbMemory:
         )
         self.logger.debug("transact_write_items complete")
 
+        # Store blob fields in S3 if configured
+        if blob_fields_data and self.s3_blob_storage:
+            blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
+            for field_name, value in blob_fields_data.items():
+                if field_name in blob_fields_config:
+                    self.s3_blob_storage.put_blob(
+                        resource_type=resource.__class__.__name__,
+                        resource_id=resource.resource_id,
+                        field_name=field_name,
+                        value=value,
+                        config=blob_fields_config[field_name],
+                        version=resource.version,
+                    )
+
         return self.read_existing(
             existing_id=resource.resource_id,
             data_class=resource.__class__,
@@ -364,8 +487,18 @@ class DynamoDbMemory:
         )
 
     def _update_existing_versioned(self, resource: VersionedDbResourceOnly, previous_version: int):
-        main_item = resource.to_dynamodb_item()
-        v0_item = resource.to_dynamodb_item(v0_object=True)
+        # Handle both return types for backward compatibility
+        result = resource.to_dynamodb_item()
+        if isinstance(result, tuple):
+            main_item, blob_fields_data = result
+        else:
+            main_item, blob_fields_data = result, {}
+
+        v0_result = resource.to_dynamodb_item(v0_object=True)
+        if isinstance(v0_result, tuple):
+            v0_item, _ = v0_result  # v0 uses same blob data
+        else:
+            v0_item = v0_result
 
         transact_write_safe(
             self.dynamodb_client,
@@ -388,6 +521,20 @@ class DynamoDbMemory:
                 },
             ],
         )
+
+        # Store blob fields in S3 if configured
+        if blob_fields_data and self.s3_blob_storage:
+            blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
+            for field_name, value in blob_fields_data.items():
+                if field_name in blob_fields_config:
+                    self.s3_blob_storage.put_blob(
+                        resource_type=resource.__class__.__name__,
+                        resource_id=resource.resource_id,
+                        field_name=field_name,
+                        value=value,
+                        config=blob_fields_config[field_name],
+                        version=resource.version,
+                    )
 
     def list_type_by_updated_at(
         self,

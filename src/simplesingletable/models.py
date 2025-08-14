@@ -71,6 +71,19 @@ class DynamoDbVersionedItemKeys(TypedDict):
     metadata: Optional[dict]  # user supplied metadata for anything that needs to be accessible to dynamodb filter expr
 
 
+class BlobFieldConfig(TypedDict, total=False):
+    """Configuration for a blob field stored in S3."""
+
+    compress: bool
+    """Whether to compress the blob data before storing in S3."""
+
+    content_type: str | None
+    """Optional content type for the blob (e.g., 'application/json')."""
+
+    max_size_bytes: int | None
+    """Optional maximum size limit for the blob in bytes."""
+
+
 class ResourceConfig(TypedDict, total=False):
     """A TypedDict for configuring Resource behaviour."""
 
@@ -79,6 +92,19 @@ class ResourceConfig(TypedDict, total=False):
 
     max_versions: int | None
     """For versioned resources, the maximum number of versions to keep."""
+
+    blob_fields: Dict[str, BlobFieldConfig] | None
+    """Configuration for fields that should be stored as blobs in S3."""
+
+
+class BlobPlaceholder(TypedDict):
+    """Metadata for a blob field stored in S3."""
+
+    field_name: str
+    s3_key: str
+    size_bytes: int
+    content_type: Optional[str]
+    compressed: bool
 
 
 class BaseDynamoDbResource(BaseModel, ABC):
@@ -89,7 +115,11 @@ class BaseDynamoDbResource(BaseModel, ABC):
     updated_at: datetime
 
     gsi_config: ClassVar[Dict[str, IndexFieldConfig]] = {}
-    resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None)
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None, blob_fields=None)
+
+    def __pydantic_post_init__(self):
+        # Track blob fields that haven't been loaded yet
+        self._blob_placeholders: Dict[str, BlobPlaceholder] = {}
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
@@ -176,8 +206,58 @@ class BaseDynamoDbResource(BaseModel, ABC):
         return json.loads(entry_data)
 
     @abstractmethod
-    def to_dynamodb_item(self) -> dict:
+    def to_dynamodb_item(self):
+        """Convert to DynamoDB item.
+
+        Returns either:
+        - dict: DynamoDB item (for backward compatibility)
+        - tuple[dict, dict]: (DynamoDB item, blob fields data)
+        """
         pass
+
+    def has_unloaded_blobs(self) -> bool:
+        """Check if this resource has blob fields that haven't been loaded."""
+        return bool(self._blob_placeholders)
+
+    def get_unloaded_blob_fields(self) -> list[str]:
+        """Get list of blob field names that haven't been loaded."""
+        return list(self._blob_placeholders.keys())
+
+    def load_blob_fields(self, memory: "DynamoDbMemory", fields: Optional[list[str]] = None) -> None:
+        """Load blob fields from S3.
+
+        Args:
+            memory: DynamoDbMemory instance with S3 configuration
+            fields: Optional list of specific fields to load. If None, loads all blob fields.
+        """
+        if not memory.s3_blob_storage:
+            raise ValueError("S3 blob storage not configured in DynamoDbMemory")
+
+        if not self._blob_placeholders:
+            return  # No blobs to load
+
+        fields_to_load = fields or list(self._blob_placeholders.keys())
+
+        for field_name in fields_to_load:
+            if field_name not in self._blob_placeholders:
+                continue
+
+            # Get version for versioned resources
+            version = getattr(self, "version", None) if isinstance(self, DynamoDbVersionedResource) else None
+
+            # Load blob from S3
+            blob_data = memory.s3_blob_storage.get_blob(
+                resource_type=self.__class__.__name__,
+                resource_id=self.resource_id,
+                field_name=field_name,
+                version=version,
+            )
+
+            # Set the field value
+            setattr(self, field_name, blob_data)
+
+            # Remove from placeholders
+            del self._blob_placeholders[field_name]
 
 
 class DynamoDbResource(BaseDynamoDbResource, ABC):
@@ -191,14 +271,34 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
     def get_db_resource_base_keys(self) -> set[str]:
         return {"resource_id", "created_at", "updated_at"}
 
-    def to_dynamodb_item(self) -> dict:
+    def to_dynamodb_item(self):
+        """Convert resource to DynamoDB item format.
+
+        Returns:
+            dict if no blob fields configured (backward compatibility)
+            tuple[dict, dict] if blob fields are configured
+        """
         prefix = self.get_unique_key_prefix()
         key = f"{prefix}#{self.resource_id}"
 
+        # Extract blob fields if configured
+        blob_fields_config = self.resource_config.get("blob_fields", {}) or {}
+        blob_fields_data = {}
+
+        # Get model data
+        model_data = self.model_dump(exclude_none=True)
+
+        # Extract blob fields from model data
+        for field_name in blob_fields_config:
+            if field_name in model_data:
+                blob_fields_data[field_name] = model_data.pop(field_name)
+
         if self.resource_config["compress_data"]:
-            dynamodb_data = {"data": self.compress_model_content()}
+            # When compressing, we need to exclude blob fields from the compressed data
+            temp_model = self.model_copy(update=model_data)
+            dynamodb_data = {"data": temp_model.compress_model_content()}
         else:
-            dynamodb_data = clean_data(self.model_dump(exclude_none=True))
+            dynamodb_data = clean_data(model_data)
 
         dynamodb_data.update(
             {
@@ -230,19 +330,26 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             dynamodb_data["gsi3pk"] = gsi3pk
             dynamodb_data["gsi3sk"] = gsi3sk
 
+        # Add blob placeholders to DynamoDB item
+        if blob_fields_data:
+            dynamodb_data["_blob_fields"] = list(blob_fields_data.keys())
+            return dynamodb_data, blob_fields_data
+
+        # Return just dict for backward compatibility when no blob fields
         return dynamodb_data
 
     @classmethod
     def from_dynamodb_item(
         cls: Type["DynamoDbResource"],
         dynamodb_data: DynamoDbVersionedItemKeys | dict,
+        blob_placeholders: Optional[Dict[str, BlobPlaceholder]] = None,
     ) -> "DynamoDbResource":
         if cls.resource_config["compress_data"]:
             compressed_data = dynamodb_data["data"]
             data = cls.decompress_model_content(compressed_data)  # noqa
         else:
             # Filter out DynamoDB-specific keys
-            excluded_keys = {"pk", "sk", "gsitypesk", "gsitype"}
+            excluded_keys = {"pk", "sk", "gsitypesk", "gsitype", "_blob_fields"}
             # Add any dynamic GSI fields to exclusion
             gsi_config = cls.get_gsi_config()
             for fields in gsi_config.values():
@@ -252,7 +359,24 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             excluded_keys.update({"gsi1pk", "gsi2pk", "gsi3pk", "gsi3sk"})
 
             data = {k: v for k, v in dynamodb_data.items() if k not in excluded_keys}
-        return cls.model_validate(data)
+
+        # Handle blob fields
+        blob_field_names = dynamodb_data.get("_blob_fields", [])
+        blob_fields_config = cls.resource_config.get("blob_fields", {}) or {}
+
+        # Set blob fields to None if they're configured as blobs
+        for field_name in blob_field_names:
+            if field_name in blob_fields_config:
+                data[field_name] = None
+
+        # Create the resource instance
+        resource = cls.model_validate(data)
+
+        # Store blob placeholders if provided
+        if blob_placeholders:
+            resource._blob_placeholders = blob_placeholders
+
+        return resource
 
     @classmethod
     def dynamodb_lookup_keys_from_id(cls, existing_id: str) -> dict:
@@ -311,12 +435,34 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=True, max_versions=None)
 
-    def to_dynamodb_item(self, v0_object: bool = False) -> dict:
+    def to_dynamodb_item(self, v0_object: bool = False):
+        """Convert resource to DynamoDB item format.
+
+        Returns:
+            dict if no blob fields configured (backward compatibility)
+            tuple[dict, dict] if blob fields are configured
+        """
         prefix = self.get_unique_key_prefix()
+
+        # Extract blob fields if configured
+        blob_fields_config = self.resource_config.get("blob_fields", {}) or {}
+        blob_fields_data = {}
+
+        # Get model data
+        model_data = self.model_dump(exclude_none=True)
+
+        # Extract blob fields from model data
+        for field_name in blob_fields_config:
+            if field_name in model_data:
+                blob_fields_data[field_name] = model_data.pop(field_name)
+
+        # Create a temporary model without blob fields for compression
+        temp_model = self.model_copy(update=model_data)
+
         dynamodb_data = {
             "pk": f"{prefix}#{self.resource_id}",
             "version": self.version,
-            "data": self.compress_model_content(),
+            "data": temp_model.compress_model_content(),
         }
         if v0_object:
             sk = "v0"
@@ -352,16 +498,40 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
                 dynamodb_data["gsi3pk"] = gsi3pk
                 dynamodb_data["gsi3sk"] = gsi3sk
 
+        # Add blob placeholders to DynamoDB item
+        if blob_fields_data:
+            dynamodb_data["_blob_fields"] = list(blob_fields_data.keys())
+            return dynamodb_data, blob_fields_data
+
+        # Return just dict for backward compatibility when no blob fields
         return dynamodb_data
 
     @classmethod
     def from_dynamodb_item(
         cls: Type["DynamoDbVersionedResource"],
         dynamodb_data: DynamoDbVersionedItemKeys | dict,
+        blob_placeholders: Optional[Dict[str, BlobPlaceholder]] = None,
     ) -> "DynamoDbVersionedResource":
         compressed_data = dynamodb_data["data"]
         data = cls.decompress_model_content(compressed_data)  # noqa
-        return cls.model_validate(data)
+
+        # Handle blob fields
+        blob_field_names = dynamodb_data.get("_blob_fields", [])
+        blob_fields_config = cls.resource_config.get("blob_fields", {}) or {}
+
+        # Set blob fields to None if they're configured as blobs
+        for field_name in blob_field_names:
+            if field_name in blob_fields_config:
+                data[field_name] = None
+
+        # Create the resource instance
+        resource = cls.model_validate(data)
+
+        # Store blob placeholders if provided
+        if blob_placeholders:
+            resource._blob_placeholders = blob_placeholders
+
+        return resource
 
     @classmethod
     def dynamodb_lookup_keys_from_id(cls, existing_id: str, version: int = 0) -> dict:

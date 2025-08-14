@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+* **S3 Blob Storage Support**: Added comprehensive support for storing large fields in S3 instead of DynamoDB, enabling
+  efficient storage of large data while maintaining fast query performance.
+    - New `BlobFieldConfig` type for configuring blob field behavior (compression, content type, size limits)
+    - Extended `ResourceConfig` with `blob_fields` configuration option
+    - Created `S3BlobStorage` module for handling all S3 operations
+    - Lazy loading of blob fields with `load_blobs` parameter and `load_blob_fields()` method
+    - Full support for both versioned and non-versioned resources
+    - Automatic compression with configurable gzip option
+    - Size limit enforcement per field
+    - Automatic cleanup of S3 blobs when resources are deleted
+    - Complete backward compatibility - existing code works without changes
+
+  Example usage:
+  ```python
+  class MyResource(DynamoDbResource):
+      title: str
+      large_data: Optional[dict] = None  # Stored in S3
+      
+      resource_config = ResourceConfig(
+          blob_fields={
+              "large_data": BlobFieldConfig(
+                  compress=True,
+                  content_type="application/json",
+                  max_size_bytes=10 * 1024 * 1024  # 10MB limit
+              )
+          }
+      )
+  
+  # Initialize with S3
+  memory = DynamoDbMemory(
+      logger=logger,
+      table_name="my-table",
+      s3_bucket="my-bucket",
+      s3_key_prefix="blobs"  # optional
+  )
+  
+  # Create - large_data automatically goes to S3
+  resource = memory.create_new(MyResource, {
+      "title": "Test",
+      "large_data": {"huge": "dataset"}
+  })
+  
+  # Read without blobs (fast)
+  doc = memory.get_existing(id, MyResource)
+  
+  # Load blobs when needed
+  doc.load_blob_fields(memory)
+  ```
+
 ## [11.0.1] 2025-08-08
 
 ### Fixed
