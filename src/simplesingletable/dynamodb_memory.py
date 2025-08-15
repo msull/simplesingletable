@@ -167,8 +167,17 @@ class DynamoDbMemory:
             blob_placeholders = {}
             if "_blob_fields" in item and self.s3_blob_storage:
                 blob_fields_config = data_class.resource_config.get("blob_fields", {}) or {}
+                blob_versions = item.get("_blob_versions", {})
+
                 for field_name in item["_blob_fields"]:
                     if field_name in blob_fields_config:
+                        # Only create placeholder if this field has a blob stored
+                        # Check _blob_versions for versioned resources, or just field presence for non-versioned
+                        if issubclass(data_class, DynamoDbVersionedResource):
+                            # For versioned resources, check if field has a version reference
+                            if field_name not in blob_versions:
+                                continue  # No blob stored for this field
+
                         # Build placeholder for this blob field
                         s3_key = self.s3_blob_storage._build_s3_key(
                             resource_type=data_class.__name__,
@@ -789,8 +798,16 @@ class DynamoDbMemory:
                 else:
                     version = None
                 blob_fields_config = data_class.resource_config.get("blob_fields", {}) or {}
+                blob_versions = item.get("_blob_versions", {})
+
                 for field_name in item["_blob_fields"]:
                     if field_name in blob_fields_config:
+                        # Only create placeholder if this field has a blob stored
+                        # Check _blob_versions for versioned resources
+                        if version is not None:  # Versioned resource
+                            if field_name not in blob_versions:
+                                continue  # No blob stored for this field
+
                         # Build placeholder for this blob field
                         s3_key = self.s3_blob_storage._build_s3_key(
                             resource_type=data_class.__name__,

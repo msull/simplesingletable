@@ -5,30 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [11.2.0] 2025-08-15
 
 ### Fixed
 
-* **Blob Field Preservation for Versioned Resources**: Fixed the critical issue where blob field metadata was lost when updating versioned resources without modifying the blob fields. The fix introduces blob version references to track which S3 version each blob field points to:
-  - Added `_blob_versions` mapping to track S3 blob version references for each field
-  - Modified `to_dynamodb_item()` to always include `_blob_fields` metadata when blob fields are configured, regardless of whether data exists
-  - Updated `create_new()` and `update_existing()` to properly set and preserve blob version references
-  - Enhanced `load_blob_fields()` to use the correct S3 version when loading blobs based on version references
-  - Maintains full backward compatibility - existing resources without `_blob_versions` continue to work correctly
-  
+* **Blob Field Preservation for Versioned Resources**: Fixed the critical issue where blob field metadata was lost when
+  updating versioned resources without modifying the blob fields. The fix introduces blob version references to track
+  which S3 version each blob field points to:
+    - Added `_blob_versions` mapping to track S3 blob version references for each field
+    - Modified `to_dynamodb_item()` to always include `_blob_fields` metadata when blob fields are configured,
+      regardless of whether data exists
+    - Updated `create_new()` and `update_existing()` to properly set and preserve blob version references
+    - Enhanced `load_blob_fields()` to use the correct S3 version when loading blobs based on version references
+    - Fixed blob placeholder creation to only create placeholders for fields with actual blob data (not cleared fields)
+    - Now safe to use `load_blobs=True` even when no blobs exist - no errors will occur
+    - Maintains full backward compatibility - existing resources without `_blob_versions` continue to work correctly
+
   This ensures that blob fields remain accessible across all versions without duplicating unchanged data in S3.
+
+### Added
+
+* **Real S3 Integration Tests**: Added comprehensive integration test suite using MinIO for testing blob storage with
+  actual S3 operations:
+    - Added MinIO service to `docker-compose.yml` for local S3-compatible storage
+    - Added `test_blob_storage_integration.py` with full integration tests covering all blob storage scenarios
+    - Tests verify actual S3 operations including blob creation, retrieval, versioning, and deletion
+    - Provides confidence that blob storage works correctly with real S3-compatible services
 
 ## [11.1.1] 2025-08-14
 
 ### Fixed
 
 * **Blob Storage Bugfixes**: Fixed critical issues with the S3 blob storage feature introduced in v11.1.0:
-  - Fixed version comparison when updating versioned resources with blob fields. Changed from object equality check to version number comparison to avoid false mismatches when blob placeholders differ.
-  - Fixed `_blob_placeholders` initialization using Pydantic's `PrivateAttr` instead of `__init__` for proper private attribute handling and to prevent serialization issues.
-  - Fixed blob field placeholder handling in paginated queries (`list_type_by_updated_at`, etc.) to correctly set placeholders when loading items from query results.
-  - Fixed version number parsing in paginated queries - now correctly handles Decimal values from DynamoDB instead of assuming string format with 'v' prefix.
+    - Fixed version comparison when updating versioned resources with blob fields. Changed from object equality check to
+      version number comparison to avoid false mismatches when blob placeholders differ.
+    - Fixed `_blob_placeholders` initialization using Pydantic's `PrivateAttr` instead of `__init__` for proper private
+      attribute handling and to prevent serialization issues.
+    - Fixed blob field placeholder handling in paginated queries (`list_type_by_updated_at`, etc.) to correctly set
+      placeholders when loading items from query results.
+    - Fixed version number parsing in paginated queries - now correctly handles Decimal values from DynamoDB instead of
+      assuming string format with 'v' prefix.
 
-  **Known Limitation**: When updating a versioned resource without modifying its blob fields, the blob field metadata is not preserved in the new version. This means blob fields become regular `None` values after such updates. To preserve blob references, you must re-supply the blob data in the update. This will be addressed in a future release.
+  **Known Limitation**: When updating a versioned resource without modifying its blob fields, the blob field metadata is
+  not preserved in the new version. This means blob fields become regular `None` values after such updates. To preserve
+  blob references, you must re-supply the blob data in the update. This will be addressed in a future release.
 
 ## [11.1.0] 2025-08-14
 
