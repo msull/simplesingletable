@@ -1,15 +1,15 @@
 import json
-from typing import Optional, Dict, Any
-from unittest.mock import Mock, patch, MagicMock
+from typing import Optional
+from unittest.mock import Mock
 import pytest
 from datetime import datetime
 
-from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
+from simplesingletable import DynamoDbResource, DynamoDbVersionedResource
 from simplesingletable.models import ResourceConfig, BlobFieldConfig
 from simplesingletable.blob_storage import S3BlobStorage
 
 
-class TestResourceWithBlobs(DynamoDbResource):
+class DemoResourceWithBlobs(DynamoDbResource):
     """Test resource with blob fields."""
     
     name: str
@@ -33,7 +33,7 @@ class TestResourceWithBlobs(DynamoDbResource):
     )
 
 
-class TestVersionedResourceWithBlobs(DynamoDbVersionedResource):
+class DemoVersionedResourceWithBlobs(DynamoDbVersionedResource):
     """Test versioned resource with blob fields."""
     
     title: str
@@ -97,7 +97,7 @@ class TestBlobStorageIntegration:
         binary_data = b"Binary content here"
         
         resource = memory.create_new(
-            TestResourceWithBlobs,
+            DemoResourceWithBlobs,
             {
                 "name": "Test Resource",
                 "small_data": "Regular field",
@@ -130,7 +130,7 @@ class TestBlobStorageIntegration:
         
         # Create resource
         resource = memory.create_new(
-            TestResourceWithBlobs,
+            DemoResourceWithBlobs,
             {
                 "name": "Test Resource",
                 "small_data": "Regular field",
@@ -142,7 +142,7 @@ class TestBlobStorageIntegration:
         # Read without loading blobs
         loaded = memory.get_existing(
             resource.resource_id, 
-            TestResourceWithBlobs,
+            DemoResourceWithBlobs,
             load_blobs=False
         )
         
@@ -183,7 +183,7 @@ class TestBlobStorageIntegration:
         
         # Create resource
         resource = memory.create_new(
-            TestResourceWithBlobs,
+            DemoResourceWithBlobs,
             {
                 "name": "Test Resource",
                 "small_data": "Regular field",
@@ -195,7 +195,7 @@ class TestBlobStorageIntegration:
         # Read with loading blobs
         loaded = memory.get_existing(
             resource.resource_id,
-            TestResourceWithBlobs,
+            DemoResourceWithBlobs,
             load_blobs=True
         )
         
@@ -223,7 +223,7 @@ class TestBlobStorageIntegration:
         
         # Create and read resource without blobs
         resource = memory.create_new(
-            TestResourceWithBlobs,
+            DemoResourceWithBlobs,
             {
                 "name": "Test",
                 "small_data": "data",
@@ -232,7 +232,7 @@ class TestBlobStorageIntegration:
             }
         )
         
-        loaded = memory.get_existing(resource.resource_id, TestResourceWithBlobs)
+        loaded = memory.get_existing(resource.resource_id, DemoResourceWithBlobs)
         
         # Load only specific blob field
         loaded.load_blob_fields(memory, fields=["large_response"])
@@ -252,7 +252,7 @@ class TestBlobStorageIntegration:
         # Create versioned resource
         doc_content = "This is a large document content" * 100
         resource = memory.create_new(
-            TestVersionedResourceWithBlobs,
+            DemoVersionedResourceWithBlobs,
             {
                 "title": "Document",
                 "metadata": {"author": "Test"},
@@ -291,15 +291,15 @@ class TestBlobStorageIntegration:
         s3_storage.s3_client.get_paginator = Mock(return_value=Mock(
             paginate=Mock(return_value=[
                 {'Contents': [
-                    {'Key': 'test-prefix/TestResourceWithBlobs/id/large_response'},
-                    {'Key': 'test-prefix/TestResourceWithBlobs/id/binary_content'}
+                    {'Key': 'test-prefix/DemoResourceWithBlobs/id/large_response'},
+                    {'Key': 'test-prefix/DemoResourceWithBlobs/id/binary_content'}
                 ]}
             ])
         ))
         
         # Create and delete resource
         resource = memory.create_new(
-            TestResourceWithBlobs,
+            DemoResourceWithBlobs,
             {
                 "name": "Test",
                 "small_data": "data",
@@ -407,7 +407,7 @@ class TestBlobStorageIntegration:
     def test_blob_fields_must_be_optional(self):
         """Test that blob fields must be Optional in the model."""
         # This should work - blob fields are Optional
-        resource = TestResourceWithBlobs(
+        resource = DemoResourceWithBlobs(
             resource_id="test",
             created_at=datetime.now(),
             updated_at=datetime.now(),

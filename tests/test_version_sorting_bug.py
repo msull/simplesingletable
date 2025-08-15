@@ -94,7 +94,7 @@ def test_version_limit_fix_with_double_digits(dynamodb_memory: DynamoDbMemory):
     # Create a resource with max_versions=3 for quicker testing
     class FixedVersionedResource(DynamoDbVersionedResource):
         content: str
-        resource_config = {"max_versions": 3}
+        resource_config = {"compress_data": False, "max_versions": 3}
 
     # Create initial resource
     resource = dynamodb_memory.create_new(FixedVersionedResource, {"content": "Initial version"})

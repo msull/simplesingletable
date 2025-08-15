@@ -121,18 +121,6 @@ class BaseDynamoDbResource(BaseModel, ABC):
     _blob_versions: Dict[str, int] = PrivateAttr(default_factory=dict)
 
     @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
-        super().__pydantic_init_subclass__(**kwargs)
-        # Merge base resource_config into child if it defines its own
-        if "resource_config" in cls.__dict__:
-            merged = BaseDynamoDbResource.resource_config.copy()
-            merged.update(cls.__dict__["resource_config"])
-            cls.resource_config = merged
-        else:
-            # Inherit from base if not defined
-            cls.resource_config = BaseDynamoDbResource.resource_config.copy()
-
-    @classmethod
     def get_gsi_config(cls) -> Dict[str, IndexFieldConfig]:
         """Get the GSI configuration for this resource.
 
@@ -270,6 +258,18 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False)
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        # Merge base resource_config into child if it defines its own
+        if "resource_config" in cls.__dict__:
+            merged = DynamoDbResource.resource_config.copy()
+            merged.update(cls.__dict__["resource_config"])
+            cls.resource_config = merged
+        else:
+            # Inherit from base if not defined
+            cls.resource_config = DynamoDbResource.resource_config.copy()
 
     def get_db_resource_base_keys(self) -> set[str]:
         return {"resource_id", "created_at", "updated_at"}
@@ -450,6 +450,18 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=True, max_versions=None)
 
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        # Merge base resource_config into child if it defines its own
+        if "resource_config" in cls.__dict__:
+            merged = DynamoDbVersionedResource.resource_config.copy()
+            merged.update(cls.__dict__["resource_config"])
+            cls.resource_config = merged
+        else:
+            # Inherit from base if not defined
+            cls.resource_config = DynamoDbVersionedResource.resource_config.copy()
+
     def to_dynamodb_item(self, v0_object: bool = False):
         """Convert resource to DynamoDB item format.
 
@@ -458,6 +470,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
             tuple[dict, dict] if blob fields are configured
         """
         prefix = self.get_unique_key_prefix()
+        key = f"{prefix}#{self.resource_id}"
 
         # Extract blob fields if configured
         blob_fields_config = self.resource_config.get("blob_fields", {}) or {}
@@ -473,12 +486,15 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
 
         # Create a temporary model without blob fields for compression
         temp_model = self.model_copy(update=model_data)
+        if self.resource_config["compress_data"]:
+            # When compressing, we need to exclude blob fields from the compressed data
+            temp_model = self.model_copy(update=model_data)
+            dynamodb_data = {"data": temp_model.compress_model_content()}
+        else:
+            dynamodb_data = clean_data(model_data)
 
-        dynamodb_data = {
-            "pk": f"{prefix}#{self.resource_id}",
-            "version": self.version,
-            "data": temp_model.compress_model_content(),
-        }
+        dynamodb_data.update({"pk": key, "version": self.version})
+
         if v0_object:
             sk = "v0"
         else:
@@ -535,8 +551,21 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         dynamodb_data: DynamoDbVersionedItemKeys | dict,
         blob_placeholders: Optional[Dict[str, BlobPlaceholder]] = None,
     ) -> "DynamoDbVersionedResource":
-        compressed_data = dynamodb_data["data"]
-        data = cls.decompress_model_content(compressed_data)  # noqa
+        if cls.resource_config["compress_data"]:
+            compressed_data = dynamodb_data["data"]
+            data = cls.decompress_model_content(compressed_data)  # noqa
+        else:
+            # Filter out DynamoDB-specific keys
+            excluded_keys = {"pk", "sk", "gsitypesk", "gsitype", "_blob_fields", "_blob_versions"}
+            # Add any dynamic GSI fields to exclusion
+            gsi_config = cls.get_gsi_config()
+            for fields in gsi_config.values():
+                for key in fields:
+                    excluded_keys.add(key)
+            # Also exclude legacy GSI fields
+            excluded_keys.update({"gsi1pk", "gsi2pk", "gsi3pk", "gsi3sk"})
+
+            data = {k: v for k, v in dynamodb_data.items() if k not in excluded_keys}
 
         # Handle blob fields
         blob_field_names = dynamodb_data.get("_blob_fields", [])
