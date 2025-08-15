@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+* **Blob Field Preservation for Versioned Resources**: Fixed the critical issue where blob field metadata was lost when updating versioned resources without modifying the blob fields. The fix introduces blob version references to track which S3 version each blob field points to:
+  - Added `_blob_versions` mapping to track S3 blob version references for each field
+  - Modified `to_dynamodb_item()` to always include `_blob_fields` metadata when blob fields are configured, regardless of whether data exists
+  - Updated `create_new()` and `update_existing()` to properly set and preserve blob version references
+  - Enhanced `load_blob_fields()` to use the correct S3 version when loading blobs based on version references
+  - Maintains full backward compatibility - existing resources without `_blob_versions` continue to work correctly
+  
+  This ensures that blob fields remain accessible across all versions without duplicating unchanged data in S3.
+
 ## [11.1.1] 2025-08-14
 
 ### Fixed

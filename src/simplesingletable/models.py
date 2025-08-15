@@ -118,6 +118,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None, blob_fields=None)
 
     _blob_placeholders: Dict[str, BlobPlaceholder] = PrivateAttr(default_factory=dict)
+    _blob_versions: Dict[str, int] = PrivateAttr(default_factory=dict)
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
@@ -240,8 +241,12 @@ class BaseDynamoDbResource(BaseModel, ABC):
             if field_name not in self._blob_placeholders:
                 continue
 
-            # Get version for versioned resources
-            version = getattr(self, "version", None) if isinstance(self, DynamoDbVersionedResource) else None
+            # Get version for versioned resources - use blob version reference if available
+            if isinstance(self, DynamoDbVersionedResource):
+                # Use the referenced version for this blob field, or fallback to current version
+                version = self._blob_versions.get(field_name, getattr(self, "version", None))
+            else:
+                version = None
 
             # Load blob from S3
             blob_data = memory.s3_blob_storage.get_blob(
@@ -328,10 +333,18 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             dynamodb_data["gsi3pk"] = gsi3pk
             dynamodb_data["gsi3sk"] = gsi3sk
 
-        # Add blob placeholders to DynamoDB item
-        if blob_fields_data:
-            dynamodb_data["_blob_fields"] = list(blob_fields_data.keys())
-            return dynamodb_data, blob_fields_data
+        # Add blob metadata to DynamoDB item
+        if blob_fields_config:
+            # Always include the list of blob fields when configured
+            dynamodb_data["_blob_fields"] = list(blob_fields_config.keys())
+
+            # Include blob version references if any exist
+            if self._blob_versions:
+                dynamodb_data["_blob_versions"] = self._blob_versions
+
+            # Return tuple only if there's actual blob data to store
+            if blob_fields_data:
+                return dynamodb_data, blob_fields_data
 
         # Return just dict for backward compatibility when no blob fields
         return dynamodb_data
@@ -347,7 +360,7 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             data = cls.decompress_model_content(compressed_data)  # noqa
         else:
             # Filter out DynamoDB-specific keys
-            excluded_keys = {"pk", "sk", "gsitypesk", "gsitype", "_blob_fields"}
+            excluded_keys = {"pk", "sk", "gsitypesk", "gsitype", "_blob_fields", "_blob_versions"}
             # Add any dynamic GSI fields to exclusion
             gsi_config = cls.get_gsi_config()
             for fields in gsi_config.values():
@@ -373,6 +386,10 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         # Store blob placeholders if provided
         if blob_placeholders:
             resource._blob_placeholders = blob_placeholders
+
+        # Restore blob version references
+        if "_blob_versions" in dynamodb_data:
+            resource._blob_versions = dynamodb_data["_blob_versions"]
 
         return resource
 
@@ -496,10 +513,18 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
                 dynamodb_data["gsi3pk"] = gsi3pk
                 dynamodb_data["gsi3sk"] = gsi3sk
 
-        # Add blob placeholders to DynamoDB item
-        if blob_fields_data:
-            dynamodb_data["_blob_fields"] = list(blob_fields_data.keys())
-            return dynamodb_data, blob_fields_data
+        # Add blob metadata to DynamoDB item
+        if blob_fields_config:
+            # Always include the list of blob fields when configured
+            dynamodb_data["_blob_fields"] = list(blob_fields_config.keys())
+
+            # Include blob version references if any exist
+            if self._blob_versions:
+                dynamodb_data["_blob_versions"] = self._blob_versions
+
+            # Return tuple only if there's actual blob data to store
+            if blob_fields_data:
+                return dynamodb_data, blob_fields_data
 
         # Return just dict for backward compatibility when no blob fields
         return dynamodb_data
@@ -529,6 +554,10 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         if blob_placeholders:
             resource._blob_placeholders = blob_placeholders
 
+        # Restore blob version references
+        if "_blob_versions" in dynamodb_data:
+            resource._blob_versions = dynamodb_data["_blob_versions"]
+
         return resource
 
     @classmethod
@@ -557,7 +586,21 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
                 "updated_at": now,
             }
         )
-        return cls.model_validate(kwargs)
+        new_resource = cls.model_validate(kwargs)
+
+        # Set blob version references for any blob fields that have data
+        blob_fields_config = cls.resource_config.get("blob_fields", {}) or {}
+        if blob_fields_config:
+            blob_versions = {}
+            for field_name in blob_fields_config:
+                if field_name in kwargs and kwargs[field_name] is not None:
+                    # This field has data and will be stored as a blob at version 1
+                    blob_versions[field_name] = 1
+
+            if blob_versions:
+                new_resource._blob_versions = blob_versions
+
+        return new_resource
 
     def update_existing(
         self: "DynamoDbVersionedResource", update_data: _PlainBaseModel | dict, clear_fields: Optional[set[str]] = None
@@ -583,7 +626,33 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
                 "updated_at": now,
             }
         )
-        return self.__class__.model_validate(kwargs)
+
+        # Create the new resource instance
+        new_resource = self.__class__.model_validate(kwargs)
+
+        # Handle blob version references
+        blob_fields_config = self.resource_config.get("blob_fields", {}) or {}
+        if blob_fields_config:
+            new_blob_versions = {}
+
+            for field_name in blob_fields_config:
+                # Check if this field is being updated or cleared
+                if field_name in update_kwargs:
+                    if update_kwargs[field_name] is not None:
+                        # Field is being updated with new data - will get new version
+                        new_blob_versions[field_name] = new_resource.version
+                    # If None (cleared), don't add to blob_versions
+                elif field_name in self._blob_versions:
+                    # Field not being updated - preserve existing version reference
+                    new_blob_versions[field_name] = self._blob_versions[field_name]
+                elif field_name not in self._blob_placeholders and getattr(self, field_name, None) is not None:
+                    # Field has data but no version reference (loaded directly) - use current version
+                    new_blob_versions[field_name] = self.version
+
+            # Set the blob versions on the new resource
+            new_resource._blob_versions = new_blob_versions
+
+        return new_resource
 
     @classmethod
     def enforce_version_limit(cls, memory: "DynamoDbMemory", resource_id: str):
