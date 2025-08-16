@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [11.3.0] 2025-08-15
+
+### Changed
+
+* **Code Refactoring - Eliminated Duplication**: Extracted ~150 lines of duplicated code between `DynamoDbResource` and `DynamoDbVersionedResource` into their base class `BaseDynamoDbResource`. The refactoring introduces several protected helper methods:
+    - `_extract_blob_fields()` - Handles blob field extraction from model data
+    - `_apply_gsi_configuration()` - Applies dynamic GSI configuration and legacy GSI methods
+    - `_add_blob_metadata()` - Manages blob metadata in DynamoDB items
+    - `_build_resource_from_data()` - Constructs resources from DynamoDB data with blob handling
+    - `_get_excluded_dynamodb_keys()` - Provides consistent key filtering for DynamoDB-specific attributes
+
 ## [11.2.1] 2025-08-15
 
 ### Fixed
