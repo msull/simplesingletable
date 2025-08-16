@@ -38,6 +38,7 @@ dev = [
     "ruff",
     "streamlit",
     "streamlit-extras",
+    "tabulate",
     "watchdog",
 ]
 build = [

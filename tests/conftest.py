@@ -97,7 +97,6 @@ def dynamodb_memory(local_dynamodb_test_table, dynamodb_via_docker) -> DynamoDbM
     )
 
 
-
 def is_minio_responsive(url):
     """Check if MinIO is responsive."""
     try:
@@ -112,11 +111,7 @@ def minio_via_docker(docker_ip, docker_services):
     """Get MinIO service URL from docker-compose."""
     port = docker_services.port_for("minio", 9000)
     url = f"http://{docker_ip}:{port}"
-    docker_services.wait_until_responsive(
-        timeout=30.0,
-        pause=0.5,
-        check=lambda: is_minio_responsive(url)
-    )
+    docker_services.wait_until_responsive(timeout=30.0, pause=0.5, check=lambda: is_minio_responsive(url))
     return url
 
 
@@ -143,7 +138,7 @@ def minio_s3_bucket(minio_s3_client):
         minio_s3_client.create_bucket(Bucket=bucket_name)
         logger.info(f"Created MinIO bucket: {bucket_name}")
     except ClientError as e:
-        if e.response['Error']['Code'] != 'BucketAlreadyOwnedByYou':
+        if e.response["Error"]["Code"] != "BucketAlreadyOwnedByYou":
             raise
 
     yield bucket_name
@@ -151,15 +146,12 @@ def minio_s3_bucket(minio_s3_client):
     # Cleanup: Delete all objects and the bucket
     try:
         # List and delete all objects
-        paginator = minio_s3_client.get_paginator('list_objects_v2')
+        paginator = minio_s3_client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket_name):
-            if 'Contents' in page:
-                objects = [{'Key': obj['Key']} for obj in page['Contents']]
+            if "Contents" in page:
+                objects = [{"Key": obj["Key"]} for obj in page["Contents"]]
                 if objects:
-                    minio_s3_client.delete_objects(
-                        Bucket=bucket_name,
-                        Delete={'Objects': objects}
-                    )
+                    minio_s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": objects})
 
         # Delete the bucket
         minio_s3_client.delete_bucket(Bucket=bucket_name)

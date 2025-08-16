@@ -150,7 +150,7 @@ def test_gsi_none_queries(dynamodb_memory: DynamoDbMemory):
     """Test that queries work correctly when some resources have None GSI values."""
     # Create multiple resources with varying GSI field presence
     resources = []
-    
+
     # Resource with no GSI fields
     resources.append(
         dynamodb_memory.create_new(
@@ -158,7 +158,7 @@ def test_gsi_none_queries(dynamodb_memory: DynamoDbMemory):
             {"name": "Uncategorized 1"},
         )
     )
-    
+
     # Resources with category only
     for i in range(2):
         resources.append(
@@ -167,7 +167,7 @@ def test_gsi_none_queries(dynamodb_memory: DynamoDbMemory):
                 {"name": f"Dev Task {i}", "category": "development"},
             )
         )
-    
+
     # Resources with owner and priority
     resources.append(
         dynamodb_memory.create_new(
@@ -175,7 +175,7 @@ def test_gsi_none_queries(dynamodb_memory: DynamoDbMemory):
             {"name": "Owned Task", "owner": "charlie", "priority": 2},
         )
     )
-    
+
     # Resources with all fields
     resources.append(
         dynamodb_memory.create_new(
