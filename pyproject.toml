@@ -77,8 +77,13 @@ push = false
 addopts = """
 -v -p no:warnings --no-header --durations=3 --strict-markers
 --cov-report=html:coverage_report --cov=simplesingletable
+-m "not benchmark"
 """
 pythonpath = ["src/"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "benchmark: marks tests as benchmarks for performance comparison (deselect with '-m \"not benchmark\"')",
+]
 
 [tool.coverage.report]
 exclude_lines = [
