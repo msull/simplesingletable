@@ -13,6 +13,7 @@ from pydantic.fields import FieldInfo
 
 from .blob_storage import S3BlobStorage
 from .models import BlobPlaceholder, DynamoDbResource, DynamoDbVersionedResource, PaginatedList
+from .transactions import TransactionManager
 from .utils import decode_pagination_key, encode_pagination_key, marshall
 
 if TYPE_CHECKING:
@@ -136,6 +137,7 @@ class DynamoDbMemory:
     _dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _dynamodb_table: Optional["Table"] = field(default=None, init=False)
     _s3_blob_storage: Optional["S3BlobStorage"] = field(default=None, init=False)
+    _transaction_manager: Optional["TransactionManager"] = field(default=None, init=False)
 
     def get_existing(
         self,
@@ -270,6 +272,18 @@ class DynamoDbMemory:
             dynamodb = boto3.resource("dynamodb", endpoint_url=self.endpoint_url, **kwargs)
             self._dynamodb_table = dynamodb.Table(self.table_name)
         return self._dynamodb_table
+
+    @property
+    def transaction_manager(self) -> "TransactionManager":
+        if not self._transaction_manager:
+            self._transaction_manager = TransactionManager(self)
+        return self._transaction_manager
+
+    def transaction(self, isolation_level: str = "read_committed", auto_retry: bool = True, max_retries: int = 3):
+        """Create a transaction context for atomic operations."""
+        return self.transaction_manager.transaction(
+            isolation_level=isolation_level, auto_retry=auto_retry, max_retries=max_retries
+        )
 
     @property
     def s3_blob_storage(self) -> Optional[S3BlobStorage]:

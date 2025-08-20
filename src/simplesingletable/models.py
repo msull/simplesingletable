@@ -297,7 +297,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
     @classmethod
     def _get_excluded_dynamodb_keys(cls) -> set[str]:
         """Get the set of DynamoDB-specific keys to exclude when building from item."""
-        excluded_keys = {"pk", "sk", "gsitypesk", "gsitype", "_blob_fields", "_blob_versions"}
+        excluded_keys = {"pk", "sk", "gsitypesk", "gsitype", "_blob_fields", "_blob_versions", "_version_token"}
 
         # Add any dynamic GSI fields to exclusion
         gsi_config = cls.get_gsi_config()
@@ -363,6 +363,7 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
     resource_id: str
     created_at: datetime
     updated_at: datetime
+    _version_token: Optional[str] = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False)
@@ -412,6 +413,10 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             }
         )
 
+        # Add version token if present for optimistic locking
+        if self._version_token:
+            dynamodb_data["_version_token"] = self._version_token
+
         # Apply GSI configuration
         self._apply_gsi_configuration(dynamodb_data)
 
@@ -437,7 +442,13 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         data["_blob_fields"] = dynamodb_data.get("_blob_fields", [])
         data["_blob_versions"] = dynamodb_data.get("_blob_versions", {})
 
-        return cls._build_resource_from_data(data, blob_placeholders)
+        resource = cls._build_resource_from_data(data, blob_placeholders)
+
+        # Restore version token if present
+        if "_version_token" in dynamodb_data:
+            resource._version_token = dynamodb_data["_version_token"]
+
+        return resource
 
     @classmethod
     def dynamodb_lookup_keys_from_id(cls, existing_id: str) -> dict:
