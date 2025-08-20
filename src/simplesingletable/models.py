@@ -393,7 +393,7 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         key = f"{prefix}#{self.resource_id}"
 
         # Get model data and extract blob fields
-        model_data = self.model_dump(exclude_none=True)
+        model_data = self.model_dump()
         model_data, blob_fields_data = self._extract_blob_fields(model_data)
 
         if self.resource_config["compress_data"]:
@@ -519,7 +519,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         key = f"{prefix}#{self.resource_id}"
 
         # Get model data and extract blob fields
-        model_data = self.model_dump(exclude_none=True)
+        model_data = self.model_dump()
         model_data, blob_fields_data = self._extract_blob_fields(model_data)
 
         if self.resource_config["compress_data"]:

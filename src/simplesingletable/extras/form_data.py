@@ -261,8 +261,10 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
             key = f"{cls.get_unique_key_prefix()}#{existing_form.resource_id}#{row_identifier}#{group_identifier}"
             condition = Key("gsi2pk").eq(key)
         else:
-            key = f"{cls.get_unique_key_prefix()}#{existing_form.resource_id}#{row_identifier}#"
-            condition = Key("gsi2pk").begins_with(key)
+            # key = f"{cls.get_unique_key_prefix()}#{existing_form.resource_id}#{row_identifier}#"
+            # this doesn't work -- you can't query the pk of an index
+            # condition = Key("gsi2pk").begins_with(key)
+            raise RuntimeError("This code path is not currently working")
 
         return memory.paginated_dynamodb_query(
             key_condition=condition,
