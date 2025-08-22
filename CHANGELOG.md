@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+* **Pagination with Blob Fields**: Fixed a TypeError that occurred when building LastEvaluatedKey during paginated queries on resources with blob fields. When `to_dynamodb_item()` returns a tuple `(db_item, blob_data)` for resources with blob storage configured, the pagination logic now correctly extracts just the db_item portion before building the LastEvaluatedKey.
+
 ## [12.0.0] 2025-08-20
 
 ### Changed

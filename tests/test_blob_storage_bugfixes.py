@@ -244,3 +244,91 @@ class TestPrivateAttrBugfix:
         # But if we update with a blob field, it should work
         # Note: Due to mock S3, the blob is not actually stored, so it appears in the resource
         # In a real scenario with actual S3, blob_content would be None after update
+
+
+class TestLastEvaluatedKeyWithBlobs:
+    """Test that LastEvaluatedKey handling works correctly with blob fields."""
+
+    def test_paginated_query_builds_lek_correctly_with_blob_fields(self, dynamodb_memory_with_mock_s3):
+        """Test that build_lek_data handles tuple return from to_dynamodb_item correctly."""
+        from boto3.dynamodb.conditions import Key, Attr
+
+        memory = dynamodb_memory_with_mock_s3
+
+        # Create multiple resources with blobs
+        # Create some matching and some non-matching resources to test filtering
+        resources = []
+        for i in range(10):
+            r = memory.create_new(
+                NonVersionedResourceWithBlob,
+                {
+                    "name": f"Resource {i:02d}",  # Padded for consistent ordering
+                    "description": f"Description {i}" if i < 5 else f"Other {i}",
+                    "blob_content": {"index": i, "large_data": "x" * 100},  # Smaller to avoid issues
+                },
+            )
+            resources.append(r)
+
+        # Use paginated_dynamodb_query with a filter
+        # When using a filter, query_limit is multiplied by filter_limit_multiplier (default 3)
+        # This can cause DynamoDB to return more items than results_limit before filtering
+        # The bug occurs when current_count > results_limit after filtering
+        result = memory.paginated_dynamodb_query(
+            key_condition=Key("gsi1pk").eq("type#document"),
+            index_name="gsi1",
+            resource_class=NonVersionedResourceWithBlob,
+            filter_expression=Attr("description").begins_with("Description"),
+            results_limit=2,  # Request only 2 matching items
+            filter_limit_multiplier=5,  # This will query for up to 10 items
+        )
+
+        # Should get 2 results without error
+        # Without the fix, this would fail with TypeError when trying to access
+        # the tuple returned by to_dynamodb_item as a dict in build_lek_data
+        assert len(result) == 2
+
+        # Verify pagination key was created (which means build_lek_data was called)
+        assert hasattr(result, "next_pagination_key")
+
+        # Verify all resources were created properly
+        all_results = memory.list_type_by_updated_at(NonVersionedResourceWithBlob, results_limit=20)
+        assert len(all_results) == 10
+
+        # Test that when to_dynamodb_item returns a tuple (db_item, blob_data),
+        # the build_lek_data function correctly uses only the db_item part
+        # This is tested implicitly by the successful query above - if the bug existed,
+        # the query would fail when trying to build the LastEvaluatedKey
+
+    def test_versioned_resource_pagination_with_blobs(self, dynamodb_memory_with_mock_s3):
+        """Test paginated queries with versioned resources that have blob fields."""
+        memory = dynamodb_memory_with_mock_s3
+
+        # Create multiple versioned resources with blobs
+        resources = []
+        for i in range(4):
+            r = memory.create_new(
+                VersionedResourceWithBlob,
+                {
+                    "title": f"Document {i:02d}",
+                    "content": f"Content {i}",
+                    "large_data": {"index": i, "payload": "data" * 500},
+                },
+            )
+            resources.append(r)
+
+        # Query with pagination
+        page_1 = memory.list_type_by_updated_at(VersionedResourceWithBlob, results_limit=2)
+
+        assert len(page_1) == 2
+
+        # The pagination should work correctly even though to_dynamodb_item
+        # returns a tuple when blob fields are present
+        all_results = memory.list_type_by_updated_at(VersionedResourceWithBlob, results_limit=10)
+
+        assert len(all_results) == 4
+
+        # Verify blob placeholders are correctly set
+        for resource in all_results:
+            assert resource.large_data is None  # Blob not loaded
+            assert resource.has_unloaded_blobs()
+            assert "large_data" in resource.get_unloaded_blob_fields()

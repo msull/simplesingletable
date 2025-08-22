@@ -27,6 +27,7 @@ from tabulate import tabulate
 
 NUM_ITEMS = 2500
 
+
 class LargeResourceWithoutBlob(DynamoDbResource):
     """Resource storing large data directly in DynamoDB."""
 
@@ -83,43 +84,52 @@ class TestBlobStoragePerformance:
         # Create column headers with blob sizes
         blob_sizes = [f"{r['blob_size']:,} bytes" for r in cls.results]
         headers = ["Content Size"] + blob_sizes
-        
+
         # Create rows for each metric
         main_table_data = []
-        
+
         # Number of items row
         main_table_data.append(["Items"] + [r["num_items"] for r in cls.results])
-        
+
         # Create time without blob
-        main_table_data.append(["Create Time w/o Blob (ms)"] + [f"{r['create_time_without_blob']:.1f}" for r in cls.results])
-        
+        main_table_data.append(
+            ["Create Time w/o Blob (ms)"] + [f"{r['create_time_without_blob']:.1f}" for r in cls.results]
+        )
+
         # Create time with blob
-        main_table_data.append(["Create Time w/ Blob (ms)"] + [f"{r['create_time_with_blob']:.1f}" for r in cls.results])
-        
+        main_table_data.append(
+            ["Create Time w/ Blob (ms)"] + [f"{r['create_time_with_blob']:.1f}" for r in cls.results]
+        )
+
         # Create overhead
-        main_table_data.append(["Create Overhead"] + [f"{r['create_overhead']:.1f}% {'slower' if r['create_overhead'] > 0 else 'faster'}" for r in cls.results])
-        
+        main_table_data.append(
+            ["Create Overhead"]
+            + [f"{r['create_overhead']:.1f}% {'slower' if r['create_overhead'] > 0 else 'faster'}" for r in cls.results]
+        )
+
         # Query time without blob
-        main_table_data.append(["Query Time w/o Blob (ms)"] + [f"{r['query_time_without_blob']:.1f}" for r in cls.results])
-        
+        main_table_data.append(
+            ["Query Time w/o Blob (ms)"] + [f"{r['query_time_without_blob']:.1f}" for r in cls.results]
+        )
+
         # Query time with blob
         main_table_data.append(["Query Time w/ Blob (ms)"] + [f"{r['query_time_with_blob']:.1f}" for r in cls.results])
-        
+
         # Query time savings
         main_table_data.append(["Query Time Savings"] + [f"{r['query_time_savings']:.1f}%" for r in cls.results])
-        
+
         # RCUs without blob
         main_table_data.append(["RCUs w/o Blob"] + [f"{r['rcus_without_blob']:.1f}" for r in cls.results])
-        
+
         # RCUs with blob
         main_table_data.append(["RCUs w/ Blob"] + [f"{r['rcus_with_blob']:.1f}" for r in cls.results])
-        
+
         # RCU savings
         main_table_data.append(["RCU Savings"] + [f"{r['rcu_savings']:.1f}%" for r in cls.results])
-        
+
         # API calls without blob
         main_table_data.append(["API Calls w/o Blob"] + [r["api_calls_without_blob"] for r in cls.results])
-        
+
         # API calls with blob
         main_table_data.append(["API Calls w/ Blob"] + [r["api_calls_with_blob"] for r in cls.results])
 
@@ -132,8 +142,8 @@ class TestBlobStoragePerformance:
             detail_table_data.append(
                 [
                     f"{result['blob_size']:,}",
-                    result['item_size_without_blob'],  # Already formatted as string with units
-                    result['item_size_with_blob'],  # Already formatted as string with units
+                    result["item_size_without_blob"],  # Already formatted as string with units
+                    result["item_size_with_blob"],  # Already formatted as string with units
                     f"{result['size_reduction_factor']:.1f}x",
                     f"{result['blob_load_time_10']:.1f}",
                     f"{result['blob_load_time_avg']:.1f}",
@@ -175,7 +185,7 @@ class TestBlobStoragePerformance:
             4096,
             # 8192,
             16384,
-            16384*2,
+            16384 * 2,
         ],
     )
     def test_rcu_and_query_time_comparison(self, dynamodb_memory_with_s3, blob_size):
@@ -340,7 +350,9 @@ class TestBlobStoragePerformance:
             "rcu_savings": rcu_savings_percent,
             "item_size_without_blob": result_without_blob[0].get_db_item_size(),
             "item_size_with_blob": result_with_blob[-1].get_db_item_size(),
-            "size_reduction_factor": item_size_without_blob_bytes / item_size_with_blob_bytes if item_size_with_blob_bytes > 0 else 0,
+            "size_reduction_factor": item_size_without_blob_bytes / item_size_with_blob_bytes
+            if item_size_with_blob_bytes > 0
+            else 0,
             "api_calls_without_blob": result_without_blob.api_calls_made,
             "api_calls_with_blob": result_with_blob.api_calls_made,
             "blob_load_time_10": load_time,

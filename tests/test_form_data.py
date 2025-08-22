@@ -95,11 +95,9 @@ class TestFormDataType:
     def test_update_schema(self, form_manager: FormDataManager, sample_schema):
         """Test updating a FormDataType schema."""
         form_type = form_manager.add_new_type(name="updatable_type", schema=sample_schema)
-        
-        new_schema = sample_schema + [
-            FormDataEntryField(name="description", field_type="str", allowed_values=None)
-        ]
-        
+
+        new_schema = sample_schema + [FormDataEntryField(name="description", field_type="str", allowed_values=None)]
+
         updated_type = form_manager.update_schema(form_type, new_schema)
         assert len(updated_type.entry_schema) == 5
         assert updated_type.entry_schema[-1].name == "description"
@@ -109,7 +107,7 @@ class TestFormDataType:
         """Test listing available FormDataTypes."""
         form_manager.add_new_type(name="type1", schema=sample_schema)
         form_manager.add_new_type(name="type2", schema=sample_schema)
-        
+
         types = form_manager.list_available_types()
         assert len(types) >= 2
         type_names = [t.name for t in types]
@@ -131,7 +129,7 @@ class TestFormCategories:
         form_manager.add_form_category("removable_category")
         categories = form_manager.list_form_categories()
         assert "removable_category" in categories
-        
+
         form_manager.remove_form_category("removable_category")
         categories = form_manager.list_form_categories()
         assert "removable_category" not in categories
@@ -139,7 +137,7 @@ class TestFormCategories:
     def test_cannot_remove_category_with_forms(self, form_manager: FormDataManager, form_data_type: FormDataType):
         """Test that a category with forms cannot be removed."""
         form_manager.add_form_category("occupied_category")
-        
+
         form_request = NewFormRequest(
             name="Blocking Form",
             category="occupied_category",
@@ -150,7 +148,7 @@ class TestFormCategories:
             groups=["Group1"],
         )
         form_manager.create_form(form_request)
-        
+
         with pytest.raises(ValueError, match="Cannot remove category that has forms assigned"):
             form_manager.remove_form_category("occupied_category")
 
@@ -170,7 +168,7 @@ class TestForm:
             columns=["Col1", "Col2"],
             groups=["GroupA", "GroupB"],
         )
-        
+
         form = form_manager.create_form(form_request)
         assert form.name == "Creation Test Form"
         assert form.category == "creation_test"
@@ -186,11 +184,8 @@ class TestForm:
 
     def test_update_form(self, form_manager: FormDataManager, sample_form: Form):
         """Test updating a Form."""
-        update_request = UpdateFormRequest(
-            name="Updated Form Name",
-            user_metadata={"key": "value"}
-        )
-        
+        update_request = UpdateFormRequest(name="Updated Form Name", user_metadata={"key": "value"})
+
         updated_form = form_manager.update_form(sample_form, update_request)
         assert updated_form.name == "Updated Form Name"
         assert updated_form.user_metadata == {"key": "value"}
@@ -235,11 +230,11 @@ class TestForm:
     def test_get_ordered_columns_with_hidden(self, sample_form: Form):
         """Test getting ordered columns with group-specific hidden columns."""
         sample_form.hide_columns_by_group = {"Group1": [1]}  # Hide Column2 for Group1
-        
+
         # All columns for Group2
         cols_group2 = sample_form.get_ordered_columns("Group2")
         assert cols_group2 == ["Column1", "Column2", "Column3"]
-        
+
         # Column2 hidden for Group1
         cols_group1 = sample_form.get_ordered_columns("Group1")
         assert cols_group1 == ["Column1", "Column3"]
@@ -255,12 +250,9 @@ class TestFormEntry:
     def test_store_single_form_data(self, form_manager: FormDataManager, sample_form: Form):
         """Test storing a single FormEntry."""
         data = StoredFormData(
-            col_idx=0,
-            row_identifier="row1",
-            group_identifier="Group1",
-            data={"title": "Test Title", "value": 42}
+            col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Test Title", "value": 42}
         )
-        
+
         entry = form_manager.store_form_data(sample_form, data)
         assert isinstance(entry, FormEntry)
         assert entry.col_idx == 0
@@ -271,14 +263,17 @@ class TestFormEntry:
     def test_store_multiple_form_data(self, form_manager: FormDataManager, sample_form: Form):
         """Test storing multiple FormEntries."""
         data_list = [
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", 
-                          data={"title": "Title1", "value": 1}),
-            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Title2", "value": 2}),
-            StoredFormData(col_idx=2, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Title3", "value": 3}),
+            StoredFormData(
+                col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Title1", "value": 1}
+            ),
+            StoredFormData(
+                col_idx=1, row_identifier="row1", group_identifier="Group1", data={"title": "Title2", "value": 2}
+            ),
+            StoredFormData(
+                col_idx=2, row_identifier="row1", group_identifier="Group1", data={"title": "Title3", "value": 3}
+            ),
         ]
-        
+
         entries = form_manager.store_form_data(sample_form, data_list)
         assert len(entries) == 3
         assert all(isinstance(e, FormEntry) for e in entries)
@@ -287,22 +282,16 @@ class TestFormEntry:
         """Test updating an existing FormEntry."""
         # Create initial entry
         initial_data = StoredFormData(
-            col_idx=0,
-            row_identifier="row1",
-            group_identifier="Group1",
-            data={"title": "Initial", "value": 1}
+            col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Initial", "value": 1}
         )
         entry = form_manager.store_form_data(sample_form, initial_data)
-        
+
         # Update the entry
         updated_data = StoredFormData(
-            col_idx=0,
-            row_identifier="row1",
-            group_identifier="Group1",
-            data={"title": "Updated", "value": 2}
+            col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Updated", "value": 2}
         )
         updated_entry = form_manager.store_form_data(sample_form, (entry, updated_data))
-        
+
         assert updated_entry.data == {"title": "Updated", "value": 2}
         assert updated_entry.version == entry.version + 1
 
@@ -310,36 +299,27 @@ class TestFormEntry:
         """Test retrieving all entries for a form."""
         # Store some entries
         data_list = [
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Entry1"}),
-            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Entry2"}),
-            StoredFormData(col_idx=0, row_identifier="row2", group_identifier="Group1",
-                          data={"title": "Entry3"}),
+            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Entry1"}),
+            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1", data={"title": "Entry2"}),
+            StoredFormData(col_idx=0, row_identifier="row2", group_identifier="Group1", data={"title": "Entry3"}),
         ]
         form_manager.store_form_data(sample_form, data_list)
-        
+
         # Retrieve all entries
-        entries = FormEntry.retrieve_all_form_entries_for_form(
-            form_manager.memory, sample_form
-        )
+        entries = FormEntry.retrieve_all_form_entries_for_form(form_manager.memory, sample_form)
         assert len(entries) == 3
 
     def test_retrieve_entries_by_group(self, form_manager: FormDataManager, sample_form: Form):
         """Test retrieving entries for a specific group."""
         # Store entries in different groups
         data_list = [
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "G1Entry"}),
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group2",
-                          data={"title": "G2Entry"}),
+            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "G1Entry"}),
+            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group2", data={"title": "G2Entry"}),
         ]
         form_manager.store_form_data(sample_form, data_list)
-        
+
         # Retrieve Group1 entries only
-        group1_entries = FormEntry.retrieve_all_form_entries_for_form(
-            form_manager.memory, sample_form, group="Group1"
-        )
+        group1_entries = FormEntry.retrieve_all_form_entries_for_form(form_manager.memory, sample_form, group="Group1")
         assert all(e.group_identifier == "Group1" for e in group1_entries)
 
     @pytest.mark.xfail(reason="Retrieving without group currently broken")
@@ -347,19 +327,14 @@ class TestFormEntry:
         """Test retrieving all entries for a specific row."""
         # Store entries for different rows
         data_list = [
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "R1C1"}),
-            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "R1C2"}),
-            StoredFormData(col_idx=0, row_identifier="row2", group_identifier="Group1",
-                          data={"title": "R2C1"}),
+            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "R1C1"}),
+            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1", data={"title": "R1C2"}),
+            StoredFormData(col_idx=0, row_identifier="row2", group_identifier="Group1", data={"title": "R2C1"}),
         ]
         form_manager.store_form_data(sample_form, data_list)
-        
+
         # Retrieve row1 entries
-        row1_entries = FormEntry.retrieve_all_entries_for_row(
-            form_manager.memory, sample_form, row_identifier="row1"
-        )
+        row1_entries = FormEntry.retrieve_all_entries_for_row(form_manager.memory, sample_form, row_identifier="row1")
         assert all(e.row_identifier == "row1" for e in row1_entries)
         assert len(row1_entries) == 2
 
@@ -376,17 +351,12 @@ class TestFormDataMapping:
     def test_mapping_getitem(self, form_manager: FormDataManager, sample_form: Form):
         """Test accessing rows through mapping."""
         # Store some data
-        data = StoredFormData(
-            col_idx=0,
-            row_identifier="row1",
-            group_identifier="Group1",
-            data={"title": "Test"}
-        )
+        data = StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Test"})
         form_manager.store_form_data(sample_form, data)
-        
+
         mapping = form_manager.get_mapping(sample_form)
         mapping.switch_active_group("Group1")
-        
+
         row = mapping["row1"]
         assert isinstance(row, FormDataRow)
         assert row.row_identifier == "row1"
@@ -395,16 +365,14 @@ class TestFormDataMapping:
         """Test iterating over mapping."""
         # Store data for multiple rows
         data_list = [
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "R1"}),
-            StoredFormData(col_idx=0, row_identifier="row2", group_identifier="Group1",
-                          data={"title": "R2"}),
+            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "R1"}),
+            StoredFormData(col_idx=0, row_identifier="row2", group_identifier="Group1", data={"title": "R2"}),
         ]
         form_manager.store_form_data(sample_form, data_list)
-        
+
         mapping = form_manager.get_mapping(sample_form)
         mapping.switch_active_group("Group1")
-        
+
         row_ids = list(mapping)
         assert "row1" in row_ids
         assert "row2" in row_ids
@@ -413,16 +381,18 @@ class TestFormDataMapping:
         """Test converting mapping to list format."""
         # Store comprehensive data
         data_list = [
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Title1", "value": 1}),
-            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Title2", "value": 2}),
+            StoredFormData(
+                col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Title1", "value": 1}
+            ),
+            StoredFormData(
+                col_idx=1, row_identifier="row1", group_identifier="Group1", data={"title": "Title2", "value": 2}
+            ),
         ]
         form_manager.store_form_data(sample_form, data_list)
-        
+
         mapping = form_manager.get_mapping(sample_form)
         mapping.switch_active_group("Group1")
-        
+
         # Test summary data (default)
         list_data = mapping.to_list()
         assert len(list_data) == 1
@@ -430,7 +400,7 @@ class TestFormDataMapping:
         assert list_data[0]["group_identifier"] == "Group1"
         assert list_data[0]["Column1"] == "Title1"  # Summary field
         assert list_data[0]["Column2"] == "Title2"  # Summary field
-        
+
         # Test full data
         full_data = mapping.to_list(summary_data=False)
         assert full_data[0]["Column1"]["value"] == 1
@@ -439,20 +409,18 @@ class TestFormDataMapping:
         """Test switching active group in mapping."""
         # Store data in different groups
         data_list = [
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "G1"}),
-            StoredFormData(col_idx=0, row_identifier="row2", group_identifier="Group2",
-                          data={"title": "G2"}),
+            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "G1"}),
+            StoredFormData(col_idx=0, row_identifier="row2", group_identifier="Group2", data={"title": "G2"}),
         ]
         form_manager.store_form_data(sample_form, data_list)
-        
+
         mapping = form_manager.get_mapping(sample_form)
-        
+
         # Check Group1
         mapping.switch_active_group("Group1")
         assert "row1" in list(mapping)
         assert "row2" not in list(mapping)
-        
+
         # Switch to Group2
         mapping.switch_active_group("Group2")
         assert "row2" in list(mapping)
@@ -466,39 +434,32 @@ class TestFormDataRow:
         """Test accessing columns by name in a row."""
         # Store data
         data_list = [
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Col1Data"}),
-            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Col2Data"}),
+            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Col1Data"}),
+            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1", data={"title": "Col2Data"}),
         ]
         form_manager.store_form_data(sample_form, data_list)
-        
+
         mapping = form_manager.get_mapping(sample_form)
         mapping.switch_active_group("Group1")
         row = mapping["row1"]
-        
+
         # Access by column name
         col1_entry = row["Column1"]
         assert col1_entry.data["title"] == "Col1Data"
-        
+
         col2_entry = row["Column2"]
         assert col2_entry.data["title"] == "Col2Data"
 
     def test_row_getitem_by_index(self, form_manager: FormDataManager, sample_form: Form):
         """Test accessing columns by index in a row."""
         # Store data
-        data = StoredFormData(
-            col_idx=0,
-            row_identifier="row1",
-            group_identifier="Group1",
-            data={"title": "IndexTest"}
-        )
+        data = StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "IndexTest"})
         form_manager.store_form_data(sample_form, data)
-        
+
         mapping = form_manager.get_mapping(sample_form)
         mapping.switch_active_group("Group1")
         row = mapping["row1"]
-        
+
         # Access by index
         first_col = row[0]
         assert first_col.data["title"] == "IndexTest"
@@ -508,7 +469,7 @@ class TestFormDataRow:
         mapping = form_manager.get_mapping(sample_form)
         mapping.switch_active_group("Group1")
         row = mapping["row1"]  # Even without data, should return empty row
-        
+
         columns = list(row)
         assert columns == ["Column1", "Column2", "Column3"]
 
@@ -516,30 +477,25 @@ class TestFormDataRow:
         """Test row behavior with hidden columns."""
         # Update form to hide Column2 for Group1
         sample_form.hide_columns_by_group = {"Group1": [1]}
-        updated_form = form_manager.memory.update_existing(
-            sample_form, {"hide_columns_by_group": {"Group1": [1]}}
-        )
-        
+        updated_form = form_manager.memory.update_existing(sample_form, {"hide_columns_by_group": {"Group1": [1]}})
+
         # Store data
         data_list = [
-            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Col1"}),
-            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Col2Hidden"}),
-            StoredFormData(col_idx=2, row_identifier="row1", group_identifier="Group1",
-                          data={"title": "Col3"}),
+            StoredFormData(col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Col1"}),
+            StoredFormData(col_idx=1, row_identifier="row1", group_identifier="Group1", data={"title": "Col2Hidden"}),
+            StoredFormData(col_idx=2, row_identifier="row1", group_identifier="Group1", data={"title": "Col3"}),
         ]
         form_manager.store_form_data(updated_form, data_list)
-        
+
         mapping = form_manager.get_mapping(updated_form)
         mapping.switch_active_group("Group1")
         row = mapping["row1"]
-        
+
         # Column2 should not be in iteration
         columns = list(row)
         assert "Column2" not in columns
         assert len(columns) == 2
-        
+
         # But can still access hidden column explicitly with ignore_hidden_columns
         hidden_entry = row.get_item_by_key("Column2", ignore_hidden_columns=True)
         assert hidden_entry.data["title"] == "Col2Hidden"
@@ -549,11 +505,11 @@ class TestFormDataRow:
         mapping = form_manager.get_mapping(sample_form)
         mapping.switch_active_group("Group1")
         row = mapping["row1"]
-        
+
         # Invalid column name
         with pytest.raises(KeyError):
             _ = row["InvalidColumn"]
-        
+
         # Invalid index
         with pytest.raises(KeyError):
             _ = row[99]
@@ -571,10 +527,10 @@ class TestFormDataIntegration:
             FormDataEntryField(name="grade", field_type="str", allowed_values=["A", "B", "C", "D", "F"]),
         ]
         form_type = form_manager.add_new_type(name="student_grades", schema=schema)
-        
+
         # Step 2: Create a category
         form_manager.add_form_category("academic")
-        
+
         # Step 3: Create a form
         form_request = NewFormRequest(
             name="Math Class Grades",
@@ -586,45 +542,69 @@ class TestFormDataIntegration:
             groups=["Section A", "Section B"],
         )
         form = form_manager.create_form(form_request)
-        
+
         # Step 4: Store student data
         student_data = [
             # Student 1, Section A
-            StoredFormData(col_idx=0, row_identifier="student1", group_identifier="Section A",
-                          data={"name": "Alice", "score": 95, "grade": "A"}),
-            StoredFormData(col_idx=1, row_identifier="student1", group_identifier="Section A",
-                          data={"name": "Alice", "score": 88, "grade": "B"}),
-            StoredFormData(col_idx=2, row_identifier="student1", group_identifier="Section A",
-                          data={"name": "Alice", "score": 92, "grade": "A"}),
+            StoredFormData(
+                col_idx=0,
+                row_identifier="student1",
+                group_identifier="Section A",
+                data={"name": "Alice", "score": 95, "grade": "A"},
+            ),
+            StoredFormData(
+                col_idx=1,
+                row_identifier="student1",
+                group_identifier="Section A",
+                data={"name": "Alice", "score": 88, "grade": "B"},
+            ),
+            StoredFormData(
+                col_idx=2,
+                row_identifier="student1",
+                group_identifier="Section A",
+                data={"name": "Alice", "score": 92, "grade": "A"},
+            ),
             # Student 2, Section A
-            StoredFormData(col_idx=0, row_identifier="student2", group_identifier="Section A",
-                          data={"name": "Bob", "score": 78, "grade": "C"}),
-            StoredFormData(col_idx=1, row_identifier="student2", group_identifier="Section A",
-                          data={"name": "Bob", "score": 82, "grade": "B"}),
-            StoredFormData(col_idx=2, row_identifier="student2", group_identifier="Section A",
-                          data={"name": "Bob", "score": 85, "grade": "B"}),
+            StoredFormData(
+                col_idx=0,
+                row_identifier="student2",
+                group_identifier="Section A",
+                data={"name": "Bob", "score": 78, "grade": "C"},
+            ),
+            StoredFormData(
+                col_idx=1,
+                row_identifier="student2",
+                group_identifier="Section A",
+                data={"name": "Bob", "score": 82, "grade": "B"},
+            ),
+            StoredFormData(
+                col_idx=2,
+                row_identifier="student2",
+                group_identifier="Section A",
+                data={"name": "Bob", "score": 85, "grade": "B"},
+            ),
         ]
         form_manager.store_form_data(form, student_data)
-        
+
         # Step 5: Retrieve and verify data
         mapping = form_manager.get_mapping(form)
         mapping.switch_active_group("Section A")
-        
+
         # Check we have two students
         assert len(mapping) == 2
         assert "student1" in mapping
         assert "student2" in mapping
-        
+
         # Check Alice's grades
         alice = mapping["student1"]
         assert alice["Test1"].data["score"] == 95
         assert alice["Test2"].data["score"] == 88
         assert alice["Final"].data["score"] == 92
-        
+
         # Convert to list format
         grades_list = mapping.to_list(summary_data=False)
         assert len(grades_list) == 2
-        
+
         # Verify list format
         alice_data = next(g for g in grades_list if g["row_identifier"] == "student1")
         assert alice_data["Test1"]["score"] == 95
@@ -634,28 +614,20 @@ class TestFormDataIntegration:
         """Test that form entries maintain version history."""
         # Store initial data
         initial_data = StoredFormData(
-            col_idx=0,
-            row_identifier="row1",
-            group_identifier="Group1",
-            data={"title": "Version1", "value": 1}
+            col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Version1", "value": 1}
         )
         entry_v1 = form_manager.store_form_data(sample_form, initial_data)
-        
+
         # Update the same entry
         update_data = StoredFormData(
-            col_idx=0,
-            row_identifier="row1",
-            group_identifier="Group1",
-            data={"title": "Version2", "value": 2}
+            col_idx=0, row_identifier="row1", group_identifier="Group1", data={"title": "Version2", "value": 2}
         )
         entry_v2 = form_manager.store_form_data(sample_form, (entry_v1, update_data))
-        
+
         # Verify versioning
         assert entry_v2.version == entry_v1.version + 1
         assert entry_v2.data["title"] == "Version2"
-        
+
         # Retrieve historical version
-        historical = form_manager.memory.read_existing(
-            entry_v1.resource_id, FormEntry, version=entry_v1.version
-        )
+        historical = form_manager.memory.read_existing(entry_v1.resource_id, FormEntry, version=entry_v1.version)
         assert historical.data["title"] == "Version1"

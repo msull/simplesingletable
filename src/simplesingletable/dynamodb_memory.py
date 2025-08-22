@@ -901,6 +901,8 @@ class DynamoDbMemory:
             else:
                 db_item = response_data[-1].to_dynamodb_item()
             # Use dynamic helper to build LastEvaluatedKey
+            if isinstance(db_item, tuple):
+                db_item = db_item[0]
             lek_data = build_lek_data(db_item, index_name, response_data[-1].__class__)
 
         if lek_data:
