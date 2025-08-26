@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+* **Read-Only Repository Classes**: Introduced `ReadOnlyResourceRepository` and `ReadOnlyVersionedResourceRepository` classes for safe, read-only access to resources:
+    - `ReadOnlyResourceRepository` in `simplesingletable.extras.readonly_repository` provides read-only access to standard resources
+    - `ReadOnlyVersionedResourceRepository` in `simplesingletable.extras.readonly_versioned_repository` provides read-only access to versioned resources with version querying capabilities
+    - Both classes expose only safe read operations (`get()`, `read()`, `list()`) and hide all mutation methods
+    - `ReadOnlyVersionedResourceRepository` additionally provides `list_versions()` and `get_version()` methods for version inspection
+    - Useful for services and components that should only have read access to data, ensuring data integrity at the repository level
+
 ## [12.0.1] 2025-08-22
 
 ### Fixed
