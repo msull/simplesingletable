@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [12.2.0] 2025-09-10
+
+### Added
+
+* **TTL (Time To Live) Support**: Added support for automatic TTL management on DynamoDB resources:
+    - New `ResourceConfig` options: `ttl_field` and `ttl_attribute_name` to configure TTL behavior
+    - Both fields must be set together for TTL to be enabled
+    - Supports two TTL value types:
+        - `datetime`: Absolute expiration timestamp
+        - `int`: Seconds from `created_at` time (relative expiration)
+    - TTL applies to both versioned and non-versioned resources
+    - For versioned resources, TTL is set on all items (v0 and version history)
+    - TTL attributes are automatically excluded when reconstructing resources from DynamoDB
+    - Example: `ResourceConfig(ttl_field="expires_at", ttl_attribute_name="ttl")`
+
 ## [12.1.0]
 
 ### Added
