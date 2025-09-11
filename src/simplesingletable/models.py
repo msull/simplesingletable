@@ -2,7 +2,7 @@ import gzip
 import json
 import sys
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Optional, Type, TypedDict, TypeVar
 
 import ulid
@@ -95,6 +95,12 @@ class ResourceConfig(TypedDict, total=False):
 
     blob_fields: Dict[str, BlobFieldConfig] | None
     """Configuration for fields that should be stored as blobs in S3."""
+
+    ttl_field: str | None
+    """The field name in the resource that contains the TTL value (datetime, timedelta, or int)."""
+
+    ttl_attribute_name: str | None
+    """The DynamoDB attribute name for TTL (defaults to 'ttl')."""
 
 
 class BlobPlaceholder(TypedDict):
@@ -253,6 +259,36 @@ class BaseDynamoDbResource(BaseModel, ABC):
         # Return just dict for backward compatibility when no blob fields
         return dynamodb_data
 
+    def _calculate_ttl(self) -> Optional[int]:
+        """Calculate TTL value based on resource configuration.
+
+        Returns:
+            Unix timestamp for TTL or None if no TTL configured
+        """
+        ttl_field = self.resource_config.get("ttl_field")
+        ttl_attribute_name = self.resource_config.get("ttl_attribute_name")
+
+        # Both must be set for TTL to be enabled
+        if not ttl_field or not ttl_attribute_name:
+            return None
+
+        ttl_value = getattr(self, ttl_field, None)
+        if ttl_value is None:
+            return None
+
+        # Handle different TTL value types
+        if isinstance(ttl_value, datetime):
+            # Direct datetime - use as absolute expiration
+            return int(ttl_value.timestamp())
+        elif isinstance(ttl_value, int):
+            # Integer seconds - add to created_at
+            expiration = self.created_at + timedelta(seconds=ttl_value)
+            return int(expiration.timestamp())
+        else:
+            raise ValueError(
+                f"Unsupported TTL field type: {type(ttl_value).__name__}. Only datetime and int are supported."
+            )
+
     @abstractmethod
     def to_dynamodb_item(self):
         """Convert to DynamoDB item.
@@ -307,6 +343,11 @@ class BaseDynamoDbResource(BaseModel, ABC):
 
         # Also exclude legacy GSI fields
         excluded_keys.update({"gsi1pk", "gsi2pk", "gsi3pk", "gsi3sk"})
+
+        # Exclude TTL attribute if configured
+        ttl_attr = cls.resource_config.get("ttl_attribute_name")
+        if ttl_attr:
+            excluded_keys.add(ttl_attr)
 
         return excluded_keys
 
@@ -419,6 +460,11 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
 
         # Apply GSI configuration
         self._apply_gsi_configuration(dynamodb_data)
+
+        # Add TTL if configured (both ttl_field and ttl_attribute_name must be set)
+        if ttl_value := self._calculate_ttl():
+            ttl_attr = self.resource_config.get("ttl_attribute_name")
+            dynamodb_data[ttl_attr] = ttl_value
 
         # Add blob metadata and return
         blob_fields_config = self.resource_config.get("blob_fields", {}) or {}
@@ -559,6 +605,11 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
             # Add filter metadata (versioned-specific)
             if filter_metadata := self.db_get_filter_metadata():
                 dynamodb_data["metadata"] = filter_metadata
+
+        # Add TTL if configured (applies to both v0 and version items)
+        if ttl_value := self._calculate_ttl():
+            ttl_attr = self.resource_config.get("ttl_attribute_name")
+            dynamodb_data[ttl_attr] = ttl_value
 
         # Add blob metadata and return
         blob_fields_config = self.resource_config.get("blob_fields", {}) or {}
