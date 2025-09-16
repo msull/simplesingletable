@@ -1,6 +1,6 @@
 # Simple Single Table
 
-**Latest Version:** 12.2.0
+**Latest Version:** 12.3.0
 
 ## Project Overview
 
