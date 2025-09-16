@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [12.3.0] 2025-09-16
+
+### Added
+
+* **Tuple-Based GSI Configuration**: Enhanced GSI configuration to support defining both partition and sort keys with a single method:
+    - New tuple format: `("gsi3pk", "gsi3sk"): method_returning_tuple` in `get_gsi_config()`
+    - Methods can return `tuple[str, str] | None` to set both pk and sk values atomically
+    - Useful for correlated index values that should always be set together
+    - Maintains full backward compatibility with existing single-field GSI configurations
+    - Example:
+      ```python
+      @classmethod
+      def get_gsi_config(cls) -> dict:
+          return {
+              "gsi3": {("gsi3pk", "gsi3sk"): cls._get_gsi3_values}
+          }
+
+      def _get_gsi3_values(self) -> tuple[str, str] | None:
+          if self.active:
+              return (f"user#{self.username}", self.last_activity.isoformat())
+          return None
+      ```
+
 ## [12.2.0] 2025-09-10
 
 ### Added
