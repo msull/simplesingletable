@@ -220,12 +220,24 @@ class BaseDynamoDbResource(BaseModel, ABC):
         gsi_config = self.get_gsi_config()
         for fields in gsi_config.values():
             for key, value_or_func in fields.items():
-                if value_or_func:
-                    if callable(value_or_func):
-                        if value := value_or_func(self):
-                            dynamodb_data[key] = value
-                    else:
-                        dynamodb_data[key] = value_or_func
+                # Handle tuple keys like ("gsi3pk", "gsi3sk")
+                if isinstance(key, tuple):
+                    # This is a combined pk/sk definition
+                    if value_or_func and callable(value_or_func):
+                        result = value_or_func(self)
+                        if result:
+                            # Result should be a tuple of (pk_value, sk_value)
+                            if len(key) == 2 and len(result) == 2:
+                                dynamodb_data[key[0]] = result[0]
+                                dynamodb_data[key[1]] = result[1]
+                else:
+                    # Handle regular single-field definitions
+                    if value_or_func:
+                        if callable(value_or_func):
+                            if value := value_or_func(self):
+                                dynamodb_data[key] = value
+                        else:
+                            dynamodb_data[key] = value_or_func
 
         # Legacy GSI methods for backward compatibility
         if gsi1pk := self.db_get_gsi1pk():
@@ -339,7 +351,11 @@ class BaseDynamoDbResource(BaseModel, ABC):
         gsi_config = cls.get_gsi_config()
         for fields in gsi_config.values():
             for key in fields:
-                excluded_keys.add(key)
+                # Handle tuple keys like ("gsi3pk", "gsi3sk")
+                if isinstance(key, tuple):
+                    excluded_keys.update(key)
+                else:
+                    excluded_keys.add(key)
 
         # Also exclude legacy GSI fields
         excluded_keys.update({"gsi1pk", "gsi2pk", "gsi3pk", "gsi3sk"})
