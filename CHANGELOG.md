@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [12.4.0] 2025-09-16
+
+### Added
+
+* **Transparent Float Support**: Added automatic float-to-Decimal conversion for DynamoDB compatibility:
+    - Float fields in Pydantic models now work seamlessly with DynamoDB's Decimal requirement
+    - Automatic conversion of float values to Decimal during serialization
+    - Preserves float precision through string-based Decimal conversion
+    - Different behavior for compressed vs. uncompressed resources:
+        - Compressed resources: All float values preserved through JSON serialization
+        - Uncompressed resources: Top-level float fields work, lists of floats work, dict float values return as Decimal
+    - Full backward compatibility - existing code continues to work without changes
+    - Note: Floats in generic dicts return as Decimal from DynamoDB (use `List[float]` for automatic conversion)
+
 ## [12.3.0] 2025-09-16
 
 ### Added

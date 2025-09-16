@@ -3,7 +3,21 @@ import json
 import sys
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Optional, Type, TypedDict, TypeVar
+from decimal import Decimal
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    List,
+    Optional,
+    Type,
+    TypedDict,
+    TypeVar,
+    get_args,
+    get_origin,
+)
 
 import ulid
 from boto3.dynamodb.types import Binary
@@ -316,6 +330,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
         """Build resource instance from data dictionary.
 
         Handles blob fields and placeholders.
+        Converts Decimal back to float for List[float] typed fields.
         """
         # Extract metadata before processing
         blob_field_names = data.pop("_blob_fields", [])
@@ -328,6 +343,20 @@ class BaseDynamoDbResource(BaseModel, ABC):
         for field_name in blob_field_names:
             if field_name in blob_fields_config:
                 data[field_name] = None
+
+        # Convert Decimal to float for List[float] typed fields
+        for field_name, field_info in cls.model_fields.items():
+            if field_name in data:
+                field_type = field_info.annotation
+                # Check if field is List[float] or similar
+                if get_origin(field_type) in (list, List):
+                    args = get_args(field_type)
+                    if args and args[0] is float:
+                        # Convert any Decimal values in the list to float
+                        if isinstance(data[field_name], list):
+                            data[field_name] = [
+                                float(item) if isinstance(item, Decimal) else item for item in data[field_name]
+                            ]
 
         # Create the resource instance
         resource = cls.model_validate(data)
@@ -793,10 +822,15 @@ def _now(tz: Any = False):
 
 
 def clean_data(data: dict):
+    from decimal import Decimal
+
     data = {**data}
     del_keys = set()
     for key, value in data.items():
-        if isinstance(value, datetime):
+        if isinstance(value, float):
+            # convert floats to Decimal for DynamoDB compatibility
+            data[key] = Decimal(str(value))
+        elif isinstance(value, datetime):
             # convert datetimes to isoformat -- dynamodb has no native datetime
             data[key] = value.isoformat()
         elif isinstance(value, set) and not value:
@@ -805,8 +839,27 @@ def clean_data(data: dict):
         elif isinstance(value, dict):
             # run recursively on dicts
             data[key] = clean_data(value)
+        elif isinstance(value, list):
+            # handle lists that might contain floats
+            data[key] = _clean_list(value)
 
     for key in del_keys:
         data.pop(key)
 
     return data
+
+
+def _clean_list(lst: list):
+    """Clean list items, converting floats to Decimal."""
+
+    cleaned = []
+    for item in lst:
+        if isinstance(item, float):
+            cleaned.append(Decimal(str(item)))
+        elif isinstance(item, dict):
+            cleaned.append(clean_data(item))
+        elif isinstance(item, list):
+            cleaned.append(_clean_list(item))
+        else:
+            cleaned.append(item)
+    return cleaned
