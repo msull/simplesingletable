@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [12.5.0] 2025-09-17
+
+### Added
+
+* **Blob Storage Caching**: Added comprehensive caching layer to S3 blob storage for improved performance with frequently accessed blobs:
+    - LRU (Least Recently Used) eviction policy using OrderedDict for efficient memory management
+    - Configurable cache size limits (total size and per-item limits)
+    - Optional TTL (Time To Live) support for automatic cache expiration
+    - Thread-safe implementation with proper locking mechanisms
+    - Comprehensive cache statistics tracking (hits, misses, evictions, hit rate)
+    - Cache management methods: `clear_cache()`, `warm_cache()`, `get_cache_stats()`, `get_cache_info()`
+    - Automatic cache population on `put_blob()` and cache checking on `get_blob()`
+    - Automatic cache invalidation when blobs are deleted
+    - Configurable via S3BlobStorage constructor parameters:
+        - `cache_enabled` (default: True)
+        - `cache_max_size_bytes` (default: 100MB)
+        - `cache_max_items` (default: 1000)
+        - `cache_ttl_seconds` (default: 15 minutes)
+        - `cache_max_item_size_bytes` (default: 1MB)
+    - Fully backward compatible - no API changes required
+    - Significant performance improvements for frequently accessed blobs by eliminating redundant S3 API calls
+
 ## [12.4.0] 2025-09-16
 
 ### Added
