@@ -7,10 +7,7 @@ a versioned resource without modifying its blob fields, the blob field metadata
 is lost, causing blob fields to become regular None values.
 """
 
-import json
 from typing import Optional
-from datetime import datetime
-import boto3
 
 from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource
 from simplesingletable.models import ResourceConfig, BlobFieldConfig
@@ -144,7 +141,7 @@ def main():
         }
     )
     
-    print(f"Created document:")
+    print("Created document:")
     print(f"  ID: {doc.resource_id}")
     print(f"  Version: {doc.version}")
     print(f"  Title: {doc.title}")
@@ -166,7 +163,7 @@ def main():
         load_blobs=False
     )
     
-    print(f"Loaded document (without blobs):")
+    print("Loaded document (without blobs):")
     print(f"  Version: {loaded.version}")
     print(f"  Title: {loaded.title}")
     print(f"  Content is None: {loaded.content is None}")
@@ -188,7 +185,7 @@ def main():
         }
     )
     
-    print(f"Updated document:")
+    print("Updated document:")
     print(f"  Version: {updated.version}")
     print(f"  Title: {updated.title}")
     print(f"  Tags: {updated.tags}")
@@ -227,7 +224,7 @@ def main():
         load_blobs=True
     )
     
-    print(f"Version 1 (with blobs loaded):")
+    print("Version 1 (with blobs loaded):")
     print(f"  Version: {v1.version}")
     print(f"  Title: {v1.title}")
     print(f"  Content loaded: {v1.content[:50]}..." if v1.content else "  Content: None")

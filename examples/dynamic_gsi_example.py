@@ -76,7 +76,7 @@ def demo_dynamic_gsi():
     )
 
     # Create some tasks
-    task1 = memory.create_new(
+    memory.create_new(
         TaskResource,
         {
             "title": "Implement login feature",
@@ -87,7 +87,7 @@ def demo_dynamic_gsi():
         },
     )
 
-    task2 = memory.create_new(
+    memory.create_new(
         TaskResource,
         {
             "title": "Design dashboard UI",
@@ -98,7 +98,7 @@ def demo_dynamic_gsi():
         },
     )
 
-    task3 = memory.create_new(
+    memory.create_new(
         TaskResource,
         {
             "title": "Fix authentication bug",

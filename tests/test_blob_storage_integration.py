@@ -183,7 +183,7 @@ class TestBlobStorageIntegrationWithMinIO:
         assert loaded_with_blob.data == large_data
 
         # Update the blob
-        updated = memory.update_existing(loaded, {"data": "Updated data"})
+        memory.update_existing(loaded, {"data": "Updated data"})
 
         # Verify update
         final = memory.get_existing(doc.resource_id, SimpleDocumentWithBlob, load_blobs=True)

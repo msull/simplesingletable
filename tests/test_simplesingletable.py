@@ -431,7 +431,7 @@ def test_delete_all_versions(dynamodb_memory: DynamoDbMemory):
 
     # Update it multiple times to create multiple versions
     updated_resource = dynamodb_memory.update_existing(resource, {"some_field": "updated"})
-    final_resource = dynamodb_memory.update_existing(updated_resource, {"some_field": "final"})
+    dynamodb_memory.update_existing(updated_resource, {"some_field": "final"})
 
     # Verify all versions exist
     assert dynamodb_memory.get_existing(resource.resource_id, MyVersionedTestResource, version=0) is not None

@@ -330,7 +330,7 @@ def test_gsi_config_classmethod_override(dynamodb_memory: DynamoDbMemory):
     assert db_item["gsi3sk"] == "Project Alpha"
 
     # Create another resource with different values
-    resource2 = dynamodb_memory.create_new(
+    dynamodb_memory.create_new(
         DynamicGSIResource,
         {
             "name": "Project Beta",

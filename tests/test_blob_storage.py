@@ -85,7 +85,7 @@ class TestBlobStorageIntegration:
         large_data = {"results": ["item" * 100 for _ in range(100)]}
         binary_data = b"Binary content here"
 
-        resource = memory.create_new(
+        memory.create_new(
             DemoResourceWithBlobs,
             {
                 "name": "Test Resource",

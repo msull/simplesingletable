@@ -4,7 +4,7 @@ import pytest
 from typing import Optional
 from pydantic import BaseModel
 
-from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
+from simplesingletable import DynamoDbResource, DynamoDbVersionedResource
 from simplesingletable.extras.repository import ResourceRepository
 from simplesingletable.extras.versioned_repository import VersionedResourceRepository
 from simplesingletable.extras.readonly_repository import ReadOnlyResourceRepository

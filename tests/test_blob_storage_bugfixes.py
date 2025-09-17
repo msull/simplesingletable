@@ -5,13 +5,12 @@ Tests for blob storage bugfixes:
 3. PrivateAttr for _blob_placeholders
 """
 
-import json
 from typing import Optional
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 import pytest
 from datetime import datetime
 
-from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
+from simplesingletable import DynamoDbResource, DynamoDbVersionedResource
 from simplesingletable.models import ResourceConfig, BlobFieldConfig, BlobPlaceholder
 from simplesingletable.blob_storage import S3BlobStorage
 

@@ -6,7 +6,7 @@ from typing import Optional
 import pytest
 from pydantic import BaseModel
 
-from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource
+from simplesingletable import DynamoDbVersionedResource
 from simplesingletable.extras.versioned_repository import VersionedResourceRepository, VersionInfo
 
 

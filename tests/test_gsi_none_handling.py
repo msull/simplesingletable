@@ -2,7 +2,6 @@
 
 from typing import ClassVar, Optional
 
-import pytest
 from boto3.dynamodb.conditions import Key
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource

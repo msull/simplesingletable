@@ -2,14 +2,12 @@
 
 import uuid
 from datetime import datetime, timezone
-from typing import ClassVar, Optional
+from typing import Optional
 
 import pytest
-from botocore.exceptions import ClientError
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
-from simplesingletable.transactions import TransactionError, VersionConflictError
-from simplesingletable.models import ResourceConfig
+from simplesingletable.transactions import TransactionError
 
 
 class DemoUser(DynamoDbResource):
@@ -354,7 +352,7 @@ class TestTransactions:
 
     def test_empty_transaction_commit(self, dynamodb_memory: DynamoDbMemory):
         """Test committing an empty transaction (should be no-op)."""
-        with dynamodb_memory.transaction() as txn:
+        with dynamodb_memory.transaction():
             pass  # No operations
 
         # Should not raise any errors

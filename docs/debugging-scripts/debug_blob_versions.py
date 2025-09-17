@@ -3,10 +3,7 @@
 Debug script to check if _blob_versions is being properly stored and retrieved.
 """
 
-import json
 from typing import Optional
-from datetime import datetime
-import boto3
 
 from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource
 from simplesingletable.models import ResourceConfig, BlobFieldConfig
@@ -102,7 +99,7 @@ def main():
     print(f"Document _blob_versions: {doc._blob_versions}")
     
     # Inspect v1 in DynamoDB
-    item_v1 = inspect_dynamodb_item(memory, doc.resource_id, version=1)
+    inspect_dynamodb_item(memory, doc.resource_id, version=1)
     
     # Step 2: Load without blobs
     print("\nStep 2: Loading document without blobs...")
@@ -130,7 +127,7 @@ def main():
     print(f"Updated _blob_versions: {updated._blob_versions}")
     
     # Inspect v2 in DynamoDB
-    item_v2 = inspect_dynamodb_item(memory, doc.resource_id, version=2)
+    inspect_dynamodb_item(memory, doc.resource_id, version=2)
     
     # Step 4: Try to load blob fields
     print("\nStep 4: Loading blob fields from updated version...")
