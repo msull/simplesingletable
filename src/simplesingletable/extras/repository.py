@@ -80,7 +80,7 @@ class ResourceRepository:
         """
         Create a new record using the create schema and return the model instance.
         """
-        self.logger.debug(f"Creating {self.model_class.__name__} with: {obj_in}")
+        self.logger.debug(f"Creating {self.model_class.__name__}")
         if isinstance(obj_in, dict):
             self.logger.debug("Converting dict into to schema model")
             obj_in = self.create_schema_class.model_validate(obj_in)
@@ -134,7 +134,7 @@ class ResourceRepository:
             id_val = id_or_obj.resource_id
         else:
             id_val = id_or_obj
-        self.logger.debug(f"Updating {self.model_class.__name__} id={id_val} with: {obj_in}")
+        self.logger.debug(f"Updating {self.model_class.__name__} id={id_val}")
         if clear_fields:
             self.logger.debug(f"Clear fields: {clear_fields}")
         if isinstance(obj_in, dict):
