@@ -28,13 +28,13 @@ Example:
     # Use versioning features
     doc = doc_repo.create({"title": "My Doc", "content": "Version 1"})
     doc = doc_repo.update(doc.resource_id, {"content": "Version 2"})
-    
+
     # List all versions
     versions = doc_repo.list_versions(doc.resource_id)
-    
+
     # Get specific version
     v1_doc = doc_repo.get_version(doc.resource_id, 1)
-    
+
     # Restore previous version
     restored_doc = doc_repo.restore_version(doc.resource_id, 1)
 """

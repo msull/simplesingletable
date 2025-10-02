@@ -23,7 +23,7 @@ Example:
     doc = doc_reader.get(doc_id)
     versions = doc_reader.list_versions(doc_id)
     v1_doc = doc_reader.get_version(doc_id, 1)
-    
+
     # Mutation operations are not available
     # doc_reader.create(...) # This method doesn't exist
     # doc_reader.restore_version(...) # This method doesn't exist

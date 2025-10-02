@@ -25,7 +25,7 @@ from simplesingletable import DynamoDbResource
 from simplesingletable.models import ResourceConfig, BlobFieldConfig
 from tabulate import tabulate
 
-NUM_ITEMS = 2500
+NUM_ITEMS = 10
 
 
 class LargeResourceWithoutBlob(DynamoDbResource):

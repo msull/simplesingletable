@@ -24,7 +24,7 @@ Example:
     # Safe read operations
     user = user_reader.get(user_id)
     users = user_reader.list(limit=10)
-    
+
     # Mutation operations are not available
     # user_reader.create(...) # This method doesn't exist
 """
