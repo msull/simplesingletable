@@ -883,9 +883,7 @@ class DynamoDbMemory:
                     _observed_filter_efficiency = this_call_efficiency
                 else:
                     # 70% weight to previous observations, 30% to current
-                    _observed_filter_efficiency = (
-                        0.7 * _observed_filter_efficiency + 0.3 * this_call_efficiency
-                    )
+                    _observed_filter_efficiency = 0.7 * _observed_filter_efficiency + 0.3 * this_call_efficiency
 
                 self.logger.debug(
                     f"Filter efficiency: this_call={this_call_efficiency:.2%}, "
@@ -938,9 +936,9 @@ class DynamoDbMemory:
                     lek_data = None
                 _current_api_calls_on_stack = extra_data.api_calls_made
                 # Update efficiency tracking from recursive call
-                if hasattr(extra_data, 'filter_efficiency') and extra_data.filter_efficiency is not None:
+                if hasattr(extra_data, "filter_efficiency") and extra_data.filter_efficiency is not None:
                     _observed_filter_efficiency = extra_data.filter_efficiency
-                if hasattr(extra_data, 'total_items_scanned'):
+                if hasattr(extra_data, "total_items_scanned"):
                     _total_items_scanned = extra_data.total_items_scanned
                 rcus_consumed_by_query += extra_data.rcus_consumed_by_query
             else:
@@ -995,6 +993,7 @@ class DynamoDbMemory:
             )
 
         return response_data
+
 
 def _now(tz: Any = False):
     # this function exists only to make it easy to mock the utcnow call in date_id when creating resources in the tests
