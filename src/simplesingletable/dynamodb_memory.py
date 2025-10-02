@@ -696,6 +696,8 @@ class DynamoDbMemory:
         ascending=False,
         filter_limit_multiplier: int = 3,
         _current_api_calls_on_stack: int = 0,
+        _observed_filter_efficiency: Optional[float] = None,
+        _total_items_scanned: int = 0,
     ) -> PaginatedList[AnyDbResource]:
         """
         Execute a paginated query against a DynamoDB table, supporting filters and optional post-retrieval filtering.
@@ -762,12 +764,26 @@ class DynamoDbMemory:
         # if we are doing any filtering increase the number of objects evaluated, to try and limit the number of
         # api calls we need to make to hit the requested limit; sometimes this means we will pull too much data
         if filter_expression or filter_fn:
-            filter_limit_multiplier = int(filter_limit_multiplier)
-            if filter_limit_multiplier < 1:
-                filter_limit_multiplier = 1
-                self.logger.warning("filter_limit_multiplier below 1 not supported; used 1 instead")
-            query_limit = min(results_limit * filter_limit_multiplier, 1000)
-            self.logger.debug(f"{query_limit=}")
+            if _observed_filter_efficiency and _observed_filter_efficiency > 0:
+                # Use learned efficiency from previous calls
+                # Calculate smart multiplier based on observed match rate
+                smart_multiplier = min(max(1, int(1 / _observed_filter_efficiency)), 50)
+                query_limit = min(results_limit * smart_multiplier, 1000)
+                self.logger.debug(
+                    f"Using learned multiplier: efficiency={_observed_filter_efficiency:.2%}, "
+                    f"multiplier={smart_multiplier}, {query_limit=}"
+                )
+            else:
+                # First call, use default multiplier
+                filter_limit_multiplier = int(filter_limit_multiplier)
+                if filter_limit_multiplier < 1:
+                    filter_limit_multiplier = 1
+                    self.logger.warning("filter_limit_multiplier below 1 not supported; used 1 instead")
+                query_limit = min(results_limit * filter_limit_multiplier, 1000)
+                self.logger.debug(f"First call with default {filter_limit_multiplier=}, {query_limit=}")
+
+            # Enforce minimum batch size to prevent tiny queries
+            query_limit = max(query_limit, 50)
 
         # boto api requires some fields to not be present on the call at all if no values are supplied;
         # build up the call via partials
@@ -846,6 +862,39 @@ class DynamoDbMemory:
         else:
             response_data = list(loaded_data)
 
+        # Track filter efficiency for adaptive multiplier
+        if filter_expression or filter_fn:
+            # For filter_expression (DynamoDB-level): use ScannedCount (items examined before filter)
+            # For filter_fn only (Python-level): use Count (items returned by DynamoDB)
+            if filter_expression:
+                items_scanned_this_call = query_result.get("ScannedCount", len(query_result["Items"]))
+            else:
+                items_scanned_this_call = len(query_result["Items"])
+
+            items_matched_this_call = len(response_data)
+            _total_items_scanned += items_scanned_this_call
+
+            # Calculate efficiency for this call
+            if items_scanned_this_call > 0:
+                this_call_efficiency = items_matched_this_call / items_scanned_this_call
+
+                # Update observed efficiency (weighted average favoring recent observations)
+                if _observed_filter_efficiency is None:
+                    _observed_filter_efficiency = this_call_efficiency
+                else:
+                    # 70% weight to previous observations, 30% to current
+                    _observed_filter_efficiency = (
+                        0.7 * _observed_filter_efficiency + 0.3 * this_call_efficiency
+                    )
+
+                self.logger.debug(
+                    f"Filter efficiency: this_call={this_call_efficiency:.2%}, "
+                    f"running_avg={_observed_filter_efficiency:.2%}, "
+                    f"scanned={items_scanned_this_call}, matched={items_matched_this_call}"
+                )
+        else:
+            _total_items_scanned = len(response_data)
+
         # figure out the pagination stuff -- do we have enough results, do we have more data to check on the server,
         #   have we hit the limit on our API calls, etc.
         lek_data = query_result.get("LastEvaluatedKey")
@@ -878,6 +927,8 @@ class DynamoDbMemory:
                     max_api_calls=max_api_calls,
                     filter_limit_multiplier=filter_limit_multiplier,
                     _current_api_calls_on_stack=_current_api_calls_on_stack,
+                    _observed_filter_efficiency=_observed_filter_efficiency,
+                    _total_items_scanned=_total_items_scanned,
                 )
                 response_data += extra_data
                 # replace our lek_data with the extra_data's pagination key info
@@ -886,6 +937,11 @@ class DynamoDbMemory:
                 else:
                     lek_data = None
                 _current_api_calls_on_stack = extra_data.api_calls_made
+                # Update efficiency tracking from recursive call
+                if hasattr(extra_data, 'filter_efficiency') and extra_data.filter_efficiency is not None:
+                    _observed_filter_efficiency = extra_data.filter_efficiency
+                if hasattr(extra_data, 'total_items_scanned'):
+                    _total_items_scanned = extra_data.total_items_scanned
                 rcus_consumed_by_query += extra_data.rcus_consumed_by_query
             else:
                 self.logger.debug(f"Want {results_limit - current_count} more results, but no data available")
@@ -917,24 +973,28 @@ class DynamoDbMemory:
         response_data.api_calls_made = _current_api_calls_on_stack
         response_data.rcus_consumed_by_query = rcus_consumed_by_query
         response_data.query_time_ms = round((time.time() - started_at) * 1000, 3)
+        response_data.filter_efficiency = _observed_filter_efficiency
+        response_data.total_items_scanned = _total_items_scanned
 
         query_took_ms = response_data.query_time_ms
 
         items_returned = len(response_data)
+        total_scanned = response_data.total_items_scanned
+        filter_efficiency = response_data.filter_efficiency or 1
 
         if this_call_count > 1:
             self.logger.debug(
-                f"Completed dynamodb recursive sub-query; {query_took_ms=} {this_call_count=} {items_returned=}"
+                f"Completed dynamodb recursive sub-query; {query_took_ms=} {this_call_count=} "
+                f"{items_returned=} {total_scanned=} {filter_efficiency=:.2f}"
             )
         else:
             api_calls_required = _current_api_calls_on_stack
             self.logger.info(
-                f"Completed dynamodb query; {query_took_ms=} {items_returned=} {api_calls_required=} "
-                f"{rcus_consumed_by_query=}"
+                f"Completed dynamodb query; {query_took_ms=} {items_returned=} {total_scanned=} "
+                f"{api_calls_required=} {rcus_consumed_by_query=} {filter_efficiency=:.2f}"
             )
 
         return response_data
-
 
 def _now(tz: Any = False):
     # this function exists only to make it easy to mock the utcnow call in date_id when creating resources in the tests

@@ -46,6 +46,8 @@ class PaginatedList(list[_T]):
     api_calls_made: int = 0
     rcus_consumed_by_query: int = 0
     query_time_ms: Optional[float] = None
+    filter_efficiency: Optional[float] = None  # 0.0-1.0, % of scanned items that matched filter
+    total_items_scanned: int = 0  # Total items examined across all API calls
 
     def as_list(self) -> list[_T]:
         return self
