@@ -6,7 +6,7 @@ from .dynamodb_memory import (
     exhaust_pagination,
 )
 
-package_version = "12.8.0"
+package_version = "13.0.0"
 
 _ = DynamoDbMemory
 _ = DynamoDbResource
