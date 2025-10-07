@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+* **Blob Field Type Reconstruction**: Fixed blob fields containing `list[BaseModel]` to properly reconstruct Pydantic model instances when loaded from S3. Previously, Pydantic models in lists were deserialized as dictionaries and not reconstructed, causing attribute access errors. Now uses Pydantic's `TypeAdapter` to validate and reconstruct proper types for all blob field data during loading.
+    - Affects any blob field containing Pydantic models (e.g., `list[MyModel]`, `Optional[MyModel]`, etc.)
+    - Comprehensive test coverage added for both compressed and uncompressed blob fields with Pydantic models
+
 ## [12.8.0] 2025-10-02
 
 ### Added

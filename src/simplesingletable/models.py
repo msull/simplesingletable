@@ -22,7 +22,7 @@ from typing import (
 import ulid
 from boto3.dynamodb.types import Binary
 from humanize import naturalsize, precisedelta
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import BaseModel, ConfigDict, PrivateAttr, TypeAdapter
 
 from .utils import generate_date_sortable_id
 
@@ -439,6 +439,17 @@ class BaseDynamoDbResource(BaseModel, ABC):
                 field_name=field_name,
                 version=version,
             )
+
+            # Reconstruct proper types from deserialized data
+            # This converts dicts back to Pydantic models for fields like list[BaseModel]
+            field_info = self.model_fields.get(field_name)
+            if field_info and field_info.annotation and blob_data is not None:
+                try:
+                    type_adapter = TypeAdapter(field_info.annotation)
+                    blob_data = type_adapter.validate_python(blob_data)
+                except Exception:
+                    # If type validation fails, use raw data (backward compatibility)
+                    pass
 
             # Set the field value
             setattr(self, field_name, blob_data)
