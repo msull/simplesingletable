@@ -5,33 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [13.2.0]  2025-10-08
+
+### Fixed
+
+* **Nested Pydantic Models in Compressed Resources**: Fixed Pydantic serialization warnings when resources with
+  `compress_data=True` contained nested Pydantic models (e.g., `address: Address` where `Address` is a Pydantic
+  BaseModel) as regular (non-blob) fields:
+    - **Root Cause**: The compression path was calling `model_dump()` → `model_copy()` → `compress_model_content()`,
+      which converted nested Pydantic instances to dicts before calling `model_dump_json()`, triggering warnings about
+      unexpected input types
+    - **Solution**: Changed compression path to call `model_dump_json()` directly on the original instance, bypassing
+      the round-trip that loses type information
+    - **Impact**: Eliminates serialization warnings for nested models with `set` fields, `datetime` fields, or any other
+      Pydantic-managed types
+    - **Applies To**: Both `DynamoDbResource` and `DynamoDbVersionedResource` with `compress_data=True`
+    - **Backward Compatible**: No changes to serialization format, only to the serialization process
+    - Test coverage added in `test_nested_pydantic_models.py` covering compressed/uncompressed and
+      versioned/non-versioned resources
+
 ## [13.1.0] 2025-10-08
 
 ### Fixed
 
-* **Blob Field Serialization with Empty Sets**: Fixed critical serialization bug where Pydantic models containing `set` fields with empty sets (`set()`) were being incorrectly serialized as string literals `"set()"` instead of JSON arrays, causing TypeAdapter validation failures during blob loading. The fix implements proper type-aware serialization using Pydantic's `TypeAdapter`:
-    - **Root Cause**: `json.dumps(value, default=str)` in `blob_storage.py` was converting Python `set()` objects to their string representation rather than JSON-compatible lists
-    - **Solution**: Added `field_annotation` parameter to `S3BlobStorage.put_blob()` and uses `TypeAdapter.dump_json()` to serialize with full type information
-    - **Flexibility**: Handles any complex type annotation: `list[BaseModel]`, `dict[str, BaseModel]`, `dict[str, list[dict[str, BaseModel]]]`, `Optional[...]`, etc.
+* **Blob Field Serialization with Empty Sets**: Fixed critical serialization bug where Pydantic models containing `set`
+  fields with empty sets (`set()`) were being incorrectly serialized as string literals `"set()"` instead of JSON
+  arrays, causing TypeAdapter validation failures during blob loading. The fix implements proper type-aware
+  serialization using Pydantic's `TypeAdapter`:
+    - **Root Cause**: `json.dumps(value, default=str)` in `blob_storage.py` was converting Python `set()` objects to
+      their string representation rather than JSON-compatible lists
+    - **Solution**: Added `field_annotation` parameter to `S3BlobStorage.put_blob()` and uses `TypeAdapter.dump_json()`
+      to serialize with full type information
+    - **Flexibility**: Handles any complex type annotation: `list[BaseModel]`, `dict[str, BaseModel]`,
+      `dict[str, list[dict[str, BaseModel]]]`, `Optional[...]`, etc.
     - **Serialization Flow**:
         - Extracts blob field values as Pydantic instances before `model_dump()` to preserve types
         - Passes field annotations from `resource.model_fields[field_name].annotation` to storage layer
-        - Uses `TypeAdapter.dump_json()` for perfect symmetry with existing `TypeAdapter.validate_python()` deserialization
-    - **Auto-Detection Fallback**: When annotations unavailable, automatically detects Pydantic models and handles them appropriately
+        - Uses `TypeAdapter.dump_json()` for perfect symmetry with existing `TypeAdapter.validate_python()`
+          deserialization
+    - **Auto-Detection Fallback**: When annotations unavailable, automatically detects Pydantic models and handles them
+      appropriately
     - **Backward Compatibility**:
         - Old data without sets continues to work
         - Old data with empty sets was already broken and requires re-saving
         - New data works perfectly with all complex types including sets
-    - **Performance**: Eliminates Pydantic serialization warnings by preserving model instances throughout serialization pipeline
-    - **None Handling**: Properly distinguishes between `None` (no blob stored) and empty collections like `[]` or `set()`
-    - **Version Preservation**: Correctly maintains blob version references when updating resources without modifying blob fields
-    - Comprehensive test coverage added in `test_blob_empty_set_issue.py` with cache clearing to verify actual S3 round-trip behavior
+    - **Performance**: Eliminates Pydantic serialization warnings by preserving model instances throughout serialization
+      pipeline
+    - **None Handling**: Properly distinguishes between `None` (no blob stored) and empty collections like `[]` or
+      `set()`
+    - **Version Preservation**: Correctly maintains blob version references when updating resources without modifying
+      blob fields
+    - Comprehensive test coverage added in `test_blob_empty_set_issue.py` with cache clearing to verify actual S3
+      round-trip behavior
 
 ## [13.0.0] 2025-10-06
 
 ### Fixed
 
-* **Blob Field Type Reconstruction**: Fixed blob fields containing `list[BaseModel]` to properly reconstruct Pydantic model instances when loaded from S3. Previously, Pydantic models in lists were deserialized as dictionaries and not reconstructed, causing attribute access errors. Now uses Pydantic's `TypeAdapter` to validate and reconstruct proper types for all blob field data during loading.
+* **Blob Field Type Reconstruction**: Fixed blob fields containing `list[BaseModel]` to properly reconstruct Pydantic
+  model instances when loaded from S3. Previously, Pydantic models in lists were deserialized as dictionaries and not
+  reconstructed, causing attribute access errors. Now uses Pydantic's `TypeAdapter` to validate and reconstruct proper
+  types for all blob field data during loading.
     - Affects any blob field containing Pydantic models (e.g., `list[MyModel]`, `Optional[MyModel]`, etc.)
     - Comprehensive test coverage added for both compressed and uncompressed blob fields with Pydantic models
 
@@ -39,10 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-* **Adaptive Filter Efficiency Tracking and Learned Query Multiplier**: Dramatically reduces DynamoDB API calls when using filter expressions by learning filter selectivity and adaptively adjusting query batch sizes:
+* **Adaptive Filter Efficiency Tracking and Learned Query Multiplier**: Dramatically reduces DynamoDB API calls when
+  using filter expressions by learning filter selectivity and adaptively adjusting query batch sizes:
     - **Filter Efficiency Tracking**: Automatically tracks the effectiveness of DynamoDB filter expressions
-    - **Learned Multiplier**: After the first query, the system calculates actual filter efficiency and dynamically adjusts the query multiplier for subsequent paginated calls
-    - **Intelligent Batch Sizing**: Uses observed efficiency to fetch appropriate amounts of data (e.g., 20% efficiency → multiplier of 5x)
+    - **Learned Multiplier**: After the first query, the system calculates actual filter efficiency and dynamically
+      adjusts the query multiplier for subsequent paginated calls
+    - **Intelligent Batch Sizing**: Uses observed efficiency to fetch appropriate amounts of data (e.g., 20%
+      efficiency → multiplier of 5x)
     - **Minimum Batch Size**: Enforces a floor of 50 items per query to prevent tiny API calls late in recursion
     - **New PaginatedList Fields**:
         - `filter_efficiency`: Float (0.0-1.0) showing percentage of scanned items that matched the filter
@@ -85,7 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-* **Blob Storage Caching**: Added comprehensive caching layer to S3 blob storage for improved performance with frequently accessed blobs:
+* **Blob Storage Caching**: Added comprehensive caching layer to S3 blob storage for improved performance with
+  frequently accessed blobs:
     - LRU (Least Recently Used) eviction policy using OrderedDict for efficient memory management
     - Configurable cache size limits (total size and per-item limits)
     - Optional TTL (Time To Live) support for automatic cache expiration
@@ -121,7 +159,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-* **Tuple-Based GSI Configuration**: Enhanced GSI configuration to support defining both partition and sort keys with a single method:
+* **Tuple-Based GSI Configuration**: Enhanced GSI configuration to support defining both partition and sort keys with a
+  single method:
     - New tuple format: `("gsi3pk", "gsi3sk"): method_returning_tuple` in `get_gsi_config()`
     - Methods can return `tuple[str, str] | None` to set both pk and sk values atomically
     - Useful for correlated index values that should always be set together
@@ -159,30 +198,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-* **Read-Only Repository Classes**: Introduced `ReadOnlyResourceRepository` and `ReadOnlyVersionedResourceRepository` classes for safe, read-only access to resources:
-    - `ReadOnlyResourceRepository` in `simplesingletable.extras.readonly_repository` provides read-only access to standard resources
-    - `ReadOnlyVersionedResourceRepository` in `simplesingletable.extras.readonly_versioned_repository` provides read-only access to versioned resources with version querying capabilities
+* **Read-Only Repository Classes**: Introduced `ReadOnlyResourceRepository` and `ReadOnlyVersionedResourceRepository`
+  classes for safe, read-only access to resources:
+    - `ReadOnlyResourceRepository` in `simplesingletable.extras.readonly_repository` provides read-only access to
+      standard resources
+    - `ReadOnlyVersionedResourceRepository` in `simplesingletable.extras.readonly_versioned_repository` provides
+      read-only access to versioned resources with version querying capabilities
     - Both classes expose only safe read operations (`get()`, `read()`, `list()`) and hide all mutation methods
-    - `ReadOnlyVersionedResourceRepository` additionally provides `list_versions()` and `get_version()` methods for version inspection
-    - Useful for services and components that should only have read access to data, ensuring data integrity at the repository level
+    - `ReadOnlyVersionedResourceRepository` additionally provides `list_versions()` and `get_version()` methods for
+      version inspection
+    - Useful for services and components that should only have read access to data, ensuring data integrity at the
+      repository level
 
 ## [12.0.1] 2025-08-22
 
 ### Fixed
 
-* **Pagination with Blob Fields**: Fixed a TypeError that occurred when building LastEvaluatedKey during paginated queries on resources with blob fields. When `to_dynamodb_item()` returns a tuple `(db_item, blob_data)` for resources with blob storage configured, the pagination logic now correctly extracts just the db_item portion before building the LastEvaluatedKey.
+* **Pagination with Blob Fields**: Fixed a TypeError that occurred when building LastEvaluatedKey during paginated
+  queries on resources with blob fields. When `to_dynamodb_item()` returns a tuple `(db_item, blob_data)` for resources
+  with blob storage configured, the pagination logic now correctly extracts just the db_item portion before building the
+  LastEvaluatedKey.
 
 ## [12.0.0] 2025-08-20
 
 ### Changed
 
-* **Potential breaking change** - to_dynamodb_item no longer passed `exclude_none=True` when serializing to the DynamoDb Item
+* **Potential breaking change** - to_dynamodb_item no longer passed `exclude_none=True` when serializing to the DynamoDb
+  Item
 
 ## [11.3.0] 2025-08-15
 
 ### Changed
 
-* **Code Refactoring - Eliminated Duplication**: Extracted ~150 lines of duplicated code between `DynamoDbResource` and `DynamoDbVersionedResource` into their base class `BaseDynamoDbResource`. The refactoring introduces several protected helper methods:
+* **Code Refactoring - Eliminated Duplication**: Extracted ~150 lines of duplicated code between `DynamoDbResource` and
+  `DynamoDbVersionedResource` into their base class `BaseDynamoDbResource`. The refactoring introduces several protected
+  helper methods:
     - `_extract_blob_fields()` - Handles blob field extraction from model data
     - `_apply_gsi_configuration()` - Applies dynamic GSI configuration and legacy GSI methods
     - `_add_blob_metadata()` - Manages blob metadata in DynamoDB items
@@ -193,11 +243,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-* **ResourceConfig Inheritance for Versioned Resources**: Fixed the `compress_data` resource configuration to properly respect subclass settings. The `__pydantic_init_subclass__` method was moved from the base class to the specific resource classes (`DynamoDbResource` and `DynamoDbVersionedResource`) to ensure that subclasses correctly inherit and merge their parent's default configurations. This fix ensures that:
-    - Non-versioned resources default to `compress_data=False` 
+* **ResourceConfig Inheritance for Versioned Resources**: Fixed the `compress_data` resource configuration to properly
+  respect subclass settings. The `__pydantic_init_subclass__` method was moved from the base class to the specific
+  resource classes (`DynamoDbResource` and `DynamoDbVersionedResource`) to ensure that subclasses correctly inherit and
+  merge their parent's default configurations. This fix ensures that:
+    - Non-versioned resources default to `compress_data=False`
     - Versioned resources default to `compress_data=True`
     - Subclasses can override these defaults and their settings will be properly respected
-    - The `to_dynamodb_item()` and `from_dynamodb_item()` methods now correctly check the `compress_data` setting before compressing/decompressing data
+    - The `to_dynamodb_item()` and `from_dynamodb_item()` methods now correctly check the `compress_data` setting before
+      compressing/decompressing data
 
 ## [11.2.0] 2025-08-15
 
