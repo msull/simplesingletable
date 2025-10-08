@@ -85,19 +85,19 @@ class TestEmptySetInBlobField:
                 name="Item 1",
                 description="First item with empty tags",
                 tags=set(),  # Empty set - this is the problematic case
-                metadata={"priority": "high"}
+                metadata={"priority": "high"},
             ),
             Item(
                 name="Item 2",
                 description="Second item with tags",
                 tags={"tag1", "tag2", "tag3"},  # Non-empty set
-                metadata={"priority": "low"}
+                metadata={"priority": "low"},
             ),
             Item(
                 name="Item 3",
                 description="Third item with empty tags",
                 tags=set(),  # Another empty set
-                metadata={}
+                metadata={},
             ),
         ]
 
@@ -115,11 +115,7 @@ class TestEmptySetInBlobField:
         assert collection.resource_id
 
         # Load without blobs first
-        loaded_no_blobs = memory.get_existing(
-            collection.resource_id,
-            ItemCollectionVersioned,
-            load_blobs=False
-        )
+        loaded_no_blobs = memory.get_existing(collection.resource_id, ItemCollectionVersioned, load_blobs=False)
 
         assert loaded_no_blobs.items is None
         assert loaded_no_blobs.has_unloaded_blobs()
@@ -129,11 +125,7 @@ class TestEmptySetInBlobField:
         memory.s3_blob_storage.clear_cache()
 
         # Load with blobs - this is where the issue occurs
-        loaded = memory.get_existing(
-            collection.resource_id,
-            ItemCollectionVersioned,
-            load_blobs=True
-        )
+        loaded = memory.get_existing(collection.resource_id, ItemCollectionVersioned, load_blobs=True)
 
         # Verify items were loaded correctly
         assert loaded.items is not None
@@ -194,11 +186,7 @@ class TestEmptySetInBlobField:
         memory.s3_blob_storage.clear_cache()
 
         # Load with blobs
-        loaded = memory.get_existing(
-            collection.resource_id,
-            ItemCollectionUncompressed,
-            load_blobs=True
-        )
+        loaded = memory.get_existing(collection.resource_id, ItemCollectionUncompressed, load_blobs=True)
 
         assert loaded.items is not None
         assert len(loaded.items) == 3
@@ -241,10 +229,7 @@ class TestEmptySetInBlobField:
             Item(name="Item B", description="New item", tags=set()),  # New with empty tags
         ]
 
-        updated = memory.update_existing(
-            collection,
-            {"items": updated_items, "status": "updated"}
-        )
+        updated = memory.update_existing(collection, {"items": updated_items, "status": "updated"})
 
         assert updated.version == 2
 
@@ -252,12 +237,7 @@ class TestEmptySetInBlobField:
         memory.s3_blob_storage.clear_cache()
 
         # Load v1 and verify original
-        v1 = memory.get_existing(
-            collection.resource_id,
-            ItemCollectionVersioned,
-            version=1,
-            load_blobs=True
-        )
+        v1 = memory.get_existing(collection.resource_id, ItemCollectionVersioned, version=1, load_blobs=True)
 
         assert len(v1.items) == 1
         assert v1.items[0].tags == {"old-tag"}
@@ -266,12 +246,7 @@ class TestEmptySetInBlobField:
         memory.s3_blob_storage.clear_cache()
 
         # Load v2 and verify empty sets
-        v2 = memory.get_existing(
-            collection.resource_id,
-            ItemCollectionVersioned,
-            version=2,
-            load_blobs=True
-        )
+        v2 = memory.get_existing(collection.resource_id, ItemCollectionVersioned, version=2, load_blobs=True)
 
         assert len(v2.items) == 2
         assert v2.items[0].tags == set()
@@ -284,10 +259,7 @@ class TestEmptySetInBlobField:
         memory = dynamodb_memory_with_s3
 
         # Create items with only empty sets
-        items = [
-            Item(name=f"Item {i}", description=f"Desc {i}", tags=set())
-            for i in range(5)
-        ]
+        items = [Item(name=f"Item {i}", description=f"Desc {i}", tags=set()) for i in range(5)]
 
         collection = memory.create_new(
             ItemCollectionVersioned,
@@ -302,11 +274,7 @@ class TestEmptySetInBlobField:
         memory.s3_blob_storage.clear_cache()
 
         # Load and verify
-        loaded = memory.get_existing(
-            collection.resource_id,
-            ItemCollectionVersioned,
-            load_blobs=True
-        )
+        loaded = memory.get_existing(collection.resource_id, ItemCollectionVersioned, load_blobs=True)
 
         assert len(loaded.items) == 5
         for item in loaded.items:
@@ -338,11 +306,7 @@ class TestEmptySetEdgeCases:
         # Clear cache to force reading from S3
         memory.s3_blob_storage.clear_cache()
 
-        loaded = memory.get_existing(
-            collection.resource_id,
-            ItemCollectionVersioned,
-            load_blobs=True
-        )
+        loaded = memory.get_existing(collection.resource_id, ItemCollectionVersioned, load_blobs=True)
 
         assert len(loaded.items) == 1
         assert loaded.items[0].tags == set()
@@ -376,16 +340,8 @@ class TestEmptySetEdgeCases:
         memory.s3_blob_storage.clear_cache()
 
         # Load both
-        loaded1 = memory.get_existing(
-            collection1.resource_id,
-            ItemCollectionVersioned,
-            load_blobs=True
-        )
-        loaded2 = memory.get_existing(
-            collection2.resource_id,
-            ItemCollectionVersioned,
-            load_blobs=True
-        )
+        loaded1 = memory.get_existing(collection1.resource_id, ItemCollectionVersioned, load_blobs=True)
+        loaded2 = memory.get_existing(collection2.resource_id, ItemCollectionVersioned, load_blobs=True)
 
         # Verify distinction
         assert loaded1.items == []

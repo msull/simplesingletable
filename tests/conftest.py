@@ -184,7 +184,6 @@ def dynamodb_memory_with_s3(local_dynamodb_test_table, dynamodb_via_docker, mini
         s3_client=s3_client,
         # cache_enabled=False
     )
-    
 
     # Create DynamoDbMemory with proper DynamoDB credentials and pass the S3 blob storage
     memory = DynamoDbMemory(

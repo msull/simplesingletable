@@ -62,6 +62,7 @@ class TestBlobCache:
                 }
             else:
                 from botocore.exceptions import ClientError
+
                 raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
 
         mock_client.put_object = Mock(side_effect=mock_put_object)
@@ -622,4 +623,3 @@ class TestBlobCache:
         stats = s3_storage_with_cache.get_cache_stats()
         assert stats.current_items <= 5  # Should respect max items
         assert stats.current_size_bytes <= 10 * 1024  # Should respect max size
-

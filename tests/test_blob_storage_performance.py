@@ -210,7 +210,7 @@ class TestBlobStoragePerformance:
 
         create_time_without_blob = (time.time() - start_time) * 1000
         print(f"  - Time to create {NUM_ITEMS} WITHOUT blob storage: {create_time_without_blob:.2f} ms")
-        print(f"  - Average per item: {create_time_without_blob/NUM_ITEMS:.2f} ms")
+        print(f"  - Average per item: {create_time_without_blob / NUM_ITEMS:.2f} ms")
 
         # Create items WITH blob storage (storing large data in S3)
         print(f"Creating {NUM_ITEMS} items WITH blob storage...")
@@ -223,7 +223,7 @@ class TestBlobStoragePerformance:
             with_blob_ids.append(resource.resource_id)
         create_time_with_blob = (time.time() - start_time) * 1000
         print(f"  - Time to create {NUM_ITEMS} WITH blob storage: {create_time_with_blob:.2f} ms")
-        print(f"  - Average per item: {create_time_with_blob/NUM_ITEMS:.2f} ms")
+        print(f"  - Average per item: {create_time_with_blob / NUM_ITEMS:.2f} ms")
 
         # Query all items WITHOUT blob storage
         print("\nQuerying items WITHOUT blob storage...")
@@ -323,7 +323,7 @@ class TestBlobStoragePerformance:
         load_time = (time.time() - start_time) * 1000
 
         print(f"  - Time to load 10 blobs from S3: {load_time:.2f} ms")
-        print(f"  - Average per blob: {load_time/10:.2f} ms")
+        print(f"  - Average per blob: {load_time / 10:.2f} ms")
 
         # Verify blobs were loaded correctly
         for item in subset_with_blobs:

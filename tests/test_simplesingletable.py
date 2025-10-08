@@ -185,6 +185,7 @@ def test_dynamodb_memory__queries(dynamodb_memory: DynamoDbMemory, mocker):
         dynamodb_memory.read_existing(new_resource_2.resource_id, MyVersionedTestResource, version=1) == new_resource_2
     )
 
+
 def test_delete_versioned_resource(dynamodb_memory: DynamoDbMemory):
     """Test deleting a specific version of a versioned resource."""
     # Create a versioned resource

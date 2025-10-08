@@ -28,7 +28,7 @@ class ChatSession(DynamoDbResource):
     def _get_gsi3pk_and_sk(self) -> tuple[str, str] | None:
         """Return both pk and sk values for gsi3."""
         if self.active:
-            pk = 'ChatSession#' + self.username
+            pk = "ChatSession#" + self.username
             sk = (self.last_message_at or self.created_at).isoformat()
             return (pk, sk)
         return None
@@ -55,7 +55,7 @@ class MixedGSIResource(DynamoDbResource):
             },
             "gsi3": {
                 ("gsi3pk", "gsi3sk"): cls._get_priority_index,
-            }
+            },
         }
 
     def _get_priority_index(self) -> tuple[str, str] | None:
@@ -83,7 +83,7 @@ class ConditionalTupleResource(DynamoDbVersionedResource):
             },
             "gsi3": {
                 ("gsi3pk", "gsi3sk"): cls._get_published_index,
-            }
+            },
         }
 
     def _get_published_index(self) -> tuple[str, str] | None:
@@ -106,7 +106,7 @@ def test_basic_tuple_gsi_config(dynamodb_memory: DynamoDbMemory):
             "active": True,
             "last_message_at": now,
             "channel": "general",
-        }
+        },
     )
 
     # Check that GSI fields are set correctly
@@ -121,7 +121,7 @@ def test_basic_tuple_gsi_config(dynamodb_memory: DynamoDbMemory):
             "username": "bob",
             "active": False,
             "channel": "random",
-        }
+        },
     )
 
     db_item = inactive.to_dynamodb_item()
@@ -139,7 +139,7 @@ def test_mixed_gsi_configuration(dynamodb_memory: DynamoDbMemory):
             "priority": 1,
             "owner": "alice",
             "updated_by": "bob",
-        }
+        },
     )
 
     db_item = resource.to_dynamodb_item()
@@ -164,7 +164,7 @@ def test_conditional_tuple_return(dynamodb_memory: DynamoDbMemory):
             "published": True,
             "publish_date": publish_date,
             "author": "alice",
-        }
+        },
     )
 
     db_item = published.to_dynamodb_item(v0_object=True)
@@ -179,7 +179,7 @@ def test_conditional_tuple_return(dynamodb_memory: DynamoDbMemory):
             "category": "science",
             "published": False,
             "author": "bob",
-        }
+        },
     )
 
     db_item = unpublished.to_dynamodb_item(v0_object=True)
@@ -203,7 +203,7 @@ def test_querying_with_tuple_gsi(dynamodb_memory: DynamoDbMemory):
                 "active": i < 3,  # First 3 are active
                 "last_message_at": last_message,
                 "channel": "general" if i % 2 == 0 else "random",
-            }
+            },
         )
         sessions.append(session)
 
@@ -228,6 +228,7 @@ def test_querying_with_tuple_gsi(dynamodb_memory: DynamoDbMemory):
     )
     assert len(results) == 0
 
+
 def test_update_with_tuple_gsi(dynamodb_memory: DynamoDbMemory):
     """Test updating resources with tuple-based GSI configuration."""
     # Create an inactive session
@@ -237,7 +238,7 @@ def test_update_with_tuple_gsi(dynamodb_memory: DynamoDbMemory):
             "username": "charlie",
             "active": False,
             "channel": "support",
-        }
+        },
     )
 
     # Verify no GSI fields initially
@@ -252,7 +253,7 @@ def test_update_with_tuple_gsi(dynamodb_memory: DynamoDbMemory):
         {
             "active": True,
             "last_message_at": now,
-        }
+        },
     )
 
     # Verify GSI fields are now present
@@ -274,7 +275,7 @@ def test_complex_sorting_with_tuple_gsi(dynamodb_memory: DynamoDbMemory):
                     "status": "active",
                     "priority": priority,
                     "owner": owner,
-                }
+                },
             )
             resources.append(resource)
 
@@ -308,15 +309,12 @@ def test_versioned_resource_with_tuple_gsi(dynamodb_memory: DynamoDbMemory):
             "published": True,
             "publish_date": publish_date,
             "author": "einstein",
-        }
+        },
     )
 
     # Update multiple times to create versions
     for i in range(2, 5):
-        resource = dynamodb_memory.update_existing(
-            resource,
-            {"category": f"science-v{i}"}
-        )
+        resource = dynamodb_memory.update_existing(resource, {"category": f"science-v{i}"})
 
     # Query by author (regular GSI)
     author_results = dynamodb_memory.paginated_dynamodb_query(
@@ -347,7 +345,7 @@ def test_exclude_keys_with_tuple_config(dynamodb_memory: DynamoDbMemory):
             "status": "active",
             "priority": 1,
             "owner": "alice",
-        }
+        },
     )
 
     # Get the raw DynamoDB item
@@ -386,11 +384,9 @@ def test_empty_tuple_gsi_config():
 
     # Create a minimal resource with required fields
     from datetime import datetime
+
     resource = EmptyTupleResource(
-        resource_id="test-id",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-        name="test"
+        resource_id="test-id", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc), name="test"
     )
     db_item = resource.to_dynamodb_item()
 
@@ -417,7 +413,7 @@ def test_classvar_with_tuple_config(dynamodb_memory: DynamoDbMemory):
         {
             "name": "high-scorer",
             "score": 100,
-        }
+        },
     )
 
     db_item = resource.to_dynamodb_item()

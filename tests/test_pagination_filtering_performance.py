@@ -4,8 +4,10 @@ from simplesingletable import DynamoDbMemory, DynamoDbResource
 
 class FilterTestResource(DynamoDbResource):
     """Resource for testing filter performance."""
+
     category: str
     value: int
+
 
 #
 # def test_heavy_filtering_api_calls(dynamodb_memory: DynamoDbMemory):
@@ -49,6 +51,7 @@ class FilterTestResource(DynamoDbResource):
 #     assert result.api_calls_made == 2, "Should only need 2 API calls with learned multiplier"
 #
 
+
 def test_extreme_filtering_performance(dynamodb_memory: DynamoDbMemory):
     """Test with very selective filter (5% match rate)."""
     for i in range(100):
@@ -70,7 +73,7 @@ def test_extreme_filtering_performance(dynamodb_memory: DynamoDbMemory):
     assert len(result) == 5
     assert result.api_calls_made == 2
     assert all(r.category == "match" for r in result)
-    if hasattr(result, 'filter_efficiency'):
+    if hasattr(result, "filter_efficiency"):
         assert 0.04 < result.filter_efficiency < 0.06, "Should be around 5%"
     # Before optimization, this would be 10+ calls
 
@@ -94,9 +97,9 @@ def test_no_filtering_unchanged_behavior(dynamodb_memory: DynamoDbMemory):
     )
 
     assert len(result) == 20
-    if hasattr(result, 'total_items_scanned'):
+    if hasattr(result, "total_items_scanned"):
         assert result.total_items_scanned == 20
-    if hasattr(result, 'filter_efficiency'):
+    if hasattr(result, "filter_efficiency"):
         assert result.filter_efficiency is None
     assert result.api_calls_made == 1
     print(f"\nNo filtering - API calls: {result.api_calls_made}")

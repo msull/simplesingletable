@@ -13,6 +13,7 @@ from simplesingletable.extras.readonly_versioned_repository import ReadOnlyVersi
 
 class User(DynamoDbResource):
     """Test user model."""
+
     name: str
     email: str
     age: Optional[int] = None
@@ -20,6 +21,7 @@ class User(DynamoDbResource):
 
 class CreateUserSchema(BaseModel):
     """Schema for creating users."""
+
     name: str
     email: str
     age: Optional[int] = None
@@ -27,6 +29,7 @@ class CreateUserSchema(BaseModel):
 
 class UpdateUserSchema(BaseModel):
     """Schema for updating users."""
+
     name: Optional[str] = None
     email: Optional[str] = None
     age: Optional[int] = None
@@ -34,6 +37,7 @@ class UpdateUserSchema(BaseModel):
 
 class Document(DynamoDbVersionedResource):
     """Test versioned document model."""
+
     title: str
     content: str
     tags: Optional[list[str]] = None
@@ -41,6 +45,7 @@ class Document(DynamoDbVersionedResource):
 
 class CreateDocumentSchema(BaseModel):
     """Schema for creating documents."""
+
     title: str
     content: str
     tags: Optional[list[str]] = None
@@ -48,6 +53,7 @@ class CreateDocumentSchema(BaseModel):
 
 class UpdateDocumentSchema(BaseModel):
     """Schema for updating documents."""
+
     title: Optional[str] = None
     content: Optional[str] = None
     tags: Optional[list[str]] = None
@@ -186,14 +192,15 @@ class TestReadOnlyResourceRepository:
     def test_logger_configuration(self, memory):
         """Test custom logger configuration."""
         import logging
+
         custom_logger = logging.getLogger("custom_test_logger")
-        
+
         repo = ReadOnlyResourceRepository(
             ddb=memory,
             model_class=User,
             logger=custom_logger,
         )
-        
+
         assert repo.logger == custom_logger
 
     def test_data_consistency(self, writable_user_repo, readonly_user_repo):
@@ -201,22 +208,22 @@ class TestReadOnlyResourceRepository:
         # Create initial user
         user_data = {"name": "Charlie", "email": "charlie@example.com", "age": 25}
         created_user = writable_user_repo.create(user_data)
-        
+
         # Verify read-only repo sees it
         read_user = readonly_user_repo.get(created_user.resource_id)
         assert read_user.name == "Charlie"
         assert read_user.age == 25
-        
+
         # Update with writable repo
         writable_user_repo.update(created_user.resource_id, {"age": 26})
-        
+
         # Verify read-only repo sees the update
         updated_user = readonly_user_repo.get(created_user.resource_id)
         assert updated_user.age == 26
-        
+
         # Delete with writable repo
         writable_user_repo.delete(created_user.resource_id)
-        
+
         # Verify read-only repo sees the deletion
         deleted_user = readonly_user_repo.get(created_user.resource_id)
         assert deleted_user is None
@@ -238,13 +245,13 @@ class TestReadOnlyVersionedResourceRepository:
         # Create document with writable repo
         doc_data = {"title": "Test Document", "content": "Test content", "tags": ["test"]}
         created_doc = writable_doc_repo.create(doc_data)
-        
+
         # Get with read-only repo
         retrieved_doc = readonly_doc_repo.get(created_doc.resource_id)
         assert retrieved_doc is not None
         assert retrieved_doc.title == "Test Document"
         assert retrieved_doc.version == 1
-        
+
         # Read with read-only repo
         read_doc = readonly_doc_repo.read(created_doc.resource_id)
         assert read_doc.resource_id == created_doc.resource_id
@@ -255,14 +262,14 @@ class TestReadOnlyVersionedResourceRepository:
         # Create and update document multiple times with writable repo
         doc = writable_doc_repo.create({"title": "Versioned Doc", "content": "Version 1"})
         doc_id = doc.resource_id
-        
+
         writable_doc_repo.update(doc_id, {"content": "Version 2"})
         writable_doc_repo.update(doc_id, {"content": "Version 3", "title": "Updated Title"})
-        
+
         # List versions with read-only repo
         versions = readonly_doc_repo.list_versions(doc_id)
         assert len(versions) == 3
-        
+
         # Check version ordering (newest first)
         assert versions[0].version_number == 3
         assert versions[0].is_latest is True
@@ -270,7 +277,7 @@ class TestReadOnlyVersionedResourceRepository:
         assert versions[1].is_latest is False
         assert versions[2].version_number == 1
         assert versions[2].is_latest is False
-        
+
         # Verify VersionInfo structure
         for version in versions:
             assert isinstance(version, VersionInfo)
@@ -283,21 +290,21 @@ class TestReadOnlyVersionedResourceRepository:
         # Create document with multiple versions
         doc = writable_doc_repo.create({"title": "Multi-version Doc", "content": "Content v1"})
         doc_id = doc.resource_id
-        
+
         writable_doc_repo.update(doc_id, {"content": "Content v2"})
         writable_doc_repo.update(doc_id, {"content": "Content v3", "title": "New Title"})
-        
+
         # Get specific versions with read-only repo
         v1 = readonly_doc_repo.get_version(doc_id, 1)
         assert v1.version == 1
         assert v1.content == "Content v1"
         assert v1.title == "Multi-version Doc"
-        
+
         v2 = readonly_doc_repo.get_version(doc_id, 2)
         assert v2.version == 2
         assert v2.content == "Content v2"
         assert v2.title == "Multi-version Doc"
-        
+
         v3 = readonly_doc_repo.get_version(doc_id, 3)
         assert v3.version == 3
         assert v3.content == "Content v3"
@@ -306,7 +313,7 @@ class TestReadOnlyVersionedResourceRepository:
     def test_get_version_not_found(self, writable_doc_repo, readonly_doc_repo):
         """Test getting a non-existent version."""
         doc = writable_doc_repo.create({"title": "Test", "content": "Test"})
-        
+
         # Try to get non-existent version
         result = readonly_doc_repo.get_version(doc.resource_id, 99)
         assert result is None
@@ -314,11 +321,11 @@ class TestReadOnlyVersionedResourceRepository:
     def test_get_version_invalid_format(self, writable_doc_repo, readonly_doc_repo):
         """Test getting version with invalid format."""
         doc = writable_doc_repo.create({"title": "Test", "content": "Test"})
-        
+
         # Invalid version number (zero or negative)
         with pytest.raises(ValueError, match="Version must be a positive integer"):
             readonly_doc_repo.get_version(doc.resource_id, 0)
-        
+
         with pytest.raises(ValueError, match="Version must be a positive integer"):
             readonly_doc_repo.get_version(doc.resource_id, -1)
 
@@ -332,11 +339,11 @@ class TestReadOnlyVersionedResourceRepository:
         ]
         for dd in docs_data:
             writable_doc_repo.create(dd)
-        
+
         # List all documents with read-only repo
         all_docs = readonly_doc_repo.list()
         assert len(all_docs) == 3
-        
+
         # List with limit
         limited_docs = readonly_doc_repo.list(limit=2)
         assert len(limited_docs) == 2
@@ -362,24 +369,24 @@ class TestReadOnlyVersionedResourceRepository:
         # Create document and make many updates to get double-digit versions
         doc = writable_doc_repo.create({"title": "Test", "content": "v1"})
         doc_id = doc.resource_id
-        
+
         # Create versions up to v12
         for i in range(2, 13):
             writable_doc_repo.update(doc_id, {"content": f"v{i}"})
-        
+
         # List versions with read-only repo and verify ordering
         versions = readonly_doc_repo.list_versions(doc_id)
         assert len(versions) == 12
-        
+
         # Verify correct numeric ordering (not lexicographic)
         version_numbers = [v.version_number for v in versions]
         assert version_numbers == list(range(12, 0, -1))  # [12, 11, 10, ..., 2, 1]
-        
+
         # Verify we can get double-digit versions
         v10 = readonly_doc_repo.get_version(doc_id, 10)
         assert v10.version == 10
         assert v10.content == "v10"
-        
+
         v11 = readonly_doc_repo.get_version(doc_id, 11)
         assert v11.version == 11
         assert v11.content == "v11"
@@ -389,24 +396,24 @@ class TestReadOnlyVersionedResourceRepository:
         # Create initial document
         doc = writable_doc_repo.create({"title": "Consistency Test", "content": "Initial"})
         doc_id = doc.resource_id
-        
+
         # Verify read-only repo sees v1
         read_doc = readonly_doc_repo.get(doc_id)
         assert read_doc.version == 1
         assert read_doc.content == "Initial"
-        
+
         # Update to v2
         writable_doc_repo.update(doc_id, {"content": "Updated"})
-        
+
         # Verify read-only repo sees v2
         read_doc_v2 = readonly_doc_repo.get(doc_id)
         assert read_doc_v2.version == 2
         assert read_doc_v2.content == "Updated"
-        
+
         # Verify read-only repo can still access v1
         v1 = readonly_doc_repo.get_version(doc_id, 1)
         assert v1.content == "Initial"
-        
+
         # Verify version list is correct
         versions = readonly_doc_repo.list_versions(doc_id)
         assert len(versions) == 2
@@ -416,12 +423,13 @@ class TestReadOnlyVersionedResourceRepository:
     def test_logger_configuration(self, memory):
         """Test custom logger configuration for versioned repository."""
         import logging
+
         custom_logger = logging.getLogger("custom_versioned_logger")
-        
+
         repo = ReadOnlyVersionedResourceRepository(
             ddb=memory,
             model_class=Document,
             logger=custom_logger,
         )
-        
+
         assert repo.logger == custom_logger

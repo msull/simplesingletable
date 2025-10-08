@@ -94,7 +94,7 @@ def test_version_limit_enforcement(dynamodb_memory: DynamoDbMemory):
 
     # Create multiple versions (more than the limit of 3)
     for i in range(5):
-        task = dynamodb_memory.update_existing(task, {"title": f"Updated task v{i+2}"})
+        task = dynamodb_memory.update_existing(task, {"title": f"Updated task v{i + 2}"})
 
     # Query all versions to check that only 3 are kept (plus v0)
     all_versions = dynamodb_memory.dynamodb_table.query(

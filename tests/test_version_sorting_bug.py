@@ -26,10 +26,10 @@ def test_version_sorting_bug_with_double_digit_versions(dynamodb_memory: DynamoD
     # Create 12 versions to go past single digits
     for i in range(12):
         try:
-            resource = dynamodb_memory.update_existing(resource, {"content": f"Version {i+2}"})
+            resource = dynamodb_memory.update_existing(resource, {"content": f"Version {i + 2}"})
             print(f"Created version {resource.version}")
         except ValueError as e:
-            print(f"Failed to create version {i+2}: {e}")
+            print(f"Failed to create version {i + 2}: {e}")
             break
 
     # The last successful version
@@ -101,7 +101,7 @@ def test_version_limit_fix_with_double_digits(dynamodb_memory: DynamoDbMemory):
 
     # Create 12 versions to go well beyond single digits
     for i in range(12):
-        resource = dynamodb_memory.update_existing(resource, {"content": f"Version {i+2}"})
+        resource = dynamodb_memory.update_existing(resource, {"content": f"Version {i + 2}"})
 
     # Should now be at version 13
     assert resource.version == 13

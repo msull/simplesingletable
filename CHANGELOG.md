@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [13.1.0] 2025-10-08
+
+### Fixed
+
+* **Blob Field Serialization with Empty Sets**: Fixed critical serialization bug where Pydantic models containing `set` fields with empty sets (`set()`) were being incorrectly serialized as string literals `"set()"` instead of JSON arrays, causing TypeAdapter validation failures during blob loading. The fix implements proper type-aware serialization using Pydantic's `TypeAdapter`:
+    - **Root Cause**: `json.dumps(value, default=str)` in `blob_storage.py` was converting Python `set()` objects to their string representation rather than JSON-compatible lists
+    - **Solution**: Added `field_annotation` parameter to `S3BlobStorage.put_blob()` and uses `TypeAdapter.dump_json()` to serialize with full type information
+    - **Flexibility**: Handles any complex type annotation: `list[BaseModel]`, `dict[str, BaseModel]`, `dict[str, list[dict[str, BaseModel]]]`, `Optional[...]`, etc.
+    - **Serialization Flow**:
+        - Extracts blob field values as Pydantic instances before `model_dump()` to preserve types
+        - Passes field annotations from `resource.model_fields[field_name].annotation` to storage layer
+        - Uses `TypeAdapter.dump_json()` for perfect symmetry with existing `TypeAdapter.validate_python()` deserialization
+    - **Auto-Detection Fallback**: When annotations unavailable, automatically detects Pydantic models and handles them appropriately
+    - **Backward Compatibility**:
+        - Old data without sets continues to work
+        - Old data with empty sets was already broken and requires re-saving
+        - New data works perfectly with all complex types including sets
+    - **Performance**: Eliminates Pydantic serialization warnings by preserving model instances throughout serialization pipeline
+    - **None Handling**: Properly distinguishes between `None` (no blob stored) and empty collections like `[]` or `set()`
+    - **Version Preservation**: Correctly maintains blob version references when updating resources without modifying blob fields
+    - Comprehensive test coverage added in `test_blob_empty_set_issue.py` with cache clearing to verify actual S3 round-trip behavior
+
 ## [13.0.0] 2025-10-06
 
 ### Fixed
