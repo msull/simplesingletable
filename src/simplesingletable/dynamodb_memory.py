@@ -441,7 +441,13 @@ class DynamoDbMemory:
         if blob_fields_data and self.s3_blob_storage:
             blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
             for field_name, value in blob_fields_data.items():
-                if field_name in blob_fields_config:
+                # Skip None values - they shouldn't be stored in S3
+                if field_name in blob_fields_config and value is not None:
+                    # Get field annotation for proper serialization
+                    field_annotation = (
+                        resource.model_fields[field_name].annotation if field_name in resource.model_fields else None
+                    )
+
                     self.s3_blob_storage.put_blob(
                         resource_type=resource.__class__.__name__,
                         resource_id=resource.resource_id,
@@ -449,6 +455,7 @@ class DynamoDbMemory:
                         value=value,
                         config=blob_fields_config[field_name],
                         version=None,
+                        field_annotation=field_annotation,
                     )
 
         return resource
@@ -492,7 +499,13 @@ class DynamoDbMemory:
         if blob_fields_data and self.s3_blob_storage:
             blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
             for field_name, value in blob_fields_data.items():
-                if field_name in blob_fields_config:
+                # Skip None values - they shouldn't be stored in S3
+                if field_name in blob_fields_config and value is not None:
+                    # Get field annotation for proper serialization
+                    field_annotation = (
+                        resource.model_fields[field_name].annotation if field_name in resource.model_fields else None
+                    )
+
                     self.s3_blob_storage.put_blob(
                         resource_type=resource.__class__.__name__,
                         resource_id=resource.resource_id,
@@ -500,6 +513,7 @@ class DynamoDbMemory:
                         value=value,
                         config=blob_fields_config[field_name],
                         version=resource.version,
+                        field_annotation=field_annotation,
                     )
 
         return self.read_existing(
@@ -549,7 +563,13 @@ class DynamoDbMemory:
         if blob_fields_data and self.s3_blob_storage:
             blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
             for field_name, value in blob_fields_data.items():
-                if field_name in blob_fields_config:
+                # Skip None values - they shouldn't be stored in S3
+                if field_name in blob_fields_config and value is not None:
+                    # Get field annotation for proper serialization
+                    field_annotation = (
+                        resource.model_fields[field_name].annotation if field_name in resource.model_fields else None
+                    )
+
                     self.s3_blob_storage.put_blob(
                         resource_type=resource.__class__.__name__,
                         resource_id=resource.resource_id,
@@ -557,6 +577,7 @@ class DynamoDbMemory:
                         value=value,
                         config=blob_fields_config[field_name],
                         version=resource.version,
+                        field_annotation=field_annotation,
                     )
 
     def list_type_by_updated_at(

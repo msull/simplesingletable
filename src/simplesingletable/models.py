@@ -230,6 +230,28 @@ class BaseDynamoDbResource(BaseModel, ABC):
 
         return model_data, blob_fields_data
 
+    def _extract_blob_field_values(self) -> dict:
+        """Extract blob field values directly from the model instance.
+
+        This preserves Pydantic model instances instead of converting to dicts,
+        which avoids TypeAdapter warnings during serialization.
+
+        Includes None values to ensure they're excluded from model_dump(),
+        but caller should skip storing None values in S3.
+
+        Returns:
+            dict of blob field values (as actual instances or None, not dicts)
+        """
+        blob_fields_config = self.resource_config.get("blob_fields", {}) or {}
+        blob_fields_data = {}
+
+        for field_name in blob_fields_config:
+            # Extract the value (including None) if the field exists
+            if hasattr(self, field_name):
+                blob_fields_data[field_name] = getattr(self, field_name)
+
+        return blob_fields_data
+
     def _apply_gsi_configuration(self, dynamodb_data: dict) -> None:
         """Apply dynamic GSI configuration to DynamoDB item."""
         # Apply dynamic GSI configuration
@@ -273,16 +295,23 @@ class BaseDynamoDbResource(BaseModel, ABC):
             tuple[dict, dict] if blob fields are configured with data
         """
         if blob_fields_config:
-            # Always include the list of blob fields when configured
-            dynamodb_data["_blob_fields"] = list(blob_fields_config.keys())
+            # Include blob fields that have data OR have version references
+            blob_fields_with_data = [k for k, v in blob_fields_data.items() if v is not None]
+            blob_fields_with_versions = list(self._blob_versions.keys()) if self._blob_versions else []
+
+            # Combine both lists (union of fields with data and fields with version refs)
+            all_blob_fields = list(set(blob_fields_with_data + blob_fields_with_versions))
+            if all_blob_fields:
+                dynamodb_data["_blob_fields"] = all_blob_fields
 
             # Include blob version references if any exist
             if self._blob_versions:
                 dynamodb_data["_blob_versions"] = self._blob_versions
 
-            # Return tuple only if there's actual blob data to store
-            if blob_fields_data:
-                return dynamodb_data, blob_fields_data
+            # Return tuple only if there's actual blob data to store (non-None)
+            blob_data_to_store = {k: v for k, v in blob_fields_data.items() if v is not None}
+            if blob_data_to_store:
+                return dynamodb_data, blob_data_to_store
 
         # Return just dict for backward compatibility when no blob fields
         return dynamodb_data
@@ -492,9 +521,11 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         prefix = self.get_unique_key_prefix()
         key = f"{prefix}#{self.resource_id}"
 
-        # Get model data and extract blob fields
-        model_data = self.model_dump()
-        model_data, blob_fields_data = self._extract_blob_fields(model_data)
+        # Extract blob field values BEFORE model_dump() to preserve Pydantic instances
+        blob_fields_data = self._extract_blob_field_values()
+
+        # Get model data (blob fields will be excluded from dump)
+        model_data = self.model_dump(exclude=set(blob_fields_data.keys()) if blob_fields_data else None)
 
         if self.resource_config["compress_data"]:
             # When compressing, we need to exclude blob fields from the compressed data
@@ -633,9 +664,11 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         prefix = self.get_unique_key_prefix()
         key = f"{prefix}#{self.resource_id}"
 
-        # Get model data and extract blob fields
-        model_data = self.model_dump()
-        model_data, blob_fields_data = self._extract_blob_fields(model_data)
+        # Extract blob field values BEFORE model_dump() to preserve Pydantic instances
+        blob_fields_data = self._extract_blob_field_values()
+
+        # Get model data (blob fields will be excluded from dump)
+        model_data = self.model_dump(exclude=set(blob_fields_data.keys()) if blob_fields_data else None)
 
         if self.resource_config["compress_data"]:
             # When compressing, we need to exclude blob fields from the compressed data

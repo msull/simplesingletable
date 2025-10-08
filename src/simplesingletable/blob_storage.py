@@ -104,18 +104,44 @@ class S3BlobStorage:
         value: Any,
         config: BlobFieldConfig,
         version: Optional[int] = None,
+        field_annotation: Optional[type] = None,
     ) -> BlobPlaceholder:
         """Store a blob field in S3.
+
+        Args:
+            resource_type: Type name of the resource
+            resource_id: Unique ID of the resource
+            field_name: Name of the blob field
+            value: Value to store
+            config: Blob field configuration
+            version: Optional version number for versioned resources
+            field_annotation: Optional type annotation for proper serialization
 
         Returns:
             BlobPlaceholder with metadata about the stored blob
         """
+        from pydantic import BaseModel, TypeAdapter
+
         # Serialize the value
         if isinstance(value, bytes):
             data = value
+        elif field_annotation is not None:
+            # Use TypeAdapter with known type annotation (preferred)
+            # This handles ANY complex type: list[Model], dict[str, Model], nested structures, etc.
+            adapter = TypeAdapter(field_annotation)
+            data = adapter.dump_json(value)
+        elif isinstance(value, BaseModel):
+            # Auto-detect: single Pydantic model
+            data = value.model_dump_json(mode="json").encode("utf-8")
+        elif isinstance(value, list) and value and isinstance(value[0], BaseModel):
+            # Auto-detect: list of Pydantic models
+            item_type = type(value[0])
+            adapter = TypeAdapter(list[item_type])
+            data = adapter.dump_json(value)
         else:
-            # Convert to JSON for non-bytes data
-            data = json.dumps(value, default=str).encode("utf-8")
+            # Fallback for plain data (dicts, lists, primitives)
+            # Note: This won't properly handle sets in nested structures
+            data = json.dumps(value).encode("utf-8")
 
         # Apply compression if configured
         compressed = config.get("compress", False)
