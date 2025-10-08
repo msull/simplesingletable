@@ -524,14 +524,15 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         # Extract blob field values BEFORE model_dump() to preserve Pydantic instances
         blob_fields_data = self._extract_blob_field_values()
 
-        # Get model data (blob fields will be excluded from dump)
-        model_data = self.model_dump(exclude=set(blob_fields_data.keys()) if blob_fields_data else None)
-
         if self.resource_config["compress_data"]:
-            # When compressing, we need to exclude blob fields from the compressed data
-            temp_model = self.model_copy(update=model_data)
-            dynamodb_data = {"data": temp_model.compress_model_content()}
+            # When compressing, use model_dump_json directly with exclude to preserve nested Pydantic models
+            # This avoids the model_dump() -> model_copy() round-trip that converts nested models to dicts
+            blob_field_names = set(blob_fields_data.keys()) if blob_fields_data else None
+            compressed_json = self.model_dump_json(exclude=blob_field_names)
+            dynamodb_data = {"data": gzip.compress(compressed_json.encode())}
         else:
+            # Get model data (blob fields will be excluded from dump)
+            model_data = self.model_dump(exclude=set(blob_fields_data.keys()) if blob_fields_data else None)
             dynamodb_data = clean_data(model_data)
 
         dynamodb_data.update(
@@ -667,14 +668,15 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         # Extract blob field values BEFORE model_dump() to preserve Pydantic instances
         blob_fields_data = self._extract_blob_field_values()
 
-        # Get model data (blob fields will be excluded from dump)
-        model_data = self.model_dump(exclude=set(blob_fields_data.keys()) if blob_fields_data else None)
-
         if self.resource_config["compress_data"]:
-            # When compressing, we need to exclude blob fields from the compressed data
-            temp_model = self.model_copy(update=model_data)
-            dynamodb_data = {"data": temp_model.compress_model_content()}
+            # When compressing, use model_dump_json directly with exclude to preserve nested Pydantic models
+            # This avoids the model_dump() -> model_copy() round-trip that converts nested models to dicts
+            blob_field_names = set(blob_fields_data.keys()) if blob_fields_data else None
+            compressed_json = self.model_dump_json(exclude=blob_field_names)
+            dynamodb_data = {"data": gzip.compress(compressed_json.encode())}
         else:
+            # Get model data (blob fields will be excluded from dump)
+            model_data = self.model_dump(exclude=set(blob_fields_data.keys()) if blob_fields_data else None)
             dynamodb_data = clean_data(model_data)
 
         dynamodb_data.update({"pk": key, "version": self.version})
