@@ -2,7 +2,6 @@
 
 from typing import ClassVar
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
-from simplesingletable.models import IndexFieldConfig
 from boto3.dynamodb.conditions import Key
 
 
@@ -20,7 +19,7 @@ class TaskResource(DynamoDbResource):
     assigned_to: str
 
     # Define GSIs using the new configuration system
-    gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
+    gsi_config: ClassVar[dict[str, dict]] = {
         # GSI1: Partition by completion status
         "gsi1": {
             "pk": lambda self: f"task|{'COMPLETE' if self.completed else 'INCOMPLETE'}",
@@ -50,7 +49,7 @@ class ProjectResource(DynamoDbVersionedResource):
     # Enforce a maximum of 5 versions (older versions will be automatically deleted)
     model_config = {"extra": "forbid", "max_versions": 5}
 
-    gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
+    gsi_config: ClassVar[dict[str, dict]] = {
         # GSI1: Partition by owner
         "gsi1": {
             "pk": lambda self: f"owner#{self.owner}",

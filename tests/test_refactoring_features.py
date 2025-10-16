@@ -7,7 +7,6 @@ from boto3.dynamodb.conditions import Attr, Key
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
 from simplesingletable.dynamodb_memory import build_lek_data, transact_write_safe
-from simplesingletable.models import IndexFieldConfig
 
 
 class TaskResource(DynamoDbResource):
@@ -18,7 +17,7 @@ class TaskResource(DynamoDbResource):
     category: str
     priority: int
 
-    gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
+    gsi_config: ClassVar[dict[str, dict]] = {
         "gsi1": {
             "gsi1pk": lambda self: f"task|{'COMPLETE' if self.completed else 'INCOMPLETE'}",
         },
@@ -372,7 +371,7 @@ def test_gsi_config_combined_approaches(dynamodb_memory: DynamoDbMemory):
         priority: int
 
         # Define classvar config
-        gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
+        gsi_config: ClassVar[dict[str, dict]] = {
             "gsi1": {"gsi1pk": lambda self: f"category#{self.category}"}
         }
 

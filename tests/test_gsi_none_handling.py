@@ -5,7 +5,6 @@ from typing import ClassVar, Optional
 from boto3.dynamodb.conditions import Key
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
-from simplesingletable.models import IndexFieldConfig
 
 
 class ConditionalGSIResource(DynamoDbResource):
@@ -16,7 +15,7 @@ class ConditionalGSIResource(DynamoDbResource):
     priority: Optional[int] = None
     owner: Optional[str] = None
 
-    gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
+    gsi_config: ClassVar[dict[str, dict]] = {
         "gsi1": {
             "gsi1pk": lambda self: f"category#{self.category}" if self.category else None,
             "gsi1sk": lambda self: self.name if self.category else None,
@@ -273,7 +272,7 @@ def test_mixed_gsi_config_with_none_handling(dynamodb_memory: DynamoDbMemory):
         type: str  # Always present
         optional_tag: Optional[str] = None
 
-        gsi_config: ClassVar[dict[str, IndexFieldConfig]] = {
+        gsi_config: ClassVar[dict[str, dict]] = {
             "gsi1": {
                 "gsi1pk": "STATIC_VALUE",  # Static string
                 "gsi1sk": lambda self: self.name,  # Always returns a value
