@@ -5,6 +5,94 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [14.0.0]  2025-10-16
+
+### Added
+
+* **Comprehensive Audit Logging System**: Added full audit trail capabilities for tracking resource changes with field-level granularity:
+    - **AuditLog Resource Model**: New versioned resource type that captures CREATE, UPDATE, DELETE, and RESTORE operations with automatic ULID-based chronological ordering
+    - **Opt-In Per-Resource Configuration**: Resources enable audit logging via `ResourceConfig.audit_config` with granular control:
+        - `enabled`: Toggle audit logging on/off
+        - `track_field_changes`: Capture old vs new values for each modified field
+        - `include_snapshot`: Store complete resource state at time of change
+        - `exclude_fields`: Forbid sensitive fields from audit tracking
+        - `changed_by_field`: Auto-extract change attribution from resource field
+    - **Automatic Change Attribution**: Support for explicit `changed_by` parameter or automatic extraction from resource fields (e.g., `user_id`, `modified_by`)
+    - **Field-Level Change Tracking**: Audit logs capture granular field changes showing `{"old": value, "new": value}` for each modified field
+    - **Blob Field Support**: Audit logs store blob field metadata (size, compression, content type) instead of actual content, preventing audit logs from becoming bloated
+    - **Smart Field Filtering**: Automatically excludes base resource fields (`resource_id`, `created_at`, `updated_at`, `version`) from change tracking to focus on business data
+    - **Custom Metadata**: Attach arbitrary context to audit events via `audit_metadata` parameter (e.g., `{"reason": "user request", "ticket": "JIRA-123"}`)
+    - **AuditLogQuerier Helper Class**: Powerful query interface in `simplesingletable.extras.audit` for analyzing audit history:
+        - `get_logs_for_resource()`: All changes to a specific resource with optional date range filtering
+        - `get_logs_for_resource_type()`: All changes across resource type with ULID-based date range queries
+        - `get_logs_by_operation()`: Filter by operation type (CREATE/UPDATE/DELETE/RESTORE)
+        - `get_logs_by_changer()`: Track all changes by specific user/system
+        - `get_field_history()`: Complete change history for individual fields showing progression over time
+        - `get_recent_changes()`: Most recent audit activity across all or specific resource types
+    - **Optimized GSI Structure**: Three specialized indices for different access patterns:
+        - `gsi1` (gsi1pk: `{resource_type}#{resource_id}`, sort: pk/ULID): Resource-specific audit trail
+        - `gsi2` (gsi2pk: `{resource_type}`, sort: pk/ULID): Type-level change tracking
+        - `gsitype` (gsitype: "AuditLog", sort: created_at): Recent changes across all resources
+    - **Pagination Support**: All query methods return `PaginatedList` with continuation tokens for handling large audit histories
+    - **Recursion Prevention**: AuditLog resources don't audit themselves to prevent infinite loops
+    - **Compression Disabled**: AuditLog uses `compress_data=False` to enable efficient DynamoDB filter expressions on operation and changed_by fields
+    - **Full Test Coverage**: 58 comprehensive tests covering CREATE/UPDATE/DELETE operations, nested Pydantic models, blob fields, versioned resources, pagination, date ranges, and edge cases
+    - **Zero Performance Impact When Disabled**: Resources without audit configuration have no overhead
+    - **Seamless Integration**: Works transparently with both `DynamoDbResource` and `DynamoDbVersionedResource`
+
+    Example usage:
+    ```python
+    from simplesingletable import DynamoDbResource, AuditConfig, AuditLogQuerier
+    from simplesingletable.models import ResourceConfig
+
+    class User(DynamoDbResource):
+        name: str
+        email: str
+        status: str
+        password_hash: str
+
+        resource_config = ResourceConfig(
+            audit_config=AuditConfig(
+                enabled=True,
+                track_field_changes=True,
+                include_snapshot=True,
+                exclude_fields={"password_hash"},  # Don't audit sensitive fields
+            )
+        )
+
+    # CREATE with audit
+    user = memory.create_new(
+        User,
+        {"name": "Alice", "email": "alice@example.com", "status": "active", "password_hash": "ABCDEFG"},
+        changed_by="admin@example.com"
+    )
+
+    # UPDATE with audit
+    memory.update_existing(
+        user,
+        {"status": "inactive"},
+        changed_by="system@example.com",
+        audit_metadata={"reason": "Account deactivated", "ticket": "SUPPORT-123"}
+    )
+
+    # Query audit trail
+    querier = AuditLogQuerier(memory)
+
+    # Get all changes to this user
+    logs = querier.get_logs_for_resource("User", user.resource_id)
+    for log in logs:
+        print(f"{log.operation} by {log.changed_by} at {log.created_at}")
+        if log.changed_fields:
+            for field, change in log.changed_fields.items():
+                print(f"  {field}: {change['old']} → {change['new']}")
+
+    # Track field history
+    email_history = querier.get_field_history("User", user.resource_id, "email")
+
+    # Find all changes by specific user
+    admin_changes = querier.get_logs_by_changer("admin@example.com")
+    ```
+
 ## [13.2.0]  2025-10-08
 
 ### Fixed
