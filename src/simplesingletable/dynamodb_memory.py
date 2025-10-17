@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
 from .blob_storage import S3BlobStorage
-from .models import BlobPlaceholder, DynamoDbResource, DynamoDbVersionedResource, PaginatedList
+from .models import AuditLog, BlobPlaceholder, DynamoDbResource, DynamoDbVersionedResource, PaginatedList
 from .transactions import TransactionManager
 from .utils import decode_pagination_key, encode_pagination_key, marshall
 
@@ -230,12 +230,23 @@ class DynamoDbMemory:
         existing_resource: AnyDbResource,
         update_obj: _PlainBaseModel | dict,
         clear_fields: Optional[Set[str]] = None,
+        changed_by: Optional[str] = None,
+        audit_metadata: Optional[dict[str, Any]] = None,
     ) -> AnyDbResource:
         data_class = existing_resource.__class__
         updated_resource = existing_resource.update_existing(update_obj, clear_fields=clear_fields)
 
         if issubclass(data_class, DynamoDbResource):
-            return self._put_nonversioned_resource(updated_resource)
+            result = self._put_nonversioned_resource(updated_resource)
+            # Create audit log after successful update
+            self._create_audit_log(
+                operation="UPDATE",
+                resource=result,
+                changed_by=changed_by,
+                old_resource=existing_resource,
+                audit_metadata=audit_metadata,
+            )
+            return result
         elif issubclass(data_class, DynamoDbVersionedResource):
             latest_resource = self.read_existing(
                 existing_id=existing_resource.resource_id,
@@ -249,12 +260,22 @@ class DynamoDbMemory:
             # Enforce version limit if configured
             data_class.enforce_version_limit(self, updated_resource.resource_id)
 
-            return self.read_existing(
+            result = self.read_existing(
                 existing_id=updated_resource.resource_id,
                 data_class=data_class,
                 version=updated_resource.version,
                 consistent_read=True,
             )
+
+            # Create audit log after successful update
+            self._create_audit_log(
+                operation="UPDATE",
+                resource=result,
+                changed_by=changed_by,
+                old_resource=existing_resource,
+                audit_metadata=audit_metadata,
+            )
+            return result
         else:
             raise ValueError("Invalid data_class provided")
 
@@ -301,6 +322,8 @@ class DynamoDbMemory:
         data_class: Type[AnyDbResource],
         data: _PlainBaseModel | dict,
         override_id: Optional[str] = None,
+        changed_by: Optional[str] = None,
+        audit_metadata: Optional[dict[str, Any]] = None,
     ) -> AnyDbResource:
         new_resource = data_class.create_new(data, override_id=override_id)
         if issubclass(data_class, DynamoDbResource):
@@ -312,9 +335,31 @@ class DynamoDbMemory:
         if self.track_stats:
             stats = MemoryStats.ensure_exists(self)
             self.increment_counter(stats, "counts_by_type." + data_class.__name__)
+
+        # Create audit log after successful creation
+        self._create_audit_log(
+            operation="CREATE",
+            resource=resource,
+            changed_by=changed_by,
+            audit_metadata=audit_metadata,
+        )
+
         return resource
 
-    def delete_existing(self, existing_resource: AnyDbResource):
+    def delete_existing(
+        self,
+        existing_resource: AnyDbResource,
+        changed_by: Optional[str] = None,
+        audit_metadata: Optional[dict[str, Any]] = None,
+    ):
+        # Create audit log before deleting (so we still have the resource)
+        self._create_audit_log(
+            operation="DELETE",
+            resource=existing_resource,
+            changed_by=changed_by,
+            audit_metadata=audit_metadata,
+        )
+
         if issubclass(existing_resource.__class__, DynamoDbResource):
             self._delete_nonversioned_resource(existing_resource)
         elif issubclass(existing_resource.__class__, DynamoDbVersionedResource):
@@ -389,9 +434,7 @@ class DynamoDbMemory:
 
         from boto3.dynamodb.conditions import Key
 
-        self.logger.info(
-            f"Deleting all versions of resource:{data_class.__name__} " f"with resource_id='{resource_id}'"
-        )
+        self.logger.info(f"Deleting all versions of resource:{data_class.__name__} with resource_id='{resource_id}'")
 
         # Query all versions for this resource
         versions = self.dynamodb_table.query(
@@ -424,6 +467,147 @@ class DynamoDbMemory:
         if self.track_stats:
             stats = MemoryStats.ensure_exists(self)
             self.increment_counter(stats, "counts_by_type." + data_class.__name__, -1)
+
+    def get_all_versions(
+        self,
+        resource_id: str,
+        data_class: Type[VersionedDbResourceOnly],
+        load_blobs: bool = False,
+    ) -> list[VersionedDbResourceOnly]:
+        """Get all versions of a versioned resource, sorted newest first.
+
+        Args:
+            resource_id: The resource ID
+            data_class: The versioned resource class
+            load_blobs: If True, blob fields will be loaded from S3 for each version
+
+        Returns:
+            List of all versions, sorted by version number (newest first)
+
+        Raises:
+            ValueError: If data_class is not a versioned resource
+
+        Example:
+            >>> versions = memory.get_all_versions(doc.resource_id, Document)
+            >>> for v in versions:
+            >>>     print(f"Version {v.version}: {v.title}")
+        """
+        if not issubclass(data_class, DynamoDbVersionedResource):
+            raise ValueError("get_all_versions can only be used with versioned resources")
+
+        self.logger.debug(f"Getting all versions of {data_class.__name__} with resource_id='{resource_id}'")
+
+        # Query all versions for this resource (excluding v0 which is just a pointer)
+        response = self.dynamodb_table.query(
+            KeyConditionExpression=Key("pk").eq(f"{data_class.get_unique_key_prefix()}#{resource_id}")
+            & Key("sk").begins_with("v"),
+        )
+
+        versions = []
+        for item in response.get("Items", []):
+            if item["sk"] == "v0":
+                # Skip v0 - it's just a pointer to the latest version
+                continue
+
+            # Build blob placeholders if needed
+            blob_placeholders = {}
+            if "_blob_fields" in item and self.s3_blob_storage:
+                blob_fields_config = data_class.resource_config.get("blob_fields", {}) or {}
+                blob_versions = item.get("_blob_versions", {})
+                version_num = int(item.get("version", 0))
+
+                for field_name in item["_blob_fields"]:
+                    if field_name in blob_fields_config and field_name in blob_versions:
+                        s3_key = self.s3_blob_storage._build_s3_key(
+                            resource_type=data_class.__name__,
+                            resource_id=resource_id,
+                            field_name=field_name,
+                            version=version_num,
+                        )
+                        blob_placeholders[field_name] = BlobPlaceholder(
+                            field_name=field_name,
+                            s3_key=s3_key,
+                            size_bytes=0,
+                            content_type=blob_fields_config[field_name].get("content_type"),
+                            compressed=blob_fields_config[field_name].get("compress", False),
+                        )
+
+            resource = data_class.from_dynamodb_item(item, blob_placeholders)
+
+            # Load blobs if requested
+            if load_blobs and resource.has_unloaded_blobs():
+                resource.load_blob_fields(self)
+
+            versions.append(resource)
+
+        # Sort by version number, newest first
+        versions.sort(key=lambda v: v.version, reverse=True)
+
+        self.logger.debug(f"Found {len(versions)} versions for resource {resource_id}")
+        return versions
+
+    def restore_version(
+        self,
+        resource_id: str,
+        data_class: Type[VersionedDbResourceOnly],
+        version: int,
+        changed_by: Optional[str] = None,
+        audit_metadata: Optional[dict[str, Any]] = None,
+    ) -> VersionedDbResourceOnly:
+        """Restore a previous version by creating a new version with the same content.
+
+        This doesn't rollback history; it creates a new version (e.g., v5) that is
+        identical to the specified older version (e.g., v2).
+
+        Args:
+            resource_id: The resource ID
+            data_class: The versioned resource class
+            version: The version number to restore (e.g., 1, 2, 3)
+            changed_by: Identifier of user/service making the restore (for audit logging)
+            audit_metadata: Additional metadata for audit log
+
+        Returns:
+            The newly created resource that matches the restored version
+
+        Raises:
+            ValueError: If data_class is not versioned, version not found, or version <= 0
+
+        Example:
+            >>> # Restore document to version 2, creating a new version 5
+            >>> restored = memory.restore_version(doc.resource_id, Document, 2, changed_by="admin")
+            >>> print(f"Restored v2 as new v{restored.version}")
+        """
+        if not issubclass(data_class, DynamoDbVersionedResource):
+            raise ValueError("restore_version can only be used with versioned resources")
+
+        if version <= 0:
+            raise ValueError(f"Version must be a positive integer, got: {version}")
+
+        self.logger.info(f"Restoring version {version} of {data_class.__name__} " f"with resource_id='{resource_id}'")
+
+        # Get the version to restore (load blobs so we can copy them)
+        version_to_restore = self.get_existing(resource_id, data_class, version=version, load_blobs=True)
+        if not version_to_restore:
+            raise ValueError(f"Version {version} not found for {data_class.__name__} {resource_id}")
+
+        # Get the current latest version
+        current = self.get_existing(resource_id, data_class, version=0)
+        if not current:
+            raise ValueError(f"{data_class.__name__} {resource_id} not found")
+
+        # Create update data from the old version, excluding system fields
+        update_data = version_to_restore.model_dump(exclude={"resource_id", "version", "created_at", "updated_at"})
+
+        # Update the current item with the old version's data
+        # This will create a new version automatically
+        restored_item = self.update_existing(current, update_data, changed_by=changed_by, audit_metadata=audit_metadata)
+
+        self.logger.info(
+            f"Restored {data_class.__name__} {resource_id} from version {version} "
+            f"as new version {restored_item.version}"
+        )
+
+        return restored_item
 
     def get_stats(self) -> MemoryStats:
         return MemoryStats.ensure_exists(self)
@@ -925,8 +1109,7 @@ class DynamoDbMemory:
 
         if _current_api_calls_on_stack >= max_api_calls:
             self.logger.debug(
-                "Reached max API calls before finding requested number of "
-                "results or exhausting search; stopping early"
+                "Reached max API calls before finding requested number of results or exhausting search; stopping early"
             )
         elif current_count < results_limit:
             # don't have enough results yet -- can we get more?
@@ -1014,6 +1197,211 @@ class DynamoDbMemory:
             )
 
         return response_data
+
+    # Audit logging helper methods
+
+    def _extract_blob_metadata(
+        self,
+        field_name: str,
+        value: Any,
+        resource: AnyDbResource,
+        blob_fields_config: dict,
+    ) -> Optional[dict[str, Any]]:
+        """Extract lightweight metadata for a blob field instead of full content.
+
+        Args:
+            field_name: Name of the blob field
+            value: The blob field value (or None if cleared)
+            resource: The resource instance
+            blob_fields_config: Blob field configuration from resource_config
+
+        Returns:
+            Dict with blob metadata or None if value is None
+        """
+        if value is None:
+            return None
+
+        # Get blob version reference if available
+        blob_version = None
+        if hasattr(resource, "_blob_versions") and resource._blob_versions:
+            blob_version = resource._blob_versions.get(field_name)
+
+        # Calculate size (rough estimate for audit purposes)
+        import sys
+
+        size_estimate = sys.getsizeof(str(value))
+
+        return {
+            "__blob_ref__": True,
+            "size_bytes": size_estimate,
+            "version": blob_version,
+            "compressed": blob_fields_config[field_name].get("compress", False),
+            "content_type": blob_fields_config[field_name].get("content_type"),
+        }
+
+    def _build_audit_snapshot(
+        self,
+        resource: AnyDbResource,
+        audit_config: dict,
+    ) -> Optional[dict[str, Any]]:
+        """Build resource snapshot with blob placeholders instead of full data.
+
+        Args:
+            resource: The resource instance
+            audit_config: Audit configuration from resource_config
+
+        Returns:
+            Dict with resource data and blob metadata, or None if snapshots disabled
+        """
+        if not audit_config.get("include_snapshot"):
+            return None
+
+        snapshot = resource.model_dump()
+        blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
+
+        # Replace blob field values with metadata
+        for field_name in blob_fields_config:
+            if field_name in snapshot and snapshot[field_name] is not None:
+                # Replace actual blob data with placeholder metadata
+                blob_meta = self._extract_blob_metadata(
+                    field_name,
+                    snapshot[field_name],
+                    resource,
+                    blob_fields_config,
+                )
+
+                if blob_meta:
+                    # Enhance with S3 key for retrieval
+                    if self.s3_blob_storage:
+                        version = None
+                        if isinstance(resource, DynamoDbVersionedResource):
+                            version = blob_meta.get("version") or resource.version
+
+                        blob_meta["s3_key"] = self.s3_blob_storage._build_s3_key(
+                            resource_type=resource.__class__.__name__,
+                            resource_id=resource.resource_id,
+                            field_name=field_name,
+                            version=version,
+                        )
+
+                    snapshot[field_name] = blob_meta
+
+        return snapshot
+
+    def _compute_field_changes(
+        self,
+        old_resource: AnyDbResource,
+        new_resource: AnyDbResource,
+        audit_config: dict,
+    ) -> Optional[dict[str, dict[str, Any]]]:
+        """Compute which fields changed and their old/new values.
+
+        For blob fields, stores metadata instead of full content.
+
+        Args:
+            old_resource: Resource before update
+            new_resource: Resource after update
+            audit_config: Audit configuration from resource_config
+
+        Returns:
+            Dict mapping field names to {"old": ..., "new": ...} or None if no changes
+        """
+        changed_fields = {}
+        exclude_fields = audit_config.get("exclude_fields", set()) or set()
+        blob_fields_config = old_resource.resource_config.get("blob_fields", {}) or {}
+
+        old_data = old_resource.model_dump()
+        new_data = new_resource.model_dump()
+
+        # Exclude base fields and configured exclusions
+        base_keys = old_resource.get_db_resource_base_keys()
+        skip_fields = base_keys | exclude_fields
+
+        for field_name in new_data:
+            if field_name in skip_fields:
+                continue
+
+            old_val = old_data.get(field_name)
+            new_val = new_data.get(field_name)
+
+            # Special handling for blob fields
+            if field_name in blob_fields_config:
+                old_blob_meta = self._extract_blob_metadata(field_name, old_val, old_resource, blob_fields_config)
+                new_blob_meta = self._extract_blob_metadata(field_name, new_val, new_resource, blob_fields_config)
+
+                if old_blob_meta != new_blob_meta:
+                    changed_fields[field_name] = {
+                        "old": old_blob_meta,
+                        "new": new_blob_meta,
+                    }
+            else:
+                # Regular field - full value comparison
+                if old_val != new_val:
+                    changed_fields[field_name] = {
+                        "old": old_val,
+                        "new": new_val,
+                    }
+
+        return changed_fields if changed_fields else None
+
+    def _create_audit_log(
+        self,
+        operation: str,
+        resource: AnyDbResource,
+        changed_by: Optional[str],
+        old_resource: Optional[AnyDbResource] = None,
+        audit_metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Create an audit log entry for a resource operation.
+
+        Args:
+            operation: The operation performed ("CREATE", "UPDATE", "DELETE")
+            resource: The resource that was modified
+            changed_by: Identifier of user/service that made the change
+            old_resource: Previous resource state (for UPDATE operations)
+            audit_metadata: Additional audit metadata to store
+        """
+
+        # Don't audit AuditLog itself (prevent infinite recursion)
+        if isinstance(resource, AuditLog):
+            return
+
+        audit_config = resource.resource_config.get("audit_config", {}) or {}
+        if not audit_config.get("enabled"):
+            return
+
+        # Extract changed_by from resource if specified and not provided
+        if not changed_by and (field := audit_config.get("changed_by_field")):
+            changed_by = getattr(resource, field, None)
+
+        # Validate changed_by if required
+        if audit_config.get("changed_by_field") and not changed_by:
+            raise ValueError(
+                f"Audit logging enabled for {resource.__class__.__name__} but 'changed_by' not provided "
+                f"and field '{audit_config['changed_by_field']}' not found or is None"
+            )
+
+        # Compute field changes for UPDATE operations
+        changed_fields = None
+        if operation == "UPDATE" and old_resource and audit_config.get("track_field_changes"):
+            changed_fields = self._compute_field_changes(old_resource, resource, audit_config)
+
+        # Build snapshot if configured
+        snapshot = self._build_audit_snapshot(resource, audit_config)
+
+        # Create the audit log entry
+        audit_log_data = {
+            "audited_resource_type": resource.__class__.__name__,
+            "audited_resource_id": resource.resource_id,
+            "operation": operation,
+            "changed_by": changed_by,
+            "changed_fields": changed_fields,
+            "resource_snapshot": snapshot,
+            "audit_metadata": audit_metadata or {},
+        }
+
+        # Create the audit log (won't recurse because AuditLog doesn't have audit enabled)
+        self.create_new(AuditLog, audit_log_data)
 
 
 def _now(tz: Any = False):

@@ -2,12 +2,11 @@ import gzip
 import json
 import sys
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     ClassVar,
     Dict,
     List,
@@ -24,19 +23,12 @@ from boto3.dynamodb.types import Binary
 from humanize import naturalsize, precisedelta
 from pydantic import BaseModel, ConfigDict, PrivateAttr, TypeAdapter
 
-from .utils import generate_date_sortable_id
+from .utils import _now, generate_date_sortable_id
 
 if TYPE_CHECKING:
     from .dynamodb_memory import DynamoDbMemory
 
 _T = TypeVar("_T")
-
-
-class IndexFieldConfig(TypedDict):
-    """Configuration for a single GSI's fields."""
-
-    pk: Callable[["BaseDynamoDbResource"], Optional[str]]
-    sk: Optional[Callable[["BaseDynamoDbResource"], Optional[str]]]
 
 
 class PaginatedList(list[_T]):
@@ -100,6 +92,25 @@ class BlobFieldConfig(TypedDict, total=False):
     """Optional maximum size limit for the blob in bytes."""
 
 
+class AuditConfig(TypedDict, total=False):
+    """Configuration for audit logging behavior."""
+
+    enabled: bool
+    """Enable audit logging for this resource type."""
+
+    track_field_changes: bool
+    """Track individual field changes (old vs new values)."""
+
+    exclude_fields: set[str] | None
+    """Fields to exclude from audit logging (e.g., sensitive data)."""
+
+    include_snapshot: bool
+    """Include full resource snapshot in audit log."""
+
+    changed_by_field: str | None
+    """Field name containing user/service identifier for change tracking."""
+
+
 class ResourceConfig(TypedDict, total=False):
     """A TypedDict for configuring Resource behaviour."""
 
@@ -117,6 +128,9 @@ class ResourceConfig(TypedDict, total=False):
 
     ttl_attribute_name: str | None
     """The DynamoDB attribute name for TTL (defaults to 'ttl')."""
+
+    audit_config: AuditConfig | None
+    """Configuration for audit logging behavior."""
 
 
 class BlobPlaceholder(TypedDict):
@@ -136,14 +150,14 @@ class BaseDynamoDbResource(BaseModel, ABC):
     created_at: datetime
     updated_at: datetime
 
-    gsi_config: ClassVar[Dict[str, IndexFieldConfig]] = {}
+    gsi_config: ClassVar[Dict[str, Dict]] = {}
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None, blob_fields=None)
 
     _blob_placeholders: Dict[str, BlobPlaceholder] = PrivateAttr(default_factory=dict)
     _blob_versions: Dict[str, int] = PrivateAttr(default_factory=dict)
 
     @classmethod
-    def get_gsi_config(cls) -> Dict[str, IndexFieldConfig]:
+    def get_gsi_config(cls) -> Dict[str, Dict]:
         """Get the GSI configuration for this resource.
 
         Override this method to provide dynamic GSI configuration.
@@ -860,13 +874,71 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
 DynamodbVersionedResource = DynamoDbVersionedResource
 
 
-def _now(tz: Any = False):
-    # this function exists only to make it easy to mock the utcnow call in date_id when creating resources in the tests
+class AuditLog(DynamodbResource):
+    """Audit log resource for tracking changes to other resources.
 
-    # explicitly check for False, so that `None` is a valid option to provide for the tz
-    if tz is False:
-        tz = timezone.utc
-    return datetime.now(tz=tz)
+    This resource automatically tracks CREATE, UPDATE, DELETE, and RESTORE operations
+    on other resources. It can track field-level changes, full resource snapshots,
+    and custom audit metadata.
+
+    Note: AuditLog disables compression (compress_data=False) to allow efficient
+    DynamoDB filter expressions on fields like 'operation' and 'changed_by'.
+
+    GSI Configuration:
+    - gsi1pk: Query all changes to a specific resource (resource_type#resource_id) sorted by creation time
+    - gsi2pk: Query all changes by resource type, sorted by creation time
+    """
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False)
+
+    @classmethod
+    def get_unique_key_prefix(cls) -> str:
+        return "_INTERNAL#AuditLog"
+
+    def db_get_gsitypesk(self) -> str:
+        return self.created_at.isoformat()
+
+    audited_resource_type: str
+    """The type of resource being audited (e.g., 'User', 'Project')."""
+
+    audited_resource_id: str
+    """The ID of the resource being audited."""
+
+    operation: str
+    """The operation performed: 'CREATE', 'UPDATE', 'DELETE', or 'RESTORE'."""
+
+    changed_by: Optional[str] = None
+    """Identifier of the user or service that made the change."""
+
+    changed_fields: Optional[Dict[str, Dict[str, Any]]] = None
+    """Field-level changes for UPDATE operations.
+
+    Format: {"field_name": {"old": old_value, "new": new_value}}
+    """
+
+    resource_snapshot: Optional[Dict[str, Any]] = None
+    """Full snapshot of the resource after the operation."""
+
+    audit_metadata: Dict[str, Any] = {}
+    """Custom audit metadata (e.g., reason for change, request ID, etc.)."""
+
+    @classmethod
+    def get_gsi_config(cls) -> Dict[str, Dict]:
+        """Configure GSIs for querying audit logs."""
+        prefix = cls.get_unique_key_prefix()
+        return {
+            "gsi1": {"gsi1pk": lambda self: f"{prefix}#{self.audited_resource_type}#{self.audited_resource_id}"},
+            "gsi2": {"gsi2pk": lambda self: f"{prefix}#{self.audited_resource_type}"},
+        }
+
+
+# def _now(tz: Any = False):
+#     # this function exists only to make it easy to mock the utcnow call in date_id when creating resources in the tests
+#
+#     # explicitly check for False, so that `None` is a valid option to provide for the tz
+#     if tz is False:
+#         tz = timezone.utc
+#     return datetime.now(tz=tz)
 
 
 def clean_data(data: dict):
