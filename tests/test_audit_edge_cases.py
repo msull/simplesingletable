@@ -441,7 +441,7 @@ def test_audit_query_by_changer_with_resource_type_filter(dynamodb_memory: Dynam
         changed_by="user@example.com",
     )
 
-    resource2 = dynamodb_memory.create_new(
+    dynamodb_memory.create_new(
         ResourceWithComplexTypes,
         {"name": "Resource2", "tags": [], "metadata": {}},
         changed_by="user@example.com",

@@ -9,7 +9,6 @@ for both versioned and non-versioned resources.
 from typing import Optional, ClassVar
 from datetime import datetime
 
-import pytest
 from pydantic import BaseModel
 
 from simplesingletable import DynamoDbResource, DynamoDbVersionedResource

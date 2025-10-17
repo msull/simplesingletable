@@ -277,7 +277,7 @@ def main():
         page_title="simplesingletable Demo",
         page_icon="🗄️",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
 
     st.title("🗄️ simplesingletable Interactive Demo")
@@ -321,14 +321,14 @@ def main():
     st.sidebar.divider()
     st.sidebar.header("Controls")
 
-    if st.sidebar.button("🔄 Reset Environment", type="primary", use_container_width=True):
+    if st.sidebar.button("🔄 Reset Environment", type="primary", width="content"):
         reset_environment(memory)
         st.rerun()
 
     # Scenario selector
     st.sidebar.divider()
     st.sidebar.header("Select Scenario")
-    selected_scenario = st.sidebar.selectbox(
+    selected_scenario = st.selectbox(
         "Choose a feature to explore:",
         options=list(SCENARIOS.keys()),
         format_func=lambda x: f"{x}",
@@ -367,7 +367,7 @@ def main():
         else:
             if view_mode == "Formatted Table":
                 df = format_table_items_as_dataframe(items)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width="content", hide_index=True)
 
                 # Show expandable details
                 with st.expander("View Full Item Details"):
@@ -389,8 +389,6 @@ def main():
         **Learn More:**
         - [GitHub Repository](https://github.com/msull/simplesingletable)
         - [Documentation](https://github.com/msull/simplesingletable#readme)
-
-        Built with ❤️ using [Streamlit](https://streamlit.io)
         """
     )
 

@@ -204,7 +204,7 @@ def example_field_tracking():
     # Get complete history for 'status' field
     status_history = querier.get_field_history("Order", order.resource_id, "status")
 
-    print(f"\n📊 Status change history:")
+    print("\n📊 Status change history:")
     for change in status_history:
         print(f"  {change['timestamp']}: {change['old_value']} → {change['new_value']}")
         print(f"    Changed by: {change['changed_by']}")
@@ -302,7 +302,7 @@ def example_blob_audit():
     # Retrieve audit logs
     logs = querier.get_logs_for_resource("Document", doc.resource_id)
 
-    print(f"\n📋 Audit logs for document:")
+    print("\n📋 Audit logs for document:")
     for log in logs:
         print(f"\n  {log.operation} at {log.created_at}")
 

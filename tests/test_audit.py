@@ -263,7 +263,7 @@ def test_audit_create_no_snapshot_when_disabled(dynamodb_memory: DynamoDbMemory)
 
 def test_no_audit_for_non_audited_resource(dynamodb_memory: DynamoDbMemory):
     """Test that non-audited resources don't create audit logs."""
-    resource = dynamodb_memory.create_new(
+    dynamodb_memory.create_new(
         NonAuditedResource,
         {"name": "No audit"},
         changed_by="admin@example.com",
@@ -324,7 +324,7 @@ def test_audit_update_operation_basic(dynamodb_memory: DynamoDbMemory):
     )
 
     # Update the user
-    updated_user = dynamodb_memory.update_existing(
+    dynamodb_memory.update_existing(
         user, {"name": "Alice Updated", "age": 31}, changed_by="admin@example.com"
     )
 
@@ -392,7 +392,7 @@ def test_audit_update_with_exclude_fields(dynamodb_memory: DynamoDbMemory):
     )
 
     # Update both name and owner_id, but owner_id should be excluded
-    updated = dynamodb_memory.update_existing(
+    dynamodb_memory.update_existing(
         project, {"name": "Project A Updated", "owner_id": "user2"}, changed_by="admin@example.com"
     )
 
@@ -527,7 +527,7 @@ def test_audit_query_by_operation(dynamodb_memory: DynamoDbMemory):
     user1 = dynamodb_memory.create_new(
         AuditedUser, {"name": "User1", "email": "user1@example.com", "status": "active"}, changed_by="admin"
     )
-    user2 = dynamodb_memory.create_new(
+    dynamodb_memory.create_new(
         AuditedUser, {"name": "User2", "email": "user2@example.com", "status": "active"}, changed_by="admin"
     )
     dynamodb_memory.update_existing(user1, {"name": "User1 Updated"}, changed_by="admin")
