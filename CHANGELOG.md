@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [16.1.0] 2025-10-21
+
+### Added
+
+* **Repository Audit Logging Support**: Extended `ResourceRepository` and `VersionedResourceRepository` to expose audit logging parameters:
+    - Added `changed_by` and `audit_metadata` parameters to `create()`, `update()`, and `delete()` methods in `ResourceRepository`
+    - Added `changed_by` and `audit_metadata` parameters to `restore_version()` method in `VersionedResourceRepository`
+    - Parameters are forwarded to underlying `DynamoDbMemory` methods to integrate with the audit logging system (v14.0.0+)
+    - All parameters are optional and backward compatible - existing repository code continues to work unchanged
+    - Enables repository pattern users to leverage audit trail capabilities without dropping down to the memory layer
+
 ## [16.0.0] 2025-10-21
 
 ### Changed
