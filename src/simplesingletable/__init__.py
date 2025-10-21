@@ -8,7 +8,7 @@ from .dynamodb_memory import (
 from .extras.audit import AuditLogQuerier
 from .models import AuditConfig, AuditLog
 
-package_version = "15.0.0"
+package_version = "16.0.0"
 
 _ = DynamoDbMemory
 _ = DynamoDbResource
