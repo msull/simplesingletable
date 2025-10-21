@@ -1,9 +1,11 @@
 import pytest
-from typing import Optional
+from typing import Optional, ClassVar
 from pydantic import BaseModel, Field
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
 from simplesingletable.extras.repository import ResourceRepository
+from simplesingletable.models import AuditConfig, ResourceConfig, AuditLog
+from simplesingletable.extras.audit import AuditLogQuerier
 
 
 class User(DynamoDbResource):
@@ -415,3 +417,141 @@ class TestClearFieldsFeature:
         assert updated.name == "Updated Resource"
         assert updated.description == "Has description"  # unchanged
         assert updated.expires_at is None  # cleared even though not in update_data
+
+
+class AuditedProduct(DynamoDbResource):
+    """Resource with audit logging enabled."""
+
+    name: str
+    price: float
+    description: Optional[str] = None
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        audit_config=AuditConfig(
+            enabled=True,
+            track_field_changes=True,
+            include_snapshot=True,
+        ),
+    )
+
+
+class CreateProductSchema(BaseModel):
+    name: str
+    price: float
+    description: Optional[str] = None
+
+
+class UpdateProductSchema(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    description: Optional[str] = None
+
+
+@pytest.fixture
+def audited_repository(dynamodb_memory: DynamoDbMemory):
+    return ResourceRepository(
+        ddb=dynamodb_memory,
+        model_class=AuditedProduct,
+        create_schema_class=CreateProductSchema,
+        update_schema_class=UpdateProductSchema,
+    )
+
+
+class TestRepositoryAuditIntegration:
+    """Test audit logging integration with the repository pattern."""
+
+    def test_create_with_changed_by(self, audited_repository, dynamodb_memory):
+        """Test that create() passes changed_by to audit log."""
+        product_data = {"name": "Laptop", "price": 999.99, "description": "High-end laptop"}
+        product = audited_repository.create(
+            product_data,
+            changed_by="admin@example.com",
+            audit_metadata={"reason": "Initial inventory"},
+        )
+
+        # Verify product was created
+        assert product.name == "Laptop"
+        assert product.price == 999.99
+
+        # Query audit logs
+        querier = AuditLogQuerier(dynamodb_memory)
+        audit_logs = querier.get_logs_for_resource("AuditedProduct", product.resource_id)
+
+        # Should have one CREATE audit log
+        assert len(audit_logs) == 1
+        audit_log = audit_logs[0]
+        assert audit_log.operation == "CREATE"
+        assert audit_log.changed_by == "admin@example.com"
+        assert audit_log.audit_metadata["reason"] == "Initial inventory"
+        assert audit_log.audited_resource_id == product.resource_id
+        assert audit_log.audited_resource_type == "AuditedProduct"
+
+    def test_update_with_changed_by(self, audited_repository, dynamodb_memory):
+        """Test that update() passes changed_by to audit log."""
+        # Create product first
+        product = audited_repository.create({"name": "Phone", "price": 699.99})
+
+        # Update with audit info
+        updated = audited_repository.update(
+            product.resource_id,
+            {"price": 649.99},
+            changed_by="manager@example.com",
+            audit_metadata={"reason": "Price reduction"},
+        )
+
+        # Verify update
+        assert updated.price == 649.99
+
+        # Query audit logs
+        querier = AuditLogQuerier(dynamodb_memory)
+        audit_logs = querier.get_logs_for_resource("AuditedProduct", product.resource_id)
+
+        # Should have CREATE and UPDATE audit logs
+        assert len(audit_logs) == 2
+        update_log = [log for log in audit_logs if log.operation == "UPDATE"][0]
+        assert update_log.changed_by == "manager@example.com"
+        assert update_log.audit_metadata["reason"] == "Price reduction"
+        assert update_log.changed_fields is not None
+        assert "price" in update_log.changed_fields
+
+    def test_delete_with_changed_by(self, audited_repository, dynamodb_memory):
+        """Test that delete() passes changed_by to audit log."""
+        # Create product
+        product = audited_repository.create({"name": "Tablet", "price": 399.99})
+
+        # Delete with audit info
+        audited_repository.delete(
+            product.resource_id,
+            changed_by="supervisor@example.com",
+            audit_metadata={"reason": "Discontinued product"},
+        )
+
+        # Verify deletion
+        assert audited_repository.get(product.resource_id) is None
+
+        # Query audit logs
+        querier = AuditLogQuerier(dynamodb_memory)
+        audit_logs = querier.get_logs_for_resource("AuditedProduct", product.resource_id)
+
+        # Should have CREATE and DELETE audit logs
+        assert len(audit_logs) == 2
+        delete_log = [log for log in audit_logs if log.operation == "DELETE"][0]
+        assert delete_log.changed_by == "supervisor@example.com"
+        assert delete_log.audit_metadata["reason"] == "Discontinued product"
+
+    def test_operations_without_changed_by_still_work(self, audited_repository, dynamodb_memory):
+        """Test that audit logging works even when changed_by is not provided (optional)."""
+        # Create without changed_by
+        product = audited_repository.create({"name": "Monitor", "price": 299.99})
+
+        # Update without changed_by
+        updated = audited_repository.update(product.resource_id, {"price": 279.99})
+
+        # Query audit logs
+        querier = AuditLogQuerier(dynamodb_memory)
+        audit_logs = querier.get_logs_for_resource("AuditedProduct", product.resource_id)
+
+        # Should have CREATE and UPDATE audit logs, but changed_by should be None
+        assert len(audit_logs) == 2
+        for log in audit_logs:
+            assert log.changed_by is None

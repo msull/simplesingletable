@@ -76,15 +76,27 @@ class ResourceRepository:
         self.default_create_object_fn = default_create_obj_fn
         self.override_id_fn = override_id_fn
 
-    def create(self, obj_in: CreateSchemaType | dict, override_id: Optional[str] = None) -> T:
+    def create(
+        self,
+        obj_in: CreateSchemaType | dict,
+        override_id: Optional[str] = None,
+        changed_by: Optional[str] = None,
+        audit_metadata: Optional[dict] = None,
+    ) -> T:
         """
         Create a new record using the create schema and return the model instance.
+
+        Args:
+            obj_in: The create schema or dict to create the record from
+            override_id: Optional ID to use instead of auto-generated
+            changed_by: Optional identifier of user/service making the change (for audit logging)
+            audit_metadata: Optional additional metadata to include in audit log
         """
         self.logger.debug(f"Creating {self.model_class.__name__}")
         if isinstance(obj_in, dict):
             self.logger.debug("Converting dict into to schema model")
             obj_in = self.create_schema_class.model_validate(obj_in)
-        return self._create(obj_in, override_id)
+        return self._create(obj_in, override_id, changed_by=changed_by, audit_metadata=audit_metadata)
 
     def get_or_create(self, id: Any) -> T:
         """
@@ -120,7 +132,14 @@ class ResourceRepository:
             raise ValueError(f"{self.model_class.__name__} with id {id} not found")
         return obj
 
-    def update(self, id_or_obj: Any, obj_in: UpdateSchemaType | dict, clear_fields: Optional[Set[str]] = None) -> T:
+    def update(
+        self,
+        id_or_obj: Any,
+        obj_in: UpdateSchemaType | dict,
+        clear_fields: Optional[Set[str]] = None,
+        changed_by: Optional[str] = None,
+        audit_metadata: Optional[dict] = None,
+    ) -> T:
         """
         Update an existing record by its identifier with the update schema.
 
@@ -129,6 +148,8 @@ class ResourceRepository:
             obj_in: Update data (None values normally excluded)
             clear_fields: Set of field names to explicitly clear to None,
                          even if they are None in obj_in
+            changed_by: Optional identifier of user/service making the change (for audit logging)
+            audit_metadata: Optional additional metadata to include in audit log
         """
         if isinstance(id_or_obj, self.model_class):
             id_val = id_or_obj.resource_id
@@ -144,15 +165,22 @@ class ResourceRepository:
             existing = id_or_obj
         else:
             existing = self.read(id_or_obj)
-        return self._update(existing, obj_in, clear_fields=clear_fields)
+        return self._update(
+            existing, obj_in, clear_fields=clear_fields, changed_by=changed_by, audit_metadata=audit_metadata
+        )
 
-    def delete(self, id: Any) -> None:
+    def delete(self, id: Any, changed_by: Optional[str] = None, audit_metadata: Optional[dict] = None) -> None:
         """
         Delete a record by its identifier.
+
+        Args:
+            id: The ID of the record to delete
+            changed_by: Optional identifier of user/service making the change (for audit logging)
+            audit_metadata: Optional additional metadata to include in audit log
         """
         self.logger.debug(f"Deleting {self.model_class.__name__} with id: {id}")
         obj = self.read(id)
-        return self._delete(obj)
+        return self._delete(obj, changed_by=changed_by, audit_metadata=audit_metadata)
 
     def list(self, limit: Optional[int] = None) -> List[T]:
         """
@@ -161,23 +189,48 @@ class ResourceRepository:
         self.logger.debug(f"Listing {self.model_class.__name__} with limit={limit}")
         return self._list(limit)
 
-    def _create(self, obj_in: CreateSchemaType, override_id: Optional[str] = None) -> T:
+    def _create(
+        self,
+        obj_in: CreateSchemaType,
+        override_id: Optional[str] = None,
+        changed_by: Optional[str] = None,
+        audit_metadata: Optional[dict] = None,
+    ) -> T:
         if override_id:
             final_override_id = override_id
         elif self.override_id_fn:
             final_override_id = self.override_id_fn(obj_in)
         else:
             final_override_id = None
-        return self.ddb.create_new(self.model_class, obj_in, override_id=final_override_id)
+        return self.ddb.create_new(
+            self.model_class,
+            obj_in,
+            override_id=final_override_id,
+            changed_by=changed_by,
+            audit_metadata=audit_metadata,
+        )
 
     def _get(self, id: Any) -> Optional[T]:
         return self.ddb.get_existing(id, self.model_class)
 
-    def _update(self, existing_obj: T, obj_in: UpdateSchemaType, clear_fields: Optional[Set[str]] = None) -> T:
-        return self.ddb.update_existing(existing_obj, obj_in, clear_fields=clear_fields)
+    def _update(
+        self,
+        existing_obj: T,
+        obj_in: UpdateSchemaType,
+        clear_fields: Optional[Set[str]] = None,
+        changed_by: Optional[str] = None,
+        audit_metadata: Optional[dict] = None,
+    ) -> T:
+        return self.ddb.update_existing(
+            existing_obj,
+            obj_in,
+            clear_fields=clear_fields,
+            changed_by=changed_by,
+            audit_metadata=audit_metadata,
+        )
 
-    def _delete(self, obj: T) -> None:
-        self.ddb.delete_existing(obj)
+    def _delete(self, obj: T, changed_by: Optional[str] = None, audit_metadata: Optional[dict] = None) -> None:
+        self.ddb.delete_existing(obj, changed_by=changed_by, audit_metadata=audit_metadata)
 
     def _list(self, limit: Optional[int]) -> List[T]:
         result = self.ddb.list_type_by_updated_at(self.model_class, results_limit=limit)

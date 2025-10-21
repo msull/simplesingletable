@@ -166,7 +166,9 @@ class VersionedResourceRepository(ResourceRepository):
         # Use the existing get_existing method with version parameter
         return self.ddb.get_existing(item_id, self.model_class, version=version)
 
-    def restore_version(self, item_id: str, version: int) -> T:
+    def restore_version(
+        self, item_id: str, version: int, changed_by: Optional[str] = None, audit_metadata: Optional[dict] = None
+    ) -> T:
         """
         Restore a previous version by creating a new version with the same content.
 
@@ -176,6 +178,8 @@ class VersionedResourceRepository(ResourceRepository):
         Args:
             item_id: The resource ID
             version: The version number to restore (e.g., 1, 2, 3)
+            changed_by: Optional identifier of user/service making the change (for audit logging)
+            audit_metadata: Optional additional metadata to include in audit log
 
         Returns:
             The newly created item that matches the restored version
@@ -197,7 +201,7 @@ class VersionedResourceRepository(ResourceRepository):
 
         # Update the current item with the old version's data
         # This will create a new version automatically
-        restored_item = self.update(current, update_data)
+        restored_item = self.update(current, update_data, changed_by=changed_by, audit_metadata=audit_metadata)
 
         self.logger.info(
             f"Restored {self.model_class.__name__} {item_id} from version {version} "
