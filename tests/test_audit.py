@@ -297,18 +297,32 @@ def test_audit_log_doesnt_audit_itself(dynamodb_memory: DynamoDbMemory):
 
 
 def test_audit_validation_changed_by_required_but_missing(dynamodb_memory: DynamoDbMemory):
-    """Test that missing changed_by raises error when required by field."""
-    with pytest.raises(ValueError, match="Audit logging enabled.*but 'changed_by' not provided"):
-        # AuditedTask requires changed_by via changed_by_field
-        # If assigned_to is empty and no changed_by param, should error
+    """Test that missing changed_by raises error when changed_by_required=True."""
+
+    # Create a resource type that requires changed_by
+    class StrictAuditedTask(DynamoDbVersionedResource):
+        title: str
+        completed: bool
+
+        resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+            compress_data=True,
+            audit_config=AuditConfig(
+                enabled=True,
+                track_field_changes=True,
+                include_snapshot=True,
+                changed_by_required=True,  # Explicitly require changed_by
+            ),
+        )
+
+    with pytest.raises(ValueError, match="Audit logging enabled.*changed_by_required.*but 'changed_by' was not provided"):
+        # Should error because changed_by_required=True but no changed_by provided
         dynamodb_memory.create_new(
-            AuditedTask,
+            StrictAuditedTask,
             {
-                "title": "Task with empty assigned_to",
+                "title": "Task without changed_by",
                 "completed": False,
-                "assigned_to": "",  # Empty string - should fail validation
             },
-            # No changed_by param either
+            # No changed_by param
         )
 
 

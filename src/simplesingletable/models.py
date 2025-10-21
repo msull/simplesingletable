@@ -107,6 +107,9 @@ class AuditConfig(TypedDict, total=False):
     include_snapshot: bool
     """Include full resource snapshot in audit log."""
 
+    changed_by_required: bool | None
+    """Require 'changed_by' parameter to be provided when creating/updating resources. If False, changed_by is optional."""
+
     changed_by_field: str | None
     """Field name containing user/service identifier for change tracking."""
 

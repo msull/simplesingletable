@@ -1375,10 +1375,10 @@ class DynamoDbMemory:
             changed_by = getattr(resource, field, None)
 
         # Validate changed_by if required
-        if audit_config.get("changed_by_field") and not changed_by:
+        if audit_config.get("changed_by_required") and not changed_by:
             raise ValueError(
-                f"Audit logging enabled for {resource.__class__.__name__} but 'changed_by' not provided "
-                f"and field '{audit_config['changed_by_field']}' not found or is None"
+                f"Audit logging enabled for {resource.__class__.__name__} with option `changed_by_required` "
+                "but 'changed_by' was not provided"
             )
 
         # Compute field changes for UPDATE operations

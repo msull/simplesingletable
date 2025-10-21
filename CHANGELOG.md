@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [16.0.0] 2025-10-21
+
+### Changed
+
+* **Audit Logging: Optional `changed_by` Parameter**: Modified audit logging to make the `changed_by` parameter optional by default:
+    - Added new `changed_by_required` configuration option to `AuditConfig` (defaults to `None`/`False`)
+    - When `changed_by_required=True`, the system enforces that `changed_by` must be provided during resource creation/updates
+    - When `changed_by_required=False` or unset (default), `changed_by` is optional and audit logs can be created without change attribution
+    - Replaced the `changed_by_field` validation logic: previously, if `changed_by_field` was set but the field value was `None`, an error was raised; now, this validation only occurs when `changed_by_required=True`
+    - **Breaking Change**: Minimal impact - only affects users who were relying on the previous behavior where `changed_by_field` presence enforced `changed_by` requirement
+    - Provides more flexibility for audit logging scenarios where change attribution is not always available or necessary
+
 ## [15.0.0] 2025-10-21
 
 ### Changed
