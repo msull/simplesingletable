@@ -243,7 +243,9 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
         end_month_str = end_date.strftime("%Y%m")
 
         return memory.paginated_dynamodb_query(
-            key_condition=(Key("gsitype").eq(cls.__name__) & Key("gsitypesk").between(start_month_str, end_month_str)),
+            key_condition=(
+                Key("gsitype").eq(cls.db_get_gsitypepk()) & Key("gsitypesk").between(start_month_str, end_month_str)
+            ),
             index_name="gsitype",
             resource_class=cls,
         )
@@ -371,7 +373,9 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
         end_month_str = end_date.strftime("%Y%m")
 
         return memory.paginated_dynamodb_query(
-            key_condition=(Key("gsitype").eq(cls.__name__) & Key("gsitypesk").between(start_month_str, end_month_str)),
+            key_condition=(
+                Key("gsitype").eq(cls.db_get_gsitypepk()) & Key("gsitypesk").between(start_month_str, end_month_str)
+            ),
             index_name="gsitype",
             resource_class=cls,
         )

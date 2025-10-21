@@ -248,7 +248,7 @@ class AuditLogQuerier:
             # Query all audit logs via gsitype
             # Note: gsitype uses gsitypesk (updated_at) for sorting, not pk
             # Date filtering here uses filter expression on created_at
-            key_condition = Key("gsitype").eq("AuditLog")
+            key_condition = Key("gsitype").eq(AuditLog.db_get_gsitypepk())
 
             # For gsitype queries, add date filter to filter_expression
             if start_date and end_date:

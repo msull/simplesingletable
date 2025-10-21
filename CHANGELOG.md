@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [15.0.0] 2025-10-21
+
+### Changed
+
+* **BREAKING: AuditLog GSI Type Partitioning**: Modified `AuditLog` to use a custom `gsitype` value (`_INTERNAL#AuditLog`) instead of the class name (`AuditLog`). This separates internal audit logs from user-defined resources in the `gsitype` index, preventing audit logs from appearing in queries for user resources.
+    - **Breaking Change**: Existing `AuditLog` entries created in v14.0.0 will no longer be returned by `gsitype` queries after this update
+    - **Impact**: Only affects users who adopted the audit logging feature from v14.0.0 (released 2025-10-16)
+    - **Migration**: No action required for most users; audit logs remain accessible via dedicated audit query methods (`AuditLogQuerier`)
+    - Implemented via new `db_get_gsitypepk()` override in `AuditLog` class that returns `get_unique_key_prefix()`
+
+* **Introduced `db_get_gsitypepk()` Method**: Added new classmethod `db_get_gsitypepk()` to `BaseDynamoDbResource` that allows resources to customize their `gsitype` partition key value:
+    - Default implementation returns `cls.__name__` for backward compatibility
+    - Can be overridden by subclasses to use custom prefixes or grouping strategies
+    - Used by `AuditLog` to implement internal resource partitioning
+    - All `gsitype` assignments now use `db_get_gsitypepk()` instead of direct `__class__.__name__` references
+
 ## [14.0.0]  2025-10-16
 
 ### Added

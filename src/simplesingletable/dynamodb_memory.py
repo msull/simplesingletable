@@ -583,7 +583,7 @@ class DynamoDbMemory:
         if version <= 0:
             raise ValueError(f"Version must be a positive integer, got: {version}")
 
-        self.logger.info(f"Restoring version {version} of {data_class.__name__} " f"with resource_id='{resource_id}'")
+        self.logger.info(f"Restoring version {version} of {data_class.__name__} with resource_id='{resource_id}'")
 
         # Get the version to restore (load blobs so we can copy them)
         version_to_restore = self.get_existing(resource_id, data_class, version=version, load_blobs=True)
@@ -777,7 +777,7 @@ class DynamoDbMemory:
         filter_limit_multiplier: int = 3,
     ) -> PaginatedList[AnyDbResource]:
         return self.paginated_dynamodb_query(
-            key_condition=Key("gsitype").eq(data_class.__name__),
+            key_condition=Key("gsitype").eq(data_class.db_get_gsitypepk()),
             index_name="gsitype",
             resource_class=data_class,
             filter_expression=filter_expression,

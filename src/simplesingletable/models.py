@@ -192,6 +192,10 @@ class BaseDynamoDbResource(BaseModel, ABC):
     def db_get_filter_metadata(self) -> tuple[str, str] | None:
         pass
 
+    @classmethod
+    def db_get_gsitypepk(cls) -> str:
+        return cls.__name__
+
     def db_get_gsitypesk(self) -> str:
         return self.updated_at.isoformat()
 
@@ -553,7 +557,7 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
             {
                 "pk": key,
                 "sk": key,
-                "gsitype": self.__class__.__name__,
+                "gsitype": self.db_get_gsitypepk(),
                 "gsitypesk": self.db_get_gsitypesk(),
             }
         )
@@ -703,7 +707,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
 
         if v0_object:
             # all v0 objects get gsitype applied to enable "get all <type> sorted by last updated"
-            dynamodb_data["gsitype"] = self.__class__.__name__
+            dynamodb_data["gsitype"] = self.db_get_gsitypepk()
             dynamodb_data["gsitypesk"] = self.db_get_gsitypesk()
 
             # Apply GSI configuration
@@ -894,6 +898,10 @@ class AuditLog(DynamodbResource):
     @classmethod
     def get_unique_key_prefix(cls) -> str:
         return "_INTERNAL#AuditLog"
+
+    @classmethod
+    def db_get_gsitypepk(cls) -> str:
+        return cls.get_unique_key_prefix()
 
     def db_get_gsitypesk(self) -> str:
         return self.created_at.isoformat()

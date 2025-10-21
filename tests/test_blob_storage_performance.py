@@ -231,7 +231,7 @@ class TestBlobStoragePerformance:
         from boto3.dynamodb.conditions import Key
 
         result_without_blob = memory.paginated_dynamodb_query(
-            key_condition=Key("gsitype").eq(LargeResourceWithoutBlob.__name__),
+            key_condition=Key("gsitype").eq(LargeResourceWithoutBlob.db_get_gsitypepk()),
             index_name="gsitype",
             resource_class=LargeResourceWithoutBlob,
             results_limit=10000,  # Get all items in one query
@@ -243,7 +243,7 @@ class TestBlobStoragePerformance:
         print("Querying items WITH blob storage (blobs not loaded)...")
         start_time = time.time()
         result_with_blob = memory.paginated_dynamodb_query(
-            key_condition=Key("gsitype").eq(LargeResourceWithBlob.__name__),
+            key_condition=Key("gsitype").eq(LargeResourceWithBlob.db_get_gsitypepk()),
             index_name="gsitype",
             resource_class=LargeResourceWithBlob,
             results_limit=10000,  # Get all items in one query
