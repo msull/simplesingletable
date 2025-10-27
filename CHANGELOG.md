@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [16.2.0] 2025-10-27
+
+### Added
+
+* **Local File Storage Implementation**: Added `LocalStorageMemory` and `LocalBlobStorage` classes for offline demos and local testing without AWS dependencies:
+    - **LocalStorageMemory**: Mostly complete drop-in replacement for `DynamoDbMemory` that stores data in local JSON files
+        - Stores resources as JSON files in `{storage_dir}/resources/` directory (one file per resource type)
+        - Full support for all CRUD operations (create, read, update, delete)
+        - Complete versioned resource support with full version history
+        - GSI query support (gsitype, gsi1, gsi2, gsi3, gsi4) with filtering and pagination
+        - Filter expressions and filter functions
+        - Audit logging integration
+        - Statistics tracking via `MemoryStats`
+        - Counter operations and set manipulation
+        - Thread-safe file locking using `fcntl` (Unix) for concurrent access
+        - Automatic encoding/decoding of binary data (bytes) and sets for JSON compatibility
+        - Zero dependencies on AWS services - works completely offline
+    - **LocalBlobStorage**: Local file-based blob storage that mirrors `S3BlobStorage` interface
+        - Stores blobs as files in `{storage_dir}/blobs/{ResourceType}/{resource_id}/` directory structure
+        - Support for compression, content types, and size limits
+        - Metadata storage for each blob (version, compression, content type)
+        - Handles complex Pydantic types via TypeAdapter serialization
+        - List blob versions and automatic cleanup on resource deletion
+    - **Binary Data Encoding**: Automatic base64 encoding for bytes and list conversion for sets to enable JSON serialization
+    - **Same API as DynamoDbMemory**: Identical interface makes switching between local and DynamoDB storage seamless
+    - **Use Cases**:
+        - Offline demos and presentations without Docker
+        - Local development and testing
+        - CI/CD environments without AWS credentials
+        - Learning and exploring simplesingletable features
+        - Prototyping before deploying to AWS
+    - **Streamlit Demo with Local Storage**: Added `app_local.py` variant of the Streamlit demo that uses local storage
+        - No Docker containers needed
+        - Same scenarios as the DynamoDB version (CRUD, versioning, audit logging, blob storage)
+        - Storage viewer with formatted tables and raw JSON view
+        - File structure browser
+        - Quick reset and folder opening
+        - Documentation in `README_LOCAL.md`
+    - **Example Scripts**: Added `examples/local_storage_example.py` demonstrating local storage usage
+    - **Comprehensive Testing**: 24 tests covering all features including versioned resources, blob storage, GSI queries, pagination, stats tracking, and set serialization
+
+    Example usage:
+    ```python
+    from simplesingletable import LocalStorageMemory, DynamoDbVersionedResource
+    from logzero import logger
+
+    # Create local storage
+    storage = LocalStorageMemory(
+        logger=logger,
+        storage_dir="./my_local_data",
+        track_stats=True,
+        use_blob_storage=True,
+    )
+
+    # Use exactly like DynamoDbMemory!
+    resource = storage.create_new(MyResource, {"field": "value"})
+    updated = storage.update_existing(resource, {"field": "new_value"})
+    results = storage.list_type_by_updated_at(MyResource)
+
+    # All data stored in JSON files:
+    # ./my_local_data/resources/MyResource.json
+    # ./my_local_data/blobs/MyResource/{resource_id}/field_name.blob
+    ```
+
 ## [16.1.0] 2025-10-21
 
 ### Added

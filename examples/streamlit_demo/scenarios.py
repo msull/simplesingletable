@@ -26,7 +26,18 @@ from simplesingletable.models import ResourceConfig, BlobFieldConfig
 def generate_random_name() -> str:
     """Generate a random person name."""
     first_names = ["Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry", "Iris", "Jack"]
-    last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
+    last_names = [
+        "Smith",
+        "Johnson",
+        "Williams",
+        "Brown",
+        "Jones",
+        "Garcia",
+        "Miller",
+        "Davis",
+        "Rodriguez",
+        "Martinez",
+    ]
     return f"{random.choice(first_names)} {random.choice(last_names)}"
 
 
@@ -42,7 +53,18 @@ def generate_random_email(name: str = None) -> str:
 
 def generate_random_tags() -> str:
     """Generate random comma-separated tags."""
-    all_tags = ["admin", "developer", "designer", "manager", "analyst", "support", "sales", "marketing", "finance", "hr"]
+    all_tags = [
+        "admin",
+        "developer",
+        "designer",
+        "manager",
+        "analyst",
+        "support",
+        "sales",
+        "marketing",
+        "finance",
+        "hr",
+    ]
     num_tags = random.randint(1, 3)
     return ", ".join(random.sample(all_tags, num_tags))
 
@@ -179,7 +201,9 @@ def scenario_basic_crud(memory: DynamoDbMemory):
 
         name = st.text_input("Name", placeholder="John Doe", value=st.session_state.user_name)
         email = st.text_input("Email", placeholder="john@example.com", value=st.session_state.user_email)
-        tags_input = st.text_input("Tags (comma-separated)", placeholder="admin,developer", value=st.session_state.user_tags)
+        tags_input = st.text_input(
+            "Tags (comma-separated)", placeholder="admin,developer", value=st.session_state.user_tags
+        )
 
         col1, col2 = st.columns([1, 1])
         with col1:
@@ -479,12 +503,24 @@ def scenario_audit_logging(memory: DynamoDbMemory):
         if "order_changed_by" not in st.session_state:
             st.session_state.order_changed_by = "demo-user"
 
-        customer_email = st.text_input("Customer Email", placeholder="customer@example.com", value=st.session_state.order_customer_email)
-        total_amount = st.number_input("Total Amount", min_value=0.0, value=st.session_state.order_total_amount, step=0.01)
-        status_index = ["pending", "processing", "shipped", "delivered", "cancelled"].index(st.session_state.order_status)
-        status = st.selectbox("Status", ["pending", "processing", "shipped", "delivered", "cancelled"], index=status_index)
-        items_input = st.text_input("Items (comma-separated)", placeholder="item1,item2,item3", value=st.session_state.order_items)
-        changed_by = st.text_input("Changed By", placeholder="your-email@example.com", value=st.session_state.order_changed_by)
+        customer_email = st.text_input(
+            "Customer Email", placeholder="customer@example.com", value=st.session_state.order_customer_email
+        )
+        total_amount = st.number_input(
+            "Total Amount", min_value=0.0, value=st.session_state.order_total_amount, step=0.01
+        )
+        status_index = ["pending", "processing", "shipped", "delivered", "cancelled"].index(
+            st.session_state.order_status
+        )
+        status = st.selectbox(
+            "Status", ["pending", "processing", "shipped", "delivered", "cancelled"], index=status_index
+        )
+        items_input = st.text_input(
+            "Items (comma-separated)", placeholder="item1,item2,item3", value=st.session_state.order_items
+        )
+        changed_by = st.text_input(
+            "Changed By", placeholder="your-email@example.com", value=st.session_state.order_changed_by
+        )
 
         col1, col2 = st.columns([1, 1])
         with col1:
@@ -613,26 +649,44 @@ def scenario_blob_storage(memory: DynamoDbMemory):
     reports = memory.list_type_by_updated_at(Report, results_limit=50)
     st.write(f"**Existing Reports:** {len(reports)}")
 
+    # Initialize session state for tracking which blobs are loaded
+    if "loaded_blob_reports" not in st.session_state:
+        st.session_state.loaded_blob_reports = set()
+
     if reports:
         for report in reports.as_list():
             with st.expander(f"{report.title} by {report.author}"):
                 st.text(f"ID: {report.resource_id}")
                 st.text(f"Summary: {report.summary}")
-                st.text(f"Has unloaded blobs: {report.has_unloaded_blobs()}")
 
-                if report.has_unloaded_blobs():
+                # Check if blobs should be loaded (either newly loaded or in session state)
+                should_load_blobs = report.resource_id in st.session_state.loaded_blob_reports
+
+                if report.has_unloaded_blobs() and not should_load_blobs:
                     if st.button("Load Blobs", key=f"load_blobs_{report.resource_id}"):
-                        report.load_blob_fields(memory)
-                        st.success("Blobs loaded!")
+                        # Add to session state to remember across reruns
+                        st.session_state.loaded_blob_reports.add(report.resource_id)
                         st.rerun()
                 else:
+                    # Load blobs if in session state
+                    if should_load_blobs and report.has_unloaded_blobs():
+                        report.load_blob_fields(memory)
+
                     st.text(f"Content length: {len(report.content) if report.content else 0} chars")
                     if report.content:
-                        st.text_area("Content (first 500 chars)", report.content[:500], disabled=True, height=150)
+                        st.text_area(
+                            "Content (first 500 chars)",
+                            report.content[:500],
+                            disabled=True,
+                            height=150,
+                            key=f"content_{report.resource_id}",
+                        )
                     if report.data:
                         st.json(report.data)
 
                 if st.button("Delete Report", key=f"delete_report_{report.resource_id}"):
+                    # Remove from loaded set if present
+                    st.session_state.loaded_blob_reports.discard(report.resource_id)
                     memory.delete_existing(report)
                     st.rerun()
 
@@ -656,7 +710,9 @@ def scenario_blob_storage(memory: DynamoDbMemory):
 
         title = st.text_input("Title", placeholder="Q4 2024 Report", value=st.session_state.report_title)
         author = st.text_input("Author", placeholder="analytics@example.com", value=st.session_state.report_author)
-        summary = st.text_input("Summary", placeholder="Brief summary of the report", value=st.session_state.report_summary)
+        summary = st.text_input(
+            "Summary", placeholder="Brief summary of the report", value=st.session_state.report_summary
+        )
         content = st.text_area(
             "Content (will be stored in S3/MinIO)",
             placeholder="Large report content...",
@@ -720,6 +776,7 @@ def scenario_blob_storage(memory: DynamoDbMemory):
         selected_report_id = st.selectbox(
             "Select report to update",
             options=[r.resource_id for r in reports.as_list()],
+            index=None,
             format_func=lambda rid: next(r.title for r in reports.as_list() if r.resource_id == rid),
         )
 

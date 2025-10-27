@@ -188,6 +188,11 @@ def reset_environment(memory: DynamoDbMemory) -> None:
                     s3_client.delete_objects(Bucket=BUCKET_NAME, Delete={"Objects": objects})
 
         logger.info("MinIO bucket cleared")
+
+        # Clear blob loading session state
+        if "loaded_blob_reports" in st.session_state:
+            st.session_state.loaded_blob_reports.clear()
+
         st.success("Environment reset successfully!")
 
     except Exception as e:

@@ -6,6 +6,8 @@ from .dynamodb_memory import (
     exhaust_pagination,
 )
 from .extras.audit import AuditLogQuerier
+from .local_blob_storage import LocalBlobStorage
+from .local_storage_memory import LocalStorageMemory
 from .models import AuditConfig, AuditLog
 
 package_version = "16.1.0"
@@ -18,3 +20,5 @@ _ = exhaust_pagination
 _ = AuditLogQuerier
 _ = AuditConfig
 _ = AuditLog
+_ = LocalStorageMemory
+_ = LocalBlobStorage

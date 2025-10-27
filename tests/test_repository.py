@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
 from simplesingletable.extras.repository import ResourceRepository
-from simplesingletable.models import AuditConfig, ResourceConfig, AuditLog
+from simplesingletable.models import AuditConfig, ResourceConfig
 from simplesingletable.extras.audit import AuditLogQuerier
 
 
@@ -545,7 +545,7 @@ class TestRepositoryAuditIntegration:
         product = audited_repository.create({"name": "Monitor", "price": 299.99})
 
         # Update without changed_by
-        updated = audited_repository.update(product.resource_id, {"price": 279.99})
+        audited_repository.update(product.resource_id, {"price": 279.99})
 
         # Query audit logs
         querier = AuditLogQuerier(dynamodb_memory)
