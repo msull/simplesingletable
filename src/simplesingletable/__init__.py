@@ -10,7 +10,7 @@ from .local_blob_storage import LocalBlobStorage
 from .local_storage_memory import LocalStorageMemory
 from .models import AuditConfig, AuditLog
 
-package_version = "16.2.0"
+package_version = "16.3.0"
 
 _ = DynamoDbMemory
 _ = DynamoDbResource
