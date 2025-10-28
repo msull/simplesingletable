@@ -134,8 +134,13 @@ class DynamoDbMemory:
     track_stats: bool = True
     s3_bucket: Optional[str] = None
     s3_key_prefix: Optional[str] = None
+    audit_table_name: Optional[str] = None
+    audit_endpoint_url: Optional[str] = None
+    audit_connection_params: Optional[dict] = None
     _dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _dynamodb_table: Optional["Table"] = field(default=None, init=False)
+    _audit_dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
+    _audit_dynamodb_table: Optional["Table"] = field(default=None, init=False)
     _s3_blob_storage: Optional["S3BlobStorage"] = field(default=None, init=False)
     _transaction_manager: Optional["TransactionManager"] = field(default=None, init=False)
 
@@ -316,6 +321,39 @@ class DynamoDbMemory:
                 endpoint_url=self.endpoint_url,
             )
         return self._s3_blob_storage
+
+    @property
+    def audit_dynamodb_client(self) -> "DynamoDBClient":
+        """Get DynamoDB client for audit logs.
+
+        If audit-specific connection parameters are configured, returns a separate client.
+        Otherwise, returns the main dynamodb_client.
+        """
+        if self.audit_table_name and (self.audit_connection_params or self.audit_endpoint_url):
+            if not self._audit_dynamodb_client:
+                kwargs = self.audit_connection_params or {}
+                self._audit_dynamodb_client = boto3.client("dynamodb", endpoint_url=self.audit_endpoint_url, **kwargs)
+            return self._audit_dynamodb_client
+        return self.dynamodb_client
+
+    @property
+    def audit_dynamodb_table(self) -> "Table":
+        """Get DynamoDB table for audit logs.
+
+        If audit_table_name is configured, returns a separate table resource.
+        Otherwise, returns the main dynamodb_table.
+        """
+        if self.audit_table_name:
+            if not self._audit_dynamodb_table:
+                kwargs = self.audit_connection_params or {}
+                # Use audit endpoint/params if provided, otherwise use main connection
+                endpoint = self.audit_endpoint_url if self.audit_endpoint_url else self.endpoint_url
+                if not kwargs:
+                    kwargs = self.connection_params or {}
+                dynamodb = boto3.resource("dynamodb", endpoint_url=endpoint, **kwargs)
+                self._audit_dynamodb_table = dynamodb.Table(self.audit_table_name)
+            return self._audit_dynamodb_table
+        return self.dynamodb_table
 
     def create_new(
         self,
@@ -1400,8 +1438,12 @@ class DynamoDbMemory:
             "audit_metadata": audit_metadata or {},
         }
 
-        # Create the audit log (won't recurse because AuditLog doesn't have audit enabled)
-        self.create_new(AuditLog, audit_log_data)
+        # Create the audit log resource
+        audit_log = AuditLog.create_new(audit_log_data)
+
+        # Write to audit table (won't recurse because AuditLog doesn't have audit enabled)
+        item = audit_log.to_dynamodb_item()
+        self.audit_dynamodb_table.put_item(Item=item)
 
 
 def _now(tz: Any = False):

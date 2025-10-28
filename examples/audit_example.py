@@ -119,6 +119,33 @@ def get_memory() -> DynamoDbMemory:
     )
 
 
+def get_memory_with_separate_audit_table() -> DynamoDbMemory:
+    """Initialize DynamoDbMemory with audit logs in a separate table.
+
+    Use cases:
+    - Compliance requirements: Audit logs must be isolated for regulatory compliance
+    - Cross-account storage: Write audit logs to a separate AWS account
+    - Different region: Audit logs in different AWS region for disaster recovery
+    - Performance isolation: Keep audit writes from affecting main table performance
+    """
+    return DynamoDbMemory(
+        # Main application table
+        table_name="your-app-table",
+        s3_bucket_name="your-s3-bucket",
+
+        # Separate audit table (optional)
+        audit_table_name="your-audit-table",  # Write audit logs to separate table
+
+        # Optional: Use different AWS credentials/region for audit table
+        # audit_connection_params={
+        #     "region_name": "us-west-2",
+        #     "aws_access_key_id": "AUDIT_KEY",
+        #     "aws_secret_access_key": "AUDIT_SECRET"
+        # },
+        # audit_endpoint_url="https://dynamodb.us-west-2.amazonaws.com",
+    )
+
+
 # ==============================================================================
 # Example 1: Basic Audit Logging
 # ==============================================================================

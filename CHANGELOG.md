@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [16.3.0] 2025-10-28
+
+### Added
+
+* **Separate Audit Table Support**: Added ability to write audit logs to a separate DynamoDB table with optional separate connection parameters:
+    - **New DynamoDbMemory Parameters**:
+        - `audit_table_name`: Optional separate table name for audit logs (defaults to main table)
+        - `audit_endpoint_url`: Optional endpoint URL for separate audit table
+        - `audit_connection_params`: Optional connection parameters (region, credentials) for separate audit table
+    - **Use Cases**:
+        - Compliance requirements: Isolate audit logs in separate storage for regulatory compliance
+        - Cross-account storage: Write audit logs to different AWS account for security
+        - Different region: Store audit logs in different region for disaster recovery
+        - Performance isolation: Prevent audit writes from affecting main table performance
+    - **Backward Compatible**: If audit table parameters are not specified, audit logs continue to write to main table (existing behavior)
+    - **AuditLogQuerier Updates**: All query methods automatically use the configured audit table
+    - **Comprehensive Testing**: 13 new tests covering separate table writes, queries, backward compatibility, and property access
+    - **Example Usage**: Added `get_memory_with_separate_audit_table()` example to `examples/audit_example.py`
+
+    Example usage:
+    ```python
+    # Option 1: Same table (existing behavior, still works)
+    memory = DynamoDbMemory(
+        table_name="my-app-table",
+        logger=logger
+    )
+
+    # Option 2: Separate table, same credentials
+    memory = DynamoDbMemory(
+        table_name="my-app-table",
+        audit_table_name="my-audit-table",
+        logger=logger
+    )
+
+    # Option 3: Separate table, separate credentials (cross-account)
+    memory = DynamoDbMemory(
+        table_name="my-app-table",
+        connection_params={"region_name": "us-east-1"},
+        audit_table_name="audit-table-in-different-account",
+        audit_connection_params={
+            "region_name": "us-west-2",
+            "aws_access_key_id": "AUDIT_KEY",
+            "aws_secret_access_key": "AUDIT_SECRET"
+        },
+        logger=logger
+    )
+    ```
+
 ## [16.2.0] 2025-10-27
 
 ### Added

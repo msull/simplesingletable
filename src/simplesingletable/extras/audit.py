@@ -35,6 +35,40 @@ class AuditLogQuerier:
             memory: DynamoDbMemory instance to use for queries
         """
         self.memory = memory
+        self._audit_memory_view: Optional["DynamoDbMemory"] = None
+
+    @property
+    def audit_memory(self) -> "DynamoDbMemory":
+        """Get a DynamoDbMemory view configured for the audit table.
+
+        If no separate audit table is configured, returns the main memory instance.
+        Otherwise, creates a lightweight memory instance that treats the audit
+        table as its main table, allowing all existing query methods to work.
+
+        Returns:
+            DynamoDbMemory instance configured to query the audit table
+        """
+        if self._audit_memory_view is not None:
+            return self._audit_memory_view
+
+        # If no separate audit table, just use main memory
+        if not hasattr(self.memory, "audit_table_name") or not self.memory.audit_table_name:
+            self._audit_memory_view = self.memory
+            return self._audit_memory_view
+
+        # Import here to avoid circular dependency
+        from .. import DynamoDbMemory
+
+        # Create a view that makes audit table look like the main table
+        self._audit_memory_view = DynamoDbMemory(
+            logger=self.memory.logger,
+            table_name=self.memory.audit_table_name,
+            endpoint_url=self.memory.audit_endpoint_url or self.memory.endpoint_url,
+            connection_params=self.memory.audit_connection_params or self.memory.connection_params,
+            track_stats=False,  # Don't track stats for audit queries
+            # No S3 configuration - audit logs don't use blobs
+        )
+        return self._audit_memory_view
 
     def get_logs_for_resource(
         self,
@@ -81,7 +115,7 @@ class AuditLogQuerier:
             key_condition &= Key("pk").lte(end_pk)
 
         # Query using paginated_dynamodb_query (descending=newest first)
-        logs = self.memory.paginated_dynamodb_query(
+        return self.audit_memory.paginated_dynamodb_query(
             key_condition=key_condition,
             index_name="gsi1",
             resource_class=AuditLog,
@@ -89,8 +123,6 @@ class AuditLogQuerier:
             ascending=False,  # Newest first (descending by pk/ULID)
             pagination_key=pagination_key,
         )
-
-        return logs
 
     def get_logs_for_resource_type(
         self,
@@ -130,7 +162,7 @@ class AuditLogQuerier:
             key_condition &= Key("pk").lte(end_pk)
 
         # Query using paginated_dynamodb_query
-        logs = self.memory.paginated_dynamodb_query(
+        return self.audit_memory.paginated_dynamodb_query(
             key_condition=key_condition,
             index_name="gsi2",
             resource_class=AuditLog,
@@ -138,8 +170,6 @@ class AuditLogQuerier:
             ascending=False,  # Newest first
             pagination_key=pagination_key,
         )
-
-        return logs
 
     def get_logs_by_operation(
         self,
@@ -181,7 +211,7 @@ class AuditLogQuerier:
         filter_expression = Attr("operation").eq(operation)
 
         # Query using paginated_dynamodb_query
-        logs = self.memory.paginated_dynamodb_query(
+        logs = self.audit_memory.paginated_dynamodb_query(
             key_condition=key_condition,
             index_name="gsi2",
             resource_class=AuditLog,
@@ -236,7 +266,7 @@ class AuditLogQuerier:
                 end_pk = AuditLog.dynamodb_lookup_keys_from_id(from_timestamp(end_date).timestamp().str + "ZZZZZ")["pk"]
                 key_condition &= Key("pk").lte(end_pk)
 
-            logs = self.memory.paginated_dynamodb_query(
+            logs = self.audit_memory.paginated_dynamodb_query(
                 key_condition=key_condition,
                 index_name="gsi2",
                 resource_class=AuditLog,
@@ -258,7 +288,7 @@ class AuditLogQuerier:
             elif end_date:
                 key_condition &= Key("gsitypesk").lte(end_date.isoformat())
 
-            logs = self.memory.paginated_dynamodb_query(
+            logs = self.audit_memory.paginated_dynamodb_query(
                 key_condition=key_condition,
                 index_name="gsitype",
                 resource_class=AuditLog,
@@ -341,12 +371,13 @@ class AuditLogQuerier:
             List of most recent AuditLog resources
         """
         if resource_type:
-            return self.get_logs_for_resource_type(
+            result = self.get_logs_for_resource_type(
                 resource_type=resource_type,
                 limit=limit,
             )
+            return list(result)
         else:
             # Get all audit logs via gsitype (sorted by updated_at/gsitypesk)
-            logs = self.memory.list_type_by_updated_at(AuditLog, results_limit=limit, ascending=False)
+            logs = self.audit_memory.list_type_by_updated_at(AuditLog, results_limit=limit, ascending=False)
 
             return logs.as_list()
