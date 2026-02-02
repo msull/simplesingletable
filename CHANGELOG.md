@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [16.4.0] 2026-02-02
+
+### Added
+
+* **Batch Read Support**: Added `batch_get_existing()` method to both `DynamoDbMemory` and `LocalStorageMemory` for efficient multi-ID lookups:
+    - Returns `dict[str, T]` mapping resource_id to resource (missing IDs absent from result)
+    - Automatic deduplication of input IDs
+    - Auto-chunking into batches of 100 (DynamoDB `batch_get_item` limit)
+    - Automatic retry of `UnprocessedKeys` with backoff
+    - Works with both versioned and non-versioned resources (fetches current version for versioned)
+    - `LocalStorageMemory` implementation provides API parity via simple loop
+
+* **Repository-Level TTL Caching**: Added opt-in caching to all repository classes via new `cache_ttl_seconds` parameter:
+    - **`ResourceRepository`**: Cache integrated with `get()`, `create()`, `update()`, `delete()`, and new `batch_get()`
+    - **`VersionedResourceRepository`**: Passes `cache_ttl_seconds` through to parent; `restore_version()` benefits automatically via `update()`
+    - **`ReadOnlyResourceRepository`**: Cache integrated with `get()` and new `batch_get()`
+    - **`ReadOnlyVersionedResourceRepository`**: Passes `cache_ttl_seconds` through to parent
+    - Cache disabled by default (no overhead when not configured)
+    - Automatic invalidation on writes (create populates, update refreshes, delete removes)
+    - `batch_get()` checks cache first, fetches only missing IDs from DynamoDB, then populates cache with results
+    - `clear_cache()` method for manual invalidation
+
+* **TTLCache Utility Class**: New `TTLCache` class in `simplesingletable.extras.cache` (exported from `simplesingletable.extras`):
+    - Stdlib-only, no external dependencies
+    - Uses `time.monotonic()` for TTL (immune to system clock changes)
+    - Lazy eviction on access (no background threads)
+    - Defensive copying on both `put()` and `get()` to prevent callers from mutating cached state
+    - Accepts optional `copy_fn` parameter (repositories use Pydantic `model_copy(deep=True)` by default)
+    - Methods: `get()`, `get_many()`, `put()`, `put_many()`, `invalidate()`, `clear()`
+
+* **Internal Refactor**: Extracted `_build_blob_placeholders()` helper in `DynamoDbMemory`, shared by `get_existing()` and `batch_get_existing()`
+
+    Example usage:
+    ```python
+    from simplesingletable.extras import ResourceRepository, TTLCache
+
+    # Repository with 5-minute cache
+    repo = ResourceRepository(
+        ddb=memory,
+        model_class=User,
+        create_schema_class=CreateUserSchema,
+        update_schema_class=UpdateUserSchema,
+        cache_ttl_seconds=300,
+    )
+
+    # Batch get - uses cache for hits, fetches only missing from DDB
+    users = repo.batch_get(["id1", "id2", "id3"])
+
+    # Single get - served from cache if available
+    user = repo.get("id1")
+
+    # Writes automatically update cache
+    repo.update("id1", {"name": "New Name"})
+
+    # Manual cache clear
+    repo.clear_cache()
+
+    # Direct memory-level batch get (no cache)
+    results = memory.batch_get_existing(["id1", "id2"], User)
+    ```
+
 ## [16.3.0] 2025-10-28
 
 ### Added

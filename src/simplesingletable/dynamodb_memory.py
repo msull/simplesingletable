@@ -139,6 +139,7 @@ class DynamoDbMemory:
     audit_connection_params: Optional[dict] = None
     _dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _dynamodb_table: Optional["Table"] = field(default=None, init=False)
+    _dynamodb_resource: Optional[Any] = field(default=None, init=False)
     _audit_dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _audit_dynamodb_table: Optional["Table"] = field(default=None, init=False)
     _s3_blob_storage: Optional["S3BlobStorage"] = field(default=None, init=False)
@@ -170,36 +171,7 @@ class DynamoDbMemory:
         response = self.dynamodb_table.get_item(Key=key, ConsistentRead=consistent_read)
         item = response.get("Item")
         if item:
-            # Build blob placeholders if blob fields are present
-            blob_placeholders = {}
-            if "_blob_fields" in item and self.s3_blob_storage:
-                blob_fields_config = data_class.resource_config.get("blob_fields", {}) or {}
-                blob_versions = item.get("_blob_versions", {})
-
-                for field_name in item["_blob_fields"]:
-                    if field_name in blob_fields_config:
-                        # Only create placeholder if this field has a blob stored
-                        # Check _blob_versions for versioned resources, or just field presence for non-versioned
-                        if issubclass(data_class, DynamoDbVersionedResource):
-                            # For versioned resources, check if field has a version reference
-                            if field_name not in blob_versions:
-                                continue  # No blob stored for this field
-
-                        # Build placeholder for this blob field
-                        s3_key = self.s3_blob_storage._build_s3_key(
-                            resource_type=data_class.__name__,
-                            resource_id=existing_id,
-                            field_name=field_name,
-                            version=version if issubclass(data_class, DynamoDbVersionedResource) else None,
-                        )
-                        blob_placeholders[field_name] = BlobPlaceholder(
-                            field_name=field_name,
-                            s3_key=s3_key,
-                            size_bytes=0,  # We don't track size in current implementation
-                            content_type=blob_fields_config[field_name].get("content_type"),
-                            compressed=blob_fields_config[field_name].get("compress", False),
-                        )
-
+            blob_placeholders = self._build_blob_placeholders(item, data_class, existing_id, version)
             resource = data_class.from_dynamodb_item(item, blob_placeholders)
 
             # Load blobs if requested
@@ -207,6 +179,127 @@ class DynamoDbMemory:
                 resource.load_blob_fields(self)
 
             return resource
+
+    def _build_blob_placeholders(
+        self,
+        item: dict,
+        data_class: Type[AnyDbResource],
+        resource_id: str,
+        version: int = 0,
+    ) -> dict[str, BlobPlaceholder]:
+        """Build blob placeholders for a DynamoDB item.
+
+        Args:
+            item: Raw DynamoDB item dict
+            data_class: The resource class
+            resource_id: The resource ID
+            version: Version number (0 for current/non-versioned)
+
+        Returns:
+            Dict of field_name -> BlobPlaceholder
+        """
+        blob_placeholders: dict[str, BlobPlaceholder] = {}
+        if "_blob_fields" not in item or not self.s3_blob_storage:
+            return blob_placeholders
+
+        blob_fields_config = data_class.resource_config.get("blob_fields", {}) or {}
+        blob_versions = item.get("_blob_versions", {})
+
+        for field_name in item["_blob_fields"]:
+            if field_name in blob_fields_config:
+                if issubclass(data_class, DynamoDbVersionedResource):
+                    if field_name not in blob_versions:
+                        continue
+
+                s3_key = self.s3_blob_storage._build_s3_key(
+                    resource_type=data_class.__name__,
+                    resource_id=resource_id,
+                    field_name=field_name,
+                    version=version if issubclass(data_class, DynamoDbVersionedResource) else None,
+                )
+                blob_placeholders[field_name] = BlobPlaceholder(
+                    field_name=field_name,
+                    s3_key=s3_key,
+                    size_bytes=0,
+                    content_type=blob_fields_config[field_name].get("content_type"),
+                    compressed=blob_fields_config[field_name].get("compress", False),
+                )
+        return blob_placeholders
+
+    def batch_get_existing(
+        self,
+        ids: list[str],
+        data_class: Type[AnyDbResource],
+        consistent_read: bool = False,
+        load_blobs: bool = False,
+    ) -> dict[str, AnyDbResource]:
+        """Batch-get multiple resources by ID. Returns only found items.
+
+        Args:
+            ids: List of resource IDs to fetch
+            data_class: The resource class to deserialize into
+            consistent_read: Whether to use strongly consistent reads
+            load_blobs: If True, blob fields will be loaded from S3
+
+        Returns:
+            Dict mapping resource_id -> resource for found items only.
+            Missing IDs are absent from the dict.
+        """
+        if not ids:
+            return {}
+
+        # Deduplicate
+        unique_ids = list(dict.fromkeys(ids))
+
+        # Build keys - version 0 for versioned resources (current version)
+        keys = []
+        for rid in unique_ids:
+            if issubclass(data_class, DynamoDbVersionedResource):
+                keys.append(data_class.dynamodb_lookup_keys_from_id(rid, version=0))
+            elif issubclass(data_class, DynamoDbResource):
+                keys.append(data_class.dynamodb_lookup_keys_from_id(rid))
+            else:
+                raise ValueError("Invalid data_class provided")
+
+        # Ensure the dynamodb resource is initialized
+        _ = self.dynamodb_table
+
+        results: dict[str, AnyDbResource] = {}
+        chunk_size = 100  # DynamoDB batch_get_item limit
+
+        for i in range(0, len(keys), chunk_size):
+            chunk_keys = keys[i : i + chunk_size]
+            request_items = {
+                self.table_name: {
+                    "Keys": chunk_keys,
+                    "ConsistentRead": consistent_read,
+                }
+            }
+
+            while request_items:
+                response = self._dynamodb_resource.batch_get_item(RequestItems=request_items)
+                items = response.get("Responses", {}).get(self.table_name, [])
+
+                prefix = data_class.get_unique_key_prefix() + "#"
+                for item in items:
+                    resource_id = item["pk"].removeprefix(prefix)
+                    blob_placeholders = self._build_blob_placeholders(item, data_class, resource_id, version=0)
+                    resource = data_class.from_dynamodb_item(item, blob_placeholders)
+
+                    if load_blobs and resource and resource.has_unloaded_blobs():
+                        resource.load_blob_fields(self)
+
+                    results[resource_id] = resource
+
+                # Handle unprocessed keys with backoff
+                unprocessed = response.get("UnprocessedKeys", {})
+                if unprocessed and self.table_name in unprocessed:
+                    request_items = unprocessed
+                    time.sleep(0.1)
+                else:
+                    request_items = None
+
+        return results
 
     def read_existing(
         self,
@@ -296,6 +389,7 @@ class DynamoDbMemory:
         if not self._dynamodb_table:
             kwargs = self.connection_params or {}
             dynamodb = boto3.resource("dynamodb", endpoint_url=self.endpoint_url, **kwargs)
+            self._dynamodb_resource = dynamodb
             self._dynamodb_table = dynamodb.Table(self.table_name)
         return self._dynamodb_table
 

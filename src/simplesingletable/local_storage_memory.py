@@ -263,6 +263,36 @@ class LocalStorageMemory:
 
             return resource
 
+    def batch_get_existing(
+        self,
+        ids: list[str],
+        data_class: Type[AnyDbResource],
+        consistent_read: bool = False,
+        load_blobs: bool = False,
+    ) -> dict[str, AnyDbResource]:
+        """Batch-get multiple resources by ID. Returns only found items.
+
+        Simple loop implementation for API parity with DynamoDbMemory.
+
+        Args:
+            ids: List of resource IDs to fetch
+            data_class: The resource class to deserialize into
+            consistent_read: Whether to use strongly consistent reads (ignored locally)
+            load_blobs: If True, blob fields will be loaded from local storage
+
+        Returns:
+            Dict mapping resource_id -> resource for found items only.
+        """
+        if not ids:
+            return {}
+
+        results: dict[str, AnyDbResource] = {}
+        for rid in dict.fromkeys(ids):  # deduplicate while preserving order
+            resource = self.get_existing(rid, data_class, consistent_read=consistent_read, load_blobs=load_blobs)
+            if resource is not None:
+                results[rid] = resource
+        return results
+
     def read_existing(
         self,
         existing_id: str,

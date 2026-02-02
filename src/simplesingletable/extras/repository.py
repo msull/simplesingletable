@@ -40,11 +40,13 @@ Example:
 """
 
 import logging
-from typing import Any, Callable, List, Optional, Set, Type, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Set, Type, TypeVar
 
 from pydantic import BaseModel
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
+
+from .cache import TTLCache
 
 # helper names
 CreateSchema = BaseModel
@@ -67,6 +69,7 @@ class ResourceRepository:
         logger: Optional[logging.Logger] = None,
         default_create_obj_fn: Optional[Callable[[str], CreateSchemaType]] = None,
         override_id_fn: Optional[Callable[[CreateSchemaType], str]] = None,
+        cache_ttl_seconds: Optional[int] = None,
     ):
         self.ddb = ddb
         self.model_class = model_class
@@ -75,6 +78,11 @@ class ResourceRepository:
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.default_create_object_fn = default_create_obj_fn
         self.override_id_fn = override_id_fn
+        self._cache: Optional[TTLCache] = (
+            TTLCache(cache_ttl_seconds, copy_fn=lambda v: v.model_copy(deep=True))
+            if cache_ttl_seconds and cache_ttl_seconds > 0
+            else None
+        )
 
     def create(
         self,
@@ -182,6 +190,46 @@ class ResourceRepository:
         obj = self.read(id)
         return self._delete(obj, changed_by=changed_by, audit_metadata=audit_metadata)
 
+    def batch_get(self, ids: list[str]) -> Dict[str, T]:
+        """
+        Retrieve multiple records by their identifiers. Returns only found items.
+
+        Uses cache for hits when caching is enabled, and only fetches missing
+        IDs from the database.
+
+        Args:
+            ids: List of resource IDs to fetch
+
+        Returns:
+            Dict mapping resource_id -> resource for found items only.
+        """
+        self.logger.debug(f"Batch getting {self.model_class.__name__} with {len(ids)} ids")
+        if not ids:
+            return {}
+
+        results: Dict[str, T] = {}
+        ids_to_fetch: list[str] = []
+
+        if self._cache:
+            cached = self._cache.get_many(ids)
+            results.update(cached)
+            ids_to_fetch = [rid for rid in ids if rid not in cached]
+        else:
+            ids_to_fetch = list(ids)
+
+        if ids_to_fetch:
+            fetched = self.ddb.batch_get_existing(ids_to_fetch, self.model_class)
+            results.update(fetched)
+            if self._cache and fetched:
+                self._cache.put_many(fetched)
+
+        return results
+
+    def clear_cache(self) -> None:
+        """Clear the repository cache."""
+        if self._cache:
+            self._cache.clear()
+
     def list(self, limit: Optional[int] = None) -> List[T]:
         """
         List all records of this type, with optional limit.
@@ -202,16 +250,26 @@ class ResourceRepository:
             final_override_id = self.override_id_fn(obj_in)
         else:
             final_override_id = None
-        return self.ddb.create_new(
+        result = self.ddb.create_new(
             self.model_class,
             obj_in,
             override_id=final_override_id,
             changed_by=changed_by,
             audit_metadata=audit_metadata,
         )
+        if self._cache:
+            self._cache.put(str(result.resource_id), result)
+        return result
 
     def _get(self, id: Any) -> Optional[T]:
-        return self.ddb.get_existing(id, self.model_class)
+        if self._cache:
+            cached = self._cache.get(str(id))
+            if cached is not None:
+                return cached
+        result = self.ddb.get_existing(id, self.model_class)
+        if result is not None and self._cache:
+            self._cache.put(str(id), result)
+        return result
 
     def _update(
         self,
@@ -221,16 +279,21 @@ class ResourceRepository:
         changed_by: Optional[str] = None,
         audit_metadata: Optional[dict] = None,
     ) -> T:
-        return self.ddb.update_existing(
+        result = self.ddb.update_existing(
             existing_obj,
             obj_in,
             clear_fields=clear_fields,
             changed_by=changed_by,
             audit_metadata=audit_metadata,
         )
+        if self._cache:
+            self._cache.put(str(result.resource_id), result)
+        return result
 
     def _delete(self, obj: T, changed_by: Optional[str] = None, audit_metadata: Optional[dict] = None) -> None:
         self.ddb.delete_existing(obj, changed_by=changed_by, audit_metadata=audit_metadata)
+        if self._cache:
+            self._cache.invalidate(str(obj.resource_id))
 
     def _list(self, limit: Optional[int]) -> List[T]:
         result = self.ddb.list_type_by_updated_at(self.model_class, results_limit=limit)

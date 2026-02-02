@@ -80,6 +80,7 @@ class VersionedResourceRepository(ResourceRepository):
         logger: Optional[logging.Logger] = None,
         default_create_obj_fn=None,
         override_id_fn=None,
+        cache_ttl_seconds: Optional[int] = None,
     ):
         if not issubclass(model_class, DynamoDbVersionedResource):
             raise ValueError("VersionedResourceRepository can only be used with DynamoDbVersionedResource models")
@@ -92,6 +93,7 @@ class VersionedResourceRepository(ResourceRepository):
             logger=logger,
             default_create_obj_fn=default_create_obj_fn,
             override_id_fn=override_id_fn,
+            cache_ttl_seconds=cache_ttl_seconds,
         )
 
     def list_versions(self, item_id: str) -> List[VersionInfo]:

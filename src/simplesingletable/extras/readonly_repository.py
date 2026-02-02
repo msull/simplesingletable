@@ -30,9 +30,11 @@ Example:
 """
 
 import logging
-from typing import Any, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
+
+from .cache import TTLCache
 
 Resource = DynamoDbResource
 VersionedResource = DynamoDbVersionedResource
@@ -48,6 +50,7 @@ class ReadOnlyResourceRepository:
         ddb: DynamoDbMemory,
         model_class: Type[T],
         logger: Optional[logging.Logger] = None,
+        cache_ttl_seconds: Optional[int] = None,
     ):
         """Initialize a read-only repository.
 
@@ -55,10 +58,16 @@ class ReadOnlyResourceRepository:
             ddb: DynamoDbMemory instance for database access
             model_class: The resource model class to work with
             logger: Optional logger instance
+            cache_ttl_seconds: Optional TTL for cache entries. When set and > 0, enables caching.
         """
         self.ddb = ddb
         self.model_class = model_class
         self.logger = logger or logging.getLogger(self.__class__.__name__)
+        self._cache: Optional[TTLCache] = (
+            TTLCache(cache_ttl_seconds, copy_fn=lambda v: v.model_copy(deep=True))
+            if cache_ttl_seconds and cache_ttl_seconds > 0
+            else None
+        )
 
     def get(self, id: Any) -> Optional[T]:
         """
@@ -93,6 +102,46 @@ class ReadOnlyResourceRepository:
             raise ValueError(f"{self.model_class.__name__} with id {id} not found")
         return obj
 
+    def batch_get(self, ids: list[str]) -> Dict[str, T]:
+        """
+        Retrieve multiple records by their identifiers. Returns only found items.
+
+        Uses cache for hits when caching is enabled, and only fetches missing
+        IDs from the database.
+
+        Args:
+            ids: List of resource IDs to fetch
+
+        Returns:
+            Dict mapping resource_id -> resource for found items only.
+        """
+        self.logger.debug(f"Batch getting {self.model_class.__name__} with {len(ids)} ids")
+        if not ids:
+            return {}
+
+        results: Dict[str, T] = {}
+        ids_to_fetch: list[str] = []
+
+        if self._cache:
+            cached = self._cache.get_many(ids)
+            results.update(cached)
+            ids_to_fetch = [rid for rid in ids if rid not in cached]
+        else:
+            ids_to_fetch = list(ids)
+
+        if ids_to_fetch:
+            fetched = self.ddb.batch_get_existing(ids_to_fetch, self.model_class)
+            results.update(fetched)
+            if self._cache and fetched:
+                self._cache.put_many(fetched)
+
+        return results
+
+    def clear_cache(self) -> None:
+        """Clear the repository cache."""
+        if self._cache:
+            self._cache.clear()
+
     def list(self, limit: Optional[int] = None) -> List[T]:
         """
         List all records of this type, with optional limit.
@@ -108,7 +157,14 @@ class ReadOnlyResourceRepository:
 
     def _get(self, id: Any) -> Optional[T]:
         """Internal method to retrieve a resource."""
-        return self.ddb.get_existing(id, self.model_class)
+        if self._cache:
+            cached = self._cache.get(str(id))
+            if cached is not None:
+                return cached
+        result = self.ddb.get_existing(id, self.model_class)
+        if result is not None and self._cache:
+            self._cache.put(str(id), result)
+        return result
 
     def _list(self, limit: Optional[int]) -> List[T]:
         """Internal method to list resources."""

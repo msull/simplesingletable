@@ -63,6 +63,7 @@ class ReadOnlyVersionedResourceRepository(ReadOnlyResourceRepository):
         ddb: DynamoDbMemory,
         model_class: Type[T],
         logger: Optional[logging.Logger] = None,
+        cache_ttl_seconds: Optional[int] = None,
     ):
         """Initialize a read-only versioned repository.
 
@@ -70,6 +71,7 @@ class ReadOnlyVersionedResourceRepository(ReadOnlyResourceRepository):
             ddb: DynamoDbMemory instance for database access
             model_class: The versioned resource model class to work with
             logger: Optional logger instance
+            cache_ttl_seconds: Optional TTL for cache entries. When set and > 0, enables caching.
 
         Raises:
             ValueError: If model_class is not a DynamoDbVersionedResource
@@ -83,6 +85,7 @@ class ReadOnlyVersionedResourceRepository(ReadOnlyResourceRepository):
             ddb=ddb,
             model_class=model_class,
             logger=logger,
+            cache_ttl_seconds=cache_ttl_seconds,
         )
 
     def list_versions(self, item_id: str) -> List[VersionInfo]:
