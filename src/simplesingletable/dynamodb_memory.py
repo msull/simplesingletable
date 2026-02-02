@@ -1,4 +1,5 @@
 import decimal
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -895,6 +896,271 @@ class DynamoDbMemory:
                         version=resource.version,
                         field_annotation=field_annotation,
                     )
+
+    def _update_blob_metadata_on_dynamodb(
+        self,
+        resource: AnyDbResource,
+        field_name: str,
+        blob_version: Optional[int] = None,
+    ) -> None:
+        """Update DynamoDB blob metadata after a copy/register operation.
+
+        Args:
+            resource: The resource to update metadata for
+            field_name: The blob field name being added/updated
+            blob_version: The blob version reference (for versioned resources)
+        """
+        # Read current blob metadata from DynamoDB to merge with
+        if isinstance(resource, DynamoDbVersionedResource):
+            lookup_key = resource.dynamodb_lookup_keys_from_id(resource.resource_id, version=0)
+        else:
+            lookup_key = resource.dynamodb_lookup_keys_from_id(resource.resource_id)
+
+        current_item = self.dynamodb_table.get_item(
+            Key=lookup_key,
+            ProjectionExpression="#bf, #bv",
+            ExpressionAttributeNames={"#bf": "_blob_fields", "#bv": "_blob_versions"},
+        ).get("Item", {})
+
+        existing_blob_fields = list(current_item.get("_blob_fields", []))
+        if field_name not in existing_blob_fields:
+            existing_blob_fields.append(field_name)
+
+        if isinstance(resource, DynamoDbVersionedResource):
+            # Compute new _blob_versions by merging DB state with in-memory state
+            new_blob_versions = dict(current_item.get("_blob_versions", {}))
+            new_blob_versions.update(resource._blob_versions)
+            if blob_version is not None:
+                new_blob_versions[field_name] = blob_version
+
+            pk = f"{resource.get_unique_key_prefix()}#{resource.resource_id}"
+            update_expr = "SET #bf = :bf, #bv = :bv"
+            expr_names = {"#bf": "_blob_fields", "#bv": "_blob_versions"}
+            expr_values = {":bf": existing_blob_fields, ":bv": new_blob_versions}
+
+            transact_write_safe(
+                self.dynamodb_client,
+                [
+                    {
+                        "Update": {
+                            "TableName": self.table_name,
+                            "Key": marshall({"pk": pk, "sk": "v0"}),
+                            "UpdateExpression": update_expr,
+                            "ExpressionAttributeNames": expr_names,
+                            "ExpressionAttributeValues": marshall(expr_values),
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": self.table_name,
+                            "Key": marshall({"pk": pk, "sk": f"v{resource.version}"}),
+                            "UpdateExpression": update_expr,
+                            "ExpressionAttributeNames": expr_names,
+                            "ExpressionAttributeValues": marshall(expr_values),
+                        }
+                    },
+                ],
+            )
+        else:
+            # Non-versioned: single update_item
+            self.dynamodb_table.update_item(
+                Key=resource.dynamodb_lookup_keys_from_id(resource.resource_id),
+                UpdateExpression="SET #bf = :bf",
+                ExpressionAttributeNames={"#bf": "_blob_fields"},
+                ExpressionAttributeValues={":bf": existing_blob_fields},
+            )
+
+    def copy_blob(
+        self,
+        source_resource: AnyDbResource,
+        source_field: str,
+        target_resource: AnyDbResource,
+        target_field: str,
+        delete_source: bool = False,
+    ) -> BlobPlaceholder:
+        """Server-side copy of a blob field between resources.
+
+        Performs an S3 server-side copy (zero Lambda memory) of a blob field
+        from one resource to another.
+
+        Args:
+            source_resource: Resource containing the source blob
+            source_field: Name of the source blob field
+            target_resource: Resource to copy the blob to
+            target_field: Name of the target blob field
+            delete_source: If True, delete the source blob after copy (move semantics)
+
+        Returns:
+            BlobPlaceholder for the newly copied blob
+
+        Raises:
+            ValueError: If S3 not configured, fields not in blob_fields config,
+                        source blob not found, or self-copy detected
+        """
+        # Validate S3 is configured
+        if not self.s3_blob_storage:
+            raise ValueError("S3 blob storage not configured")
+
+        # Validate source field
+        source_blob_config = source_resource.resource_config.get("blob_fields", {}) or {}
+        if source_field not in source_blob_config:
+            raise ValueError(
+                f"Field '{source_field}' is not configured as a blob field on {source_resource.__class__.__name__}"
+            )
+
+        # Validate target field
+        target_blob_config = target_resource.resource_config.get("blob_fields", {}) or {}
+        if target_field not in target_blob_config:
+            raise ValueError(
+                f"Field '{target_field}' is not configured as a blob field on {target_resource.__class__.__name__}"
+            )
+
+        # Self-copy guard
+        if (
+            source_resource.resource_id == target_resource.resource_id
+            and source_resource.__class__ == target_resource.__class__
+            and source_field == target_field
+        ):
+            raise ValueError("Cannot copy a blob to the same resource and field")
+
+        # Determine source version
+        source_version = None
+        if isinstance(source_resource, DynamoDbVersionedResource):
+            source_version = source_resource._blob_versions.get(source_field, source_resource.version)
+
+        # Validate source blob exists and get its metadata
+        source_head = self.s3_blob_storage.head_blob(
+            resource_type=source_resource.__class__.__name__,
+            resource_id=source_resource.resource_id,
+            field_name=source_field,
+            version=source_version,
+        )
+
+        # Determine target version
+        target_version = None
+        if isinstance(target_resource, DynamoDbVersionedResource):
+            target_version = target_resource.version
+
+        # Check compression mismatch
+        target_compress = target_blob_config[target_field].get("compress", False)
+        if source_head["compressed"] != target_compress:
+            logging.getLogger(__name__).warning(
+                f"Compression mismatch: source blob '{source_field}' compressed={source_head['compressed']}, "
+                f"target field '{target_field}' config compress={target_compress}. "
+                f"Blob will be copied as-is; get_blob reads compression from S3 metadata."
+            )
+
+        # Perform server-side copy
+        placeholder = self.s3_blob_storage.copy_blob_object(
+            source_s3_key=source_head["s3_key"],
+            target_resource_type=target_resource.__class__.__name__,
+            target_resource_id=target_resource.resource_id,
+            target_field_name=target_field,
+            target_version=target_version,
+            compressed=source_head["compressed"],
+            content_type=source_head["content_type"],
+        )
+
+        # Update DynamoDB metadata
+        self._update_blob_metadata_on_dynamodb(target_resource, target_field, target_version)
+
+        # Update target resource in-memory
+        target_resource._blob_placeholders[target_field] = placeholder
+        if target_version is not None:
+            target_resource._blob_versions[target_field] = target_version
+        setattr(target_resource, target_field, None)
+
+        # Optionally delete source
+        if delete_source:
+            self.s3_blob_storage.delete_blob(
+                resource_type=source_resource.__class__.__name__,
+                resource_id=source_resource.resource_id,
+                field_name=source_field,
+                version=source_version,
+            )
+
+        return placeholder
+
+    def register_external_blob(
+        self,
+        resource: AnyDbResource,
+        field_name: str,
+        source_s3_key: str,
+        content_type: Optional[str] = None,
+        compressed: bool = False,
+        source_bucket: Optional[str] = None,
+        delete_source: bool = False,
+    ) -> BlobPlaceholder:
+        """Register an arbitrary S3 object as a blob field on a resource.
+
+        Copies from an arbitrary S3 key/bucket to the resource's canonical blob
+        location and updates DynamoDB metadata.
+
+        Args:
+            resource: Resource to register the blob on
+            field_name: Name of the blob field
+            source_s3_key: Full S3 key of the source object
+            content_type: Content type of the source object
+            compressed: Whether the source object is gzip-compressed
+            source_bucket: Source bucket (defaults to managed bucket)
+            delete_source: If True, delete source object after copy
+
+        Returns:
+            BlobPlaceholder for the registered blob
+
+        Raises:
+            ValueError: If S3 not configured, field not in blob_fields config,
+                        or source object not found
+        """
+        # Validate S3 is configured
+        if not self.s3_blob_storage:
+            raise ValueError("S3 blob storage not configured")
+
+        # Validate target field
+        blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
+        if field_name not in blob_fields_config:
+            raise ValueError(f"Field '{field_name}' is not configured as a blob field on {resource.__class__.__name__}")
+
+        # Validate source exists
+        effective_bucket = source_bucket or self.s3_blob_storage.bucket_name
+        try:
+            self.s3_blob_storage.s3_client.head_object(Bucket=effective_bucket, Key=source_s3_key)
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                raise ValueError(f"Source S3 object not found: s3://{effective_bucket}/{source_s3_key}") from e
+            raise
+
+        # Determine target version
+        target_version = None
+        if isinstance(resource, DynamoDbVersionedResource):
+            target_version = resource.version
+
+        # Perform server-side copy
+        placeholder = self.s3_blob_storage.copy_blob_object(
+            source_s3_key=source_s3_key,
+            target_resource_type=resource.__class__.__name__,
+            target_resource_id=resource.resource_id,
+            target_field_name=field_name,
+            target_version=target_version,
+            compressed=compressed,
+            content_type=content_type,
+            source_bucket=source_bucket,
+        )
+
+        # Update DynamoDB metadata
+        self._update_blob_metadata_on_dynamodb(resource, field_name, target_version)
+
+        # Update resource in-memory
+        resource._blob_placeholders[field_name] = placeholder
+        if target_version is not None:
+            resource._blob_versions[field_name] = target_version
+        setattr(resource, field_name, None)
+
+        # Optionally delete source
+        if delete_source:
+            self.s3_blob_storage.s3_client.delete_object(Bucket=effective_bucket, Key=source_s3_key)
+
+        return placeholder
 
     def list_type_by_updated_at(
         self,

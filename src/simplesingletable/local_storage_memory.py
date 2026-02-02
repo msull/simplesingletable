@@ -3,6 +3,7 @@
 import base64
 import fcntl
 import json
+import logging
 import os
 import sys
 import time
@@ -867,6 +868,240 @@ class LocalStorageMemory:
 
             data[storage_key] = item
             self._save_data(f, data)
+
+    def _update_blob_metadata_local(
+        self,
+        resource: AnyDbResource,
+        field_name: str,
+        blob_version: Optional[int] = None,
+    ) -> None:
+        """Update local storage blob metadata after a copy/register operation.
+
+        Args:
+            resource: The resource to update metadata for
+            field_name: The blob field name being added/updated
+            blob_version: The blob version reference (for versioned resources)
+        """
+        file_path = self._get_resource_file_path(resource.__class__)
+
+        with self._lock_and_load(file_path) as (data, f):
+            if isinstance(resource, DynamoDbVersionedResource):
+                pk = f"{resource.get_unique_key_prefix()}#{resource.resource_id}"
+                v0_key = self._make_storage_key(pk, "v0")
+
+                # Read existing blob metadata from storage to merge
+                current_item = data.get(v0_key, {})
+                existing_blob_fields = list(current_item.get("_blob_fields", []))
+                if field_name not in existing_blob_fields:
+                    existing_blob_fields.append(field_name)
+
+                # Merge blob versions from storage + in-memory + new
+                new_blob_versions = dict(current_item.get("_blob_versions", {}))
+                new_blob_versions.update(resource._blob_versions)
+                if blob_version is not None:
+                    new_blob_versions[field_name] = blob_version
+
+                # Update v0 item
+                if v0_key in data:
+                    data[v0_key]["_blob_fields"] = existing_blob_fields
+                    data[v0_key]["_blob_versions"] = new_blob_versions
+
+                # Update version item
+                vn_key = self._make_storage_key(pk, f"v{resource.version}")
+                if vn_key in data:
+                    data[vn_key]["_blob_fields"] = existing_blob_fields
+                    data[vn_key]["_blob_versions"] = new_blob_versions
+            else:
+                # Non-versioned: single item - read existing blob fields from storage
+                key = resource.dynamodb_lookup_keys_from_id(resource.resource_id)
+                storage_key = self._make_storage_key(key["pk"], key["sk"])
+                current_item = data.get(storage_key, {})
+                existing_blob_fields = list(current_item.get("_blob_fields", []))
+                if field_name not in existing_blob_fields:
+                    existing_blob_fields.append(field_name)
+
+                if storage_key in data:
+                    data[storage_key]["_blob_fields"] = existing_blob_fields
+
+            self._save_data(f, data)
+
+    def copy_blob(
+        self,
+        source_resource: AnyDbResource,
+        source_field: str,
+        target_resource: AnyDbResource,
+        target_field: str,
+        delete_source: bool = False,
+    ) -> BlobPlaceholder:
+        """Copy a blob field between resources using local filesystem.
+
+        Args:
+            source_resource: Resource containing the source blob
+            source_field: Name of the source blob field
+            target_resource: Resource to copy the blob to
+            target_field: Name of the target blob field
+            delete_source: If True, delete the source blob after copy
+
+        Returns:
+            BlobPlaceholder for the newly copied blob
+        """
+        # Validate blob storage is configured
+        if not self.s3_blob_storage:
+            raise ValueError("Blob storage not configured")
+
+        # Validate source field
+        source_blob_config = source_resource.resource_config.get("blob_fields", {}) or {}
+        if source_field not in source_blob_config:
+            raise ValueError(
+                f"Field '{source_field}' is not configured as a blob field on {source_resource.__class__.__name__}"
+            )
+
+        # Validate target field
+        target_blob_config = target_resource.resource_config.get("blob_fields", {}) or {}
+        if target_field not in target_blob_config:
+            raise ValueError(
+                f"Field '{target_field}' is not configured as a blob field on {target_resource.__class__.__name__}"
+            )
+
+        # Self-copy guard
+        if (
+            source_resource.resource_id == target_resource.resource_id
+            and source_resource.__class__ == target_resource.__class__
+            and source_field == target_field
+        ):
+            raise ValueError("Cannot copy a blob to the same resource and field")
+
+        # Determine source version
+        source_version = None
+        if isinstance(source_resource, DynamoDbVersionedResource):
+            source_version = source_resource._blob_versions.get(source_field, source_resource.version)
+
+        # Validate source blob exists and get metadata
+        source_head = self.s3_blob_storage.head_blob(
+            resource_type=source_resource.__class__.__name__,
+            resource_id=source_resource.resource_id,
+            field_name=source_field,
+            version=source_version,
+        )
+
+        # Determine target version
+        target_version = None
+        if isinstance(target_resource, DynamoDbVersionedResource):
+            target_version = target_resource.version
+
+        # Check compression mismatch
+        target_compress = target_blob_config[target_field].get("compress", False)
+        if source_head["compressed"] != target_compress:
+            logging.getLogger(__name__).warning(
+                f"Compression mismatch: source blob '{source_field}' compressed={source_head['compressed']}, "
+                f"target field '{target_field}' config compress={target_compress}. "
+                f"Blob will be copied as-is."
+            )
+
+        # Perform copy
+        placeholder = self.s3_blob_storage.copy_blob_object(
+            source_s3_key=source_head["s3_key"],
+            target_resource_type=target_resource.__class__.__name__,
+            target_resource_id=target_resource.resource_id,
+            target_field_name=target_field,
+            target_version=target_version,
+            compressed=source_head["compressed"],
+            content_type=source_head["content_type"],
+        )
+
+        # Update local storage metadata
+        self._update_blob_metadata_local(target_resource, target_field, target_version)
+
+        # Update target resource in-memory
+        target_resource._blob_placeholders[target_field] = placeholder
+        if target_version is not None:
+            target_resource._blob_versions[target_field] = target_version
+        setattr(target_resource, target_field, None)
+
+        # Optionally delete source
+        if delete_source:
+            self.s3_blob_storage.delete_blob(
+                resource_type=source_resource.__class__.__name__,
+                resource_id=source_resource.resource_id,
+                field_name=source_field,
+                version=source_version,
+            )
+
+        return placeholder
+
+    def register_external_blob(
+        self,
+        resource: AnyDbResource,
+        field_name: str,
+        source_s3_key: str,
+        content_type: Optional[str] = None,
+        compressed: bool = False,
+        source_bucket: Optional[str] = None,
+        delete_source: bool = False,
+    ) -> BlobPlaceholder:
+        """Register an external file as a blob field on a resource.
+
+        For local storage, source_s3_key is interpreted as a local storage key
+        and source_bucket is ignored.
+
+        Args:
+            resource: Resource to register the blob on
+            field_name: Name of the blob field
+            source_s3_key: Storage key of the source file
+            content_type: Content type of the source file
+            compressed: Whether the source file is gzip-compressed
+            source_bucket: Ignored for local storage
+            delete_source: If True, delete source file after copy
+
+        Returns:
+            BlobPlaceholder for the registered blob
+        """
+        # Validate blob storage is configured
+        if not self.s3_blob_storage:
+            raise ValueError("Blob storage not configured")
+
+        # Validate target field
+        blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
+        if field_name not in blob_fields_config:
+            raise ValueError(f"Field '{field_name}' is not configured as a blob field on {resource.__class__.__name__}")
+
+        # Validate source exists
+        source_path = self.s3_blob_storage._key_to_path(source_s3_key)
+        if not source_path.exists():
+            raise ValueError(f"Source file not found: {source_s3_key}")
+
+        # Determine target version
+        target_version = None
+        if isinstance(resource, DynamoDbVersionedResource):
+            target_version = resource.version
+
+        # Perform copy
+        placeholder = self.s3_blob_storage.copy_blob_object(
+            source_s3_key=source_s3_key,
+            target_resource_type=resource.__class__.__name__,
+            target_resource_id=resource.resource_id,
+            target_field_name=field_name,
+            target_version=target_version,
+            compressed=compressed,
+            content_type=content_type,
+        )
+
+        # Update local storage metadata
+        self._update_blob_metadata_local(resource, field_name, target_version)
+
+        # Update resource in-memory
+        resource._blob_placeholders[field_name] = placeholder
+        if target_version is not None:
+            resource._blob_versions[field_name] = target_version
+        setattr(resource, field_name, None)
+
+        # Optionally delete source
+        if delete_source:
+            source_path.unlink(missing_ok=True)
+            meta_path = source_path.with_suffix(source_path.suffix + ".meta")
+            meta_path.unlink(missing_ok=True)
+
+        return placeholder
 
     def list_type_by_updated_at(
         self,

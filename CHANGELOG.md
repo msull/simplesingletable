@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [16.5.0] 2026-02-02
+
+### Added
+
+* **Server-Side S3 Blob Copy Operations**: Added `copy_blob()` and `register_external_blob()` methods to both `DynamoDbMemory` and `LocalStorageMemory` for efficient blob manipulation without downloading data to the client:
+    - **`copy_blob()`**: Server-side S3 copy of a blob field between resources with zero Lambda/client memory usage
+        - Supports copying between any combination of versioned and non-versioned resources
+        - Supports copying between different resource types
+        - Supports copying to a different field on the same resource
+        - Optional `delete_source=True` for move semantics
+        - Self-copy guard prevents copying a blob to the same resource+field
+        - Compression mismatch detection with warning (copies as-is since server-side copy cannot re-compress)
+        - Automatic DynamoDB metadata updates (`_blob_fields`, `_blob_versions`) on target resource
+        - Automatic cache invalidation on the target key
+        - In-memory resource state updated after copy
+    - **`register_external_blob()`**: Register an arbitrary S3 object as a blob field on a resource
+        - Copies from any S3 key/bucket to the resource's canonical blob location
+        - `source_bucket` parameter enables cross-bucket copies (defaults to managed bucket)
+        - `compressed` flag declares the compression state of the external object (stored in S3 metadata)
+        - Optional `delete_source=True` to clean up the external object after registration
+        - Full validation of field configuration and source object existence
+    - **Low-Level Storage Methods**:
+        - `S3BlobStorage.head_blob()`: `head_object()` wrapper returning size, compression state, content type, and metadata
+        - `S3BlobStorage.copy_blob_object()`: Server-side `copy_object()` with proper metadata replacement and cache invalidation
+        - `S3BlobStorage._cache_invalidate()`: Extracted single-key cache removal (refactored from `delete_blob`)
+        - `LocalBlobStorage.head_blob()`: Filesystem equivalent reading `.meta` companion file
+        - `LocalBlobStorage.copy_blob_object()`: Filesystem equivalent using `shutil.copy2`
+    - **DynamoDB Metadata Update Strategy**: Private helper `_update_blob_metadata_on_dynamodb()` reads current blob metadata from DynamoDB before merging, ensuring existing blob fields are preserved. Uses `transact_write_safe` for versioned resources (updates both v0 and vN items atomically).
+    - **Comprehensive Test Coverage**: 26 new tests in `tests/test_blob_copy.py` covering unit tests, integration tests, metadata verification, and cache invalidation
+
+    Example usage:
+    ```python
+# Copy a blob between resources (server-side, zero memory)
+memory.copy_blob(source_doc, "content", target_doc, "content")
+
+# Move a blob (copy + delete source)
+memory.copy_blob(source_doc, "content", target_doc, "content", delete_source=True)
+
+# Register an external S3 object as a blob field
+memory.register_external_blob(
+    resource=my_doc,
+    field_name="data",
+    source_s3_key="uploads/user-file.json",
+    content_type="application/json",
+    delete_source=True,  # clean up upload after registration
+)
+
+# Cross-bucket registration
+memory.register_external_blob(
+    resource=my_doc,
+    field_name="data",
+    source_s3_key="incoming/report.gz",
+    source_bucket="external-uploads-bucket",
+    compressed=True,
+)
+    ```
+
 ## [16.4.0] 2026-02-02
 
 ### Added

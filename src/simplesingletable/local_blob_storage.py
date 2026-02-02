@@ -181,6 +181,102 @@ class LocalBlobStorage:
 
         return result
 
+    def head_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> dict:
+        """Get metadata about a blob without reading its contents.
+
+        Returns:
+            Dict with keys: size_bytes, compressed, content_type, metadata, s3_key
+        """
+        s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
+        file_path = self._key_to_path(s3_key)
+
+        if not file_path.exists():
+            raise ValueError(f"Blob not found: {s3_key}")
+
+        size_bytes = file_path.stat().st_size
+
+        # Read metadata from companion file
+        metadata = {}
+        compressed = False
+        content_type = None
+        metadata_path = file_path.with_suffix(file_path.suffix + ".meta")
+        if metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text())
+            compressed = metadata.get("compressed", "False").lower() == "true"
+            content_type = metadata.get("content_type")
+
+        return {
+            "size_bytes": size_bytes,
+            "compressed": compressed,
+            "content_type": content_type,
+            "metadata": metadata,
+            "s3_key": s3_key,
+        }
+
+    def copy_blob_object(
+        self,
+        source_s3_key: str,
+        target_resource_type: str,
+        target_resource_id: str,
+        target_field_name: str,
+        target_version: Optional[int] = None,
+        compressed: bool = False,
+        content_type: Optional[str] = None,
+        source_bucket: Optional[str] = None,
+    ) -> "BlobPlaceholder":
+        """Copy a blob file to a new managed blob location.
+
+        Args:
+            source_s3_key: Storage key of the source blob
+            target_resource_type: Type name for the target blob
+            target_resource_id: Resource ID for the target blob
+            target_field_name: Field name for the target blob
+            target_version: Optional version number for versioned resources
+            compressed: Whether the source data is gzip-compressed
+            content_type: Content type for the target object
+            source_bucket: Ignored for local storage (kept for API parity)
+
+        Returns:
+            BlobPlaceholder with metadata about the copied blob
+        """
+        target_s3_key = self._build_s3_key(target_resource_type, target_resource_id, target_field_name, target_version)
+
+        source_path = self._key_to_path(source_s3_key)
+        target_path = self._key_to_path(target_s3_key)
+
+        if not source_path.exists():
+            raise ValueError(f"Source blob not found: {source_s3_key}")
+
+        # Create parent directories
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Copy blob file
+        shutil.copy2(str(source_path), str(target_path))
+
+        # Write new metadata companion file
+        target_metadata = {
+            "resource_type": target_resource_type,
+            "resource_id": target_resource_id,
+            "field_name": target_field_name,
+            "compressed": str(compressed),
+            "content_type": content_type,
+        }
+        if target_version is not None:
+            target_metadata["version"] = str(target_version)
+
+        metadata_path = target_path.with_suffix(target_path.suffix + ".meta")
+        metadata_path.write_text(json.dumps(target_metadata))
+
+        size_bytes = target_path.stat().st_size
+
+        return BlobPlaceholder(
+            field_name=target_field_name,
+            s3_key=target_s3_key,
+            size_bytes=size_bytes,
+            content_type=content_type,
+            compressed=compressed,
+        )
+
     def delete_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> None:
         """Delete a blob field from local filesystem."""
         s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)

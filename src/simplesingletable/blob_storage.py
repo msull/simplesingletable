@@ -348,18 +348,118 @@ class S3BlobStorage:
                 raise ValueError(f"Blob not found: {s3_key}") from e
             raise
 
-    def delete_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> None:
-        """Delete a blob field from S3 and remove from cache."""
-        s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
-
-        # Remove from cache
-        cache_key = self._cache_key(resource_type, resource_id, field_name, version)
+    def _cache_invalidate(self, cache_key: str) -> None:
+        """Remove a single cache entry by key."""
         with self._cache_lock:
             if cache_key in self._cache:
                 entry = self._cache[cache_key]
                 self._cache_stats.current_size_bytes -= entry.size_bytes
                 self._cache_stats.current_items -= 1
                 del self._cache[cache_key]
+
+    def head_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> dict:
+        """Get metadata about a blob without downloading it.
+
+        Returns:
+            Dict with keys: size_bytes, compressed, content_type, metadata
+        """
+        s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
+
+        try:
+            response = self.s3_client.head_object(Bucket=self.bucket_name, Key=s3_key)
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                raise ValueError(f"Blob not found: {s3_key}") from e
+            raise
+
+        metadata = response.get("Metadata", {})
+        return {
+            "size_bytes": response["ContentLength"],
+            "compressed": metadata.get("compressed", "False").lower() == "true",
+            "content_type": response.get("ContentType"),
+            "metadata": metadata,
+            "s3_key": s3_key,
+        }
+
+    def copy_blob_object(
+        self,
+        source_s3_key: str,
+        target_resource_type: str,
+        target_resource_id: str,
+        target_field_name: str,
+        target_version: Optional[int] = None,
+        compressed: bool = False,
+        content_type: Optional[str] = None,
+        source_bucket: Optional[str] = None,
+    ) -> BlobPlaceholder:
+        """Server-side copy of an S3 object to a managed blob key.
+
+        Args:
+            source_s3_key: Full S3 key of the source object
+            target_resource_type: Type name for the target blob
+            target_resource_id: Resource ID for the target blob
+            target_field_name: Field name for the target blob
+            target_version: Optional version number for versioned resources
+            compressed: Whether the source data is gzip-compressed
+            content_type: Content type for the target object
+            source_bucket: Source bucket (defaults to managed bucket)
+
+        Returns:
+            BlobPlaceholder with metadata about the copied blob
+        """
+        target_s3_key = self._build_s3_key(target_resource_type, target_resource_id, target_field_name, target_version)
+        source_bucket = source_bucket or self.bucket_name
+
+        # Build copy source
+        copy_source = {"Bucket": source_bucket, "Key": source_s3_key}
+
+        # Build metadata for the target object
+        target_metadata = {
+            "resource_type": target_resource_type,
+            "resource_id": target_resource_id,
+            "field_name": target_field_name,
+            "compressed": str(compressed),
+        }
+        if target_version is not None:
+            target_metadata["version"] = str(target_version)
+
+        # Build copy parameters
+        copy_params = {
+            "Bucket": self.bucket_name,
+            "Key": target_s3_key,
+            "CopySource": copy_source,
+            "Metadata": target_metadata,
+            "MetadataDirective": "REPLACE",
+        }
+        if content_type:
+            copy_params["ContentType"] = content_type
+
+        # Perform server-side copy
+        self.s3_client.copy_object(**copy_params)
+
+        # Get size of copied object
+        head_response = self.s3_client.head_object(Bucket=self.bucket_name, Key=target_s3_key)
+        size_bytes = head_response["ContentLength"]
+
+        # Invalidate any cached entry for the target key
+        cache_key = self._cache_key(target_resource_type, target_resource_id, target_field_name, target_version)
+        self._cache_invalidate(cache_key)
+
+        return BlobPlaceholder(
+            field_name=target_field_name,
+            s3_key=target_s3_key,
+            size_bytes=size_bytes,
+            content_type=content_type,
+            compressed=compressed,
+        )
+
+    def delete_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> None:
+        """Delete a blob field from S3 and remove from cache."""
+        s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
+
+        # Remove from cache
+        cache_key = self._cache_key(resource_type, resource_id, field_name, version)
+        self._cache_invalidate(cache_key)
 
         try:
             self.s3_client.delete_object(Bucket=self.bucket_name, Key=s3_key)
