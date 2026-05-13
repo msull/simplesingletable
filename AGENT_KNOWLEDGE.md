@@ -208,6 +208,21 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
 - `sk="v1"`, `sk="v2"`, etc. — actual version data
 - Updates create a new version item and update the v0 pointer
 
+### Internal Library Resources
+
+simplesingletable stores its own bookkeeping resources alongside application
+data, namespaced under `_INTERNAL`:
+
+| Resource     | pk shape                       | Purpose                                                              |
+|--------------|--------------------------------|----------------------------------------------------------------------|
+| `MemoryStats`| `_INTERNAL#MemoryStats`        | Counter of items per resource type; visible via `memory.get_stats()`. |
+| `AuditLog`   | `_INTERNAL#AuditLog#<ULID>`    | One row per CREATE/UPDATE/DELETE/RESTORE on an audit-enabled resource. |
+
+`AuditLog` rows can optionally be routed to a separate table via
+`audit_table_name` on `DynamoDbMemory`. When scanning the raw table for
+debugging, filter `begins_with(pk, "_INTERNAL#")` to see what the library is
+storing.
+
 ### Defining a Resource
 
 ```python
@@ -270,7 +285,44 @@ class ResourceConfig(TypedDict, total=False):
     ttl_field: str | None               # Field name containing TTL value
     ttl_attribute_name: str | None      # DynamoDB TTL attribute name (e.g., "ttl")
     audit_config: AuditConfig | None    # Audit logging configuration
+    omit_none_attributes: bool | None   # Drop None-valued fields before marshalling
 ```
+
+### omit_none_attributes — Optional fields and attribute_not_exists
+
+By default, Pydantic fields set to `None` are written to DynamoDB as
+`{"NULL": True}` attributes. boto3 treats those as **present**, so
+`attribute_not_exists(field)` returns False after the first PUT — even on a
+freshly created resource where the field was never set. Set
+`omit_none_attributes=True` to drop `None`-valued fields entirely, which is
+required for the natural "claim this slot" conditional-update pattern:
+
+```python
+class Asset(DynamoDbResource):
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        omit_none_attributes=True,
+    )
+
+    asset_tag: str
+    assigned_user_id: Optional[str] = None
+
+asset = memory.create_new(Asset, {"asset_tag": "X"})
+
+# Succeeds only when the slot is genuinely empty.
+with memory.transaction(auto_retry=False) as txn:
+    txn.update(
+        Asset,
+        resource_id=asset.resource_id,
+        updates={"assigned_user_id": "alice"},
+        condition="attribute_not_exists(assigned_user_id)",
+    )
+```
+
+The flag is off by default for backward compatibility. Recommended for any
+resource that uses `Optional` fields as slot markers or relies on
+`attribute_not_exists` in conditional writes. Has no effect on compressed
+(versioned) resources, since their fields live inside the gzipped `data`
+blob rather than as separate DynamoDB attributes.
 
 ### BlobFieldConfig
 
@@ -286,12 +338,34 @@ class BlobFieldConfig(TypedDict, total=False):
 ```python
 class AuditConfig(TypedDict, total=False):
     enabled: bool                       # Enable audit logging
-    track_field_changes: bool           # Track old/new values per field
+    track_field_changes: bool           # Track old/new values per field — needs an old_resource
     exclude_fields: set[str] | None     # Fields to exclude from audit
-    include_snapshot: bool              # Include full resource snapshot
+    include_snapshot: bool              # Include full resource snapshot on every audit row
     changed_by_required: bool | None    # Require changed_by parameter
     changed_by_field: str | None        # Field name for user/service identifier
 ```
+
+Field interactions (the non-obvious parts):
+
+- `track_field_changes=True` only produces a `changed_fields` diff on `UPDATE`
+  operations *and* only when the caller passes an `old_resource` (or the library
+  has one cached, e.g., from `txn.read(...)` or `txn.update(..., current=...)`).
+  Without an old_resource, `changed_fields` is silently `None`.
+- `include_snapshot=True` populates `resource_snapshot` on the audit row with a
+  full `model_dump` of the post-operation state (blob fields replaced with
+  metadata pointers). Independent of `track_field_changes` but recommended
+  alongside it, since a diff is only useful if the surrounding state is also
+  recoverable.
+
+"What you get" matrix:
+
+| `track_field_changes` | `include_snapshot` | `old_resource` provided | Audit row contains      |
+|-----------------------|--------------------|-------------------------|-------------------------|
+| False                 | False              | —                       | minimal: who/what/when  |
+| False                 | True               | —                       | full snapshot           |
+| True                  | False              | yes                     | diff only               |
+| True                  | False              | no                      | minimal (diff is None)  |
+| True                  | True               | yes                     | diff + full snapshot    |
 
 ### Full ResourceConfig Example
 
@@ -792,6 +866,10 @@ class PaginatedList(list[T]):
     query_time_ms: Optional[float]       # Total query time in milliseconds
     filter_efficiency: Optional[float]   # 0.0-1.0, % of scanned items that matched
     total_items_scanned: int = 0         # Total items examined across all API calls
+
+    @property
+    def pagination_key(self) -> Optional[str]:
+        """Alias for next_pagination_key; mirrors the query's input parameter name."""
 ```
 
 Usage:
@@ -1042,17 +1120,23 @@ from simplesingletable import AuditLogQuerier
 
 querier = AuditLogQuerier(memory)
 
-# Logs for a specific resource
+# Logs for a specific resource — hits INDEX_BY_RESOURCE directly.
 logs = querier.get_logs_for_resource("AuditedUser", user.resource_id)
 
-# Logs for a resource type
+# Logs for a resource type — hits INDEX_BY_TYPE directly.
 logs = querier.get_logs_for_resource_type("AuditedUser", limit=50)
 
-# Filter by operation
+# Filter by operation — INDEX_BY_TYPE + filter expression.
 logs = querier.get_logs_by_operation("AuditedUser", "UPDATE")
 
-# Filter by who made the change
+# Filter by who made the change — hits the sparse INDEX_BY_CHANGER directly
+# (no scan, no filter expression). Audit rows with changed_by=None are
+# absent from this index entirely.
 logs = querier.get_logs_by_changer("admin@example.com")
+
+# Same call with a resource_type filter falls back to INDEX_BY_TYPE +
+# filter expression, since there's no composite index for the combo.
+logs = querier.get_logs_by_changer("admin@example.com", resource_type="AuditedUser")
 
 # Date range filtering
 from datetime import datetime, timezone, timedelta
@@ -1063,18 +1147,65 @@ logs = querier.get_logs_for_resource_type(
 )
 ```
 
-### AuditLog Resource Fields
+`AuditLogQuerier(memory).audit_memory` delegates to `memory.audit_view`, so
+multiple queriers against the same `DynamoDbMemory` share a single secondary
+`DynamoDbMemory` view of the audit table (when `audit_table_name` is
+configured). `memory.audit_view` returns `memory` itself when audit rows live
+in the main table.
+
+### AuditLog Resource
 
 ```python
 class AuditLog(DynamoDbResource):
+    # Stored under pk = "_INTERNAL#AuditLog#<ULID>".
     audited_resource_type: str              # e.g., "AuditedUser"
     audited_resource_id: str
-    operation: str                          # "CREATE", "UPDATE", "DELETE", "RESTORE"
+    operation: str                          # "CREATE", "UPDATE", "DELETE", "RESTORE", or custom
     changed_by: Optional[str] = None
     changed_fields: Optional[dict] = None   # {"email": {"old": "old@x.com", "new": "new@x.com"}}
     resource_snapshot: Optional[dict] = None
     audit_metadata: dict = {}
+
+    # Index name constants — source of truth for query code.
+    INDEX_BY_RESOURCE = "gsi1"      # per resource_type + resource_id
+    INDEX_BY_TYPE = "gsi2"          # per resource_type
+    INDEX_BY_CHANGER = "gsi3"       # sparse: only rows with changed_by set
+    INDEX_BY_UPDATED_AT = "gsitype" # all audit rows, sorted by created_at
 ```
+
+Note that `AuditLog` uses the table's `gsi3` for its sparse `changed_by`
+index, so when audit rows live in the main application table, you'll see
+`_INTERNAL#AuditLog#changer#<user>` keys appearing in `gsi3pk`. This does
+not interfere with application resources' use of `gsi3` because the keys are
+namespaced under `_INTERNAL#AuditLog#`.
+
+### Manually Emitting Audit Rows
+
+For state managed outside the standard CRUD path — or to attach an audit
+event that isn't a CREATE/UPDATE/DELETE — use the public emission API:
+
+```python
+from simplesingletable import AuditEntry
+
+# Single row.
+memory.emit_audit_log(
+    operation="CUSTOM_EVENT",
+    resource=user,
+    changed_by="admin",
+    audit_metadata={"reason": "manual annotation"},
+    force=False,  # If True, emit even when audit_config is disabled on the resource.
+)
+
+# Batch via a single BatchWriteItem.
+memory.emit_audit_logs([
+    AuditEntry(operation="BACKFILL", resource=u, changed_by="batchjob")
+    for u in users_to_backfill
+])
+```
+
+The same functions are used internally by `create_new`, `update_existing`,
+`delete_existing`, and `transaction().commit()`, so manual emissions sit
+alongside automatic ones in the audit feed.
 
 ---
 
@@ -1183,19 +1314,199 @@ results = repo.batch_get(["id1", "id2", "id3"])
 
 ## 14. Transactions
 
-Atomic multi-item operations using DynamoDB transactions.
+Atomic multi-item operations using DynamoDB's `TransactWriteItems`.
+
+### Opening a transaction
 
 ```python
 with memory.transaction(
-    isolation_level="read_committed",
-    auto_retry=True,
+    isolation_level="read_committed",   # or "snapshot" — caches reads within the txn
+    auto_retry=True,                    # See "Retry policy" below
     max_retries=3,
+    changed_by=None,                    # Transaction-wide audit attribution
+    audit_metadata=None,                # Free-form dict attached to every audit row
 ) as txn:
-    user = txn.create(user_obj)
-    profile = txn.create(profile_obj)
-    txn.update(OtherResource, resource_id="id", updates={"field": "value"})
-    txn.delete(OtherResource, resource_id="id")
-    txn.increment(CounterResource, resource_id="id", field="count", amount=1)
+    ...
+```
+
+`changed_by` and `audit_metadata` are applied to every audit row emitted by
+this commit. A `transaction_id` (ULID) is automatically added to
+`audit_metadata` so all rows from the same transaction can be grouped
+post-hoc.
+
+### Operations
+
+```python
+# CREATE — full resource, with optional condition.
+user = txn.create(user_obj, condition=None, **condition_values)
+
+# UPDATE — partial update via SET/REMOVE expression.
+txn.update(
+    UserResource,
+    resource_id="id",
+    updates={"field": "value"},
+    condition=None,                     # User-supplied condition string
+    condition_values=None,              # Dict of substitutions
+    clear_fields=None,                  # list[str] | set[str] — REMOVE these fields
+    recompute_gsis=False,               # See "GSI recomputation" below
+    current=None,                       # Pre-loaded resource to skip the internal read
+)
+
+# PUT — full-state write of a non-versioned resource via to_dynamodb_item().
+# Recomputes every GSI key automatically. Use this instead of update() when
+# you have already mutated the resource in Python and want to atomically write
+# the entire new state alongside other ops. Not supported for versioned resources.
+txn.put(resource, condition=None, condition_values=None)
+
+# DELETE
+txn.delete(resource_or_class, resource_id=None, condition=None, **condition_values)
+
+# INCREMENT (non-versioned only) — ADD-based counter bump.
+txn.increment(CounterResource, field_name="count", amount=1, resource_id="id")
+
+# APPEND (non-versioned only) — list_append.
+txn.append(UserResource, field_name="tags", values=["new_tag"], resource_id="id")
+
+# READ — uses the read cache when isolation_level="snapshot".
+existing = txn.read(UserResource, "id")
+```
+
+### GSI recomputation
+
+`txn.update(...)` by default writes a literal SET expression for each field
+you provide. If you update a field that participates in a GSI key, the GSI
+key attribute on the item is **not** automatically refreshed — the index
+points at the old value until something else triggers a recompute.
+
+Set `recompute_gsis=True` to fix this. The builder reads the current state
+(or uses `current=resource` if provided), applies the update in memory,
+re-runs `get_gsi_config`, and folds the resulting GSI key SETs/REMOVEs into
+the same update expression. One extra read per op unless `current=` is
+supplied.
+
+```python
+# Asset has a sparse GSI keyed off assigned_user_id.
+with memory.transaction() as txn:
+    txn.update(
+        Asset,
+        resource_id=asset_id,
+        updates={"assigned_user_id": "alice"},
+        recompute_gsis=True,            # gsi3pk now reflects the new assignment
+    )
+
+# Or use put() for the same effect via full-state write:
+asset.assigned_user_id = "alice"
+with memory.transaction() as txn:
+    txn.put(asset)                      # to_dynamodb_item() re-runs the GSI config
+```
+
+### Clearing fields (REMOVE)
+
+`clear_fields` emits a `REMOVE #field` clause in the same update expression,
+at parity with the non-transactional `update_existing(clear_fields=...)`.
+Combine with `recompute_gsis=True` to drop a resource out of a sparse GSI
+cleanly (the GSI key is REMOVEd when the post-update lambda returns None).
+
+```python
+with memory.transaction() as txn:
+    txn.update(
+        Asset,
+        resource_id=asset_id,
+        clear_fields=["assigned_user_id"],
+        recompute_gsis=True,            # Also REMOVEs gsi3pk/gsi3sk
+    )
+```
+
+`updates` and `clear_fields` cannot reference the same field — that raises
+`ValueError` at queue time.
+
+### Skipping the inline read on versioned updates
+
+Versioned-resource updates need to read the current state to bump the
+version. Supply `current=resource` to skip the internal `get_existing` call:
+
+```python
+post = memory.get_existing(post_id, Post)
+with memory.transaction() as txn:
+    txn.update(Post, resource_id=post_id, updates={"body": "new"}, current=post)
+    # No second read happens during the build phase.
+```
+
+The same `current=` value is used as the pre-image for audit
+`changed_fields` if audit is enabled.
+
+### Commit-time side effects
+
+On successful `transact_write_items`, `commit()` walks the queued operations
+and:
+
+- **Emits audit logs** for every op on a resource with
+  `audit_config.enabled=True`. Uses the read cache or `current=` for the
+  pre-image when available; falls back to a post-commit re-read for
+  non-versioned updates without cached state.
+- **Increments `MemoryStats`** counters once per resource type for CREATEs
+  (and decrements for DELETEs of non-versioned resources).
+
+This matches the behavior of `create_new` / `update_existing` /
+`delete_existing` on the non-transactional path. Post-commit failures are
+logged but do not mask a successful commit.
+
+`INCREMENT` and `APPEND` ops are not audited automatically — their result
+is computed server-side and would require an extra read per op. Use
+`emit_audit_log` manually if you need an audit trail for those.
+
+### Retry policy
+
+`auto_retry=True` (the default) only retries when **every** failed item
+came from an operation with no user-supplied `condition=`. The classic case
+this catches: a versioned UPDATE that lost the version-token race —
+rebuilding the transaction re-reads the latest version and typically
+succeeds the second time.
+
+User-supplied condition failures are **never** retried. A
+`condition="attribute_not_exists(...)"` encodes semantic intent ("this slot
+must be empty"); retrying it just adds latency for what should be a fast
+409.
+
+Set `auto_retry=False` to disable retries entirely. Set `max_retries=N` to
+cap the implicit-condition retry count.
+
+### Exception hierarchy
+
+```python
+from simplesingletable.transactions import (
+    TransactionError,
+    TransactionConditionFailedError,
+    VersionConflictError,
+)
+
+# TransactionError                          # Any transaction failure.
+# ├── TransactionConditionFailedError       # Canonical: a condition didn't hold.
+# │   └── VersionConflictError              # Back-compat alias.
+```
+
+All three classes carry:
+
+- `cancellation_reasons`: the raw DynamoDB `CancellationReasons` payload.
+- `operation_indexes`: indexes (into `txn.operations`) of the operations
+  that triggered the failure.
+
+A raw `botocore.exceptions.ClientError` is never re-raised from `commit()`
+for a recognized cancellation case.
+
+```python
+try:
+    with memory.transaction(auto_retry=False) as txn:
+        txn.update(
+            Asset, resource_id=aid,
+            updates={"assigned_user_id": "alice"},
+            condition="attribute_not_exists(assigned_user_id)",
+        )
+except TransactionConditionFailedError as e:
+    # Inspect which op failed, e.g., to translate to a domain-specific 409.
+    for idx in e.operation_indexes:
+        op = ...  # Already cleared at this point; capture before commit if needed.
+    raise SlotAlreadyClaimedError() from e
 ```
 
 ---
@@ -1445,8 +1756,15 @@ def count_messages(self, conversation_id):
 # Core
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
 from simplesingletable import PaginatedList, exhaust_pagination
-from simplesingletable import LocalStorageMemory, AuditLogQuerier
+from simplesingletable import LocalStorageMemory, AuditLogQuerier, AuditEntry
 from simplesingletable.models import ResourceConfig, BlobFieldConfig, AuditConfig, AuditLog
+
+# Transactions
+from simplesingletable.transactions import (
+    TransactionError,
+    TransactionConditionFailedError,
+    VersionConflictError,
+)
 
 # Repository pattern
 from simplesingletable.extras.repository import ResourceRepository

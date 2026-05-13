@@ -172,6 +172,48 @@ class MyResource(DynamoDbVersionedResource):
         return f"status#{self.status}"
 ```
 
+### Optional Fields and Conditional Writes
+
+By default, Pydantic fields set to `None` are written to DynamoDB as `{"NULL": True}`
+attributes. Boto3's wire protocol treats those attributes as **present**, which means
+`attribute_not_exists(field)` returns False after the very first PUT — even on a
+freshly created resource where the field was never set. This is the dominant
+foot-gun for the standard "claim this slot" pattern:
+
+```python
+class Asset(DynamoDbResource):
+    asset_tag: str
+    assigned_user_id: Optional[str] = None
+
+memory.create_new(Asset, {"asset_tag": "X"})
+
+# Without omit_none_attributes, this rejects every time:
+memory.update_existing(
+    asset, {"assigned_user_id": "alice"},
+    condition="attribute_not_exists(assigned_user_id)",
+)
+```
+
+Set `omit_none_attributes=True` on the resource's `ResourceConfig` to drop
+`None`-valued fields before marshalling. The natural `attribute_not_exists`
+pattern then works as expected:
+
+```python
+class Asset(DynamoDbResource):
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        omit_none_attributes=True,
+    )
+
+    asset_tag: str
+    assigned_user_id: Optional[str] = None
+```
+
+The flag is off by default for backward compatibility, but is recommended for any
+resource that uses `Optional` fields as slot markers or relies on
+`attribute_not_exists` in conditional updates. The flag has no effect on
+compressed (versioned) resources, since their fields live inside the gzipped
+`data` blob rather than as separate DynamoDB attributes.
+
 ### CRUD Operations Pattern
 
 ```python
@@ -334,6 +376,62 @@ v2 = memory.read_existing_version(resource_id, MyResource, version=2)
 
 # Version limits automatically enforced during updates
 # (configure via resource_config['max_versions'])
+```
+
+## Internal Library Resources
+
+simplesingletable stores its own internal resources alongside your application
+data, namespaced under `_INTERNAL`. This keeps the library's bookkeeping
+out of the way of your resource type prefixes (which use the class name) but
+still lives in the same table so it benefits from single-table-design queries.
+
+| Resource     | pk                            | Purpose                                                                 |
+|--------------|-------------------------------|-------------------------------------------------------------------------|
+| `MemoryStats`| `_INTERNAL#MemoryStats`       | Counter of items per resource type; visible via `memory.get_stats()`.   |
+| `AuditLog`   | `_INTERNAL#AuditLog#<ULID>`   | One row per CREATE/UPDATE/DELETE/RESTORE on an audit-enabled resource.  |
+
+When troubleshooting via `aws dynamodb scan`, filter on `begins_with(pk, "_INTERNAL#")`
+to see what the library is storing. Audit rows can also be configured to live in a
+separate table — see `audit_table_name` on `DynamoDbMemory` if your app produces
+enough audit volume that you want to isolate it.
+
+### Auditing
+
+To enable audit logging for a resource, set `audit_config` on its `resource_config`:
+
+```python
+from simplesingletable import DynamoDbResource
+from simplesingletable.models import AuditConfig, ResourceConfig
+
+class User(DynamoDbResource):
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        audit_config=AuditConfig(
+            enabled=True,
+            track_field_changes=True,  # populate `changed_fields` on UPDATEs
+            include_snapshot=True,     # populate `resource_snapshot` on every row
+        ),
+    )
+    email: str
+    role: Optional[str] = None
+```
+
+See the `AuditConfig` docstring for the full "what you get" matrix — in short,
+`track_field_changes=True` only emits a diff if the caller supplies an
+`old_resource` (the non-transactional path always does; for transactions, use
+`txn.read(...)` or pass `current=resource` to `txn.update(...)`).
+
+`AuditLogQuerier` exposes the standard access patterns:
+
+```python
+from simplesingletable import AuditLogQuerier
+
+querier = AuditLogQuerier(memory)
+
+# All changes to a specific resource
+logs = querier.get_logs_for_resource("User", user_id)
+
+# All changes by a user — backed by a sparse GSI on changed_by, no scan.
+edits_by_admin = querier.get_logs_by_changer("admin@example.com")
 ```
 
 ## Code Quality Standards

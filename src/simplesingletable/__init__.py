@@ -1,4 +1,5 @@
 from .dynamodb_memory import (
+    AuditEntry,
     DynamoDbMemory,
     DynamoDbResource,
     DynamoDbVersionedResource,
@@ -17,6 +18,7 @@ _ = DynamoDbResource
 _ = DynamoDbVersionedResource
 _ = PaginatedList
 _ = exhaust_pagination
+_ = AuditEntry
 _ = AuditLogQuerier
 _ = AuditConfig
 _ = AuditLog
