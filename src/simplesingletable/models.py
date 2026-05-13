@@ -44,6 +44,11 @@ class PaginatedList(list[_T]):
     def as_list(self) -> list[_T]:
         return self
 
+    @property
+    def pagination_key(self) -> Optional[str]:
+        """Alias for ``next_pagination_key`` to mirror the query's input parameter name."""
+        return self.next_pagination_key
+
 
 _PlainBaseModel = TypeVar("_PlainBaseModel", bound=BaseModel)
 
@@ -134,6 +139,15 @@ class ResourceConfig(TypedDict, total=False):
 
     audit_config: AuditConfig | None
     """Configuration for audit logging behavior."""
+
+    omit_none_attributes: bool | None
+    """If True, fields whose value is ``None`` are not written as DynamoDB attributes.
+
+    When False (default), ``None`` values are marshalled by boto3 as ``{"NULL": True}``,
+    which causes ``attribute_not_exists(field)`` conditions to evaluate to False after the
+    first PUT. Set True to make the natural ``attribute_not_exists`` pattern work on
+    resources that use ``Optional`` fields as slot markers.
+    """
 
 
 class BlobPlaceholder(TypedDict):
@@ -545,6 +559,8 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         # Extract blob field values BEFORE model_dump() to preserve Pydantic instances
         blob_fields_data = self._extract_blob_field_values()
 
+        omit_none = bool(self.resource_config.get("omit_none_attributes"))
+
         if self.resource_config["compress_data"]:
             # When compressing, use model_dump_json directly with exclude to preserve nested Pydantic models
             # This avoids the model_dump() -> model_copy() round-trip that converts nested models to dicts
@@ -554,7 +570,7 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         else:
             # Get model data (blob fields will be excluded from dump)
             model_data = self.model_dump(exclude=set(blob_fields_data.keys()) if blob_fields_data else None)
-            dynamodb_data = clean_data(model_data)
+            dynamodb_data = clean_data(model_data, omit_none=omit_none)
 
         dynamodb_data.update(
             {
@@ -689,6 +705,8 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         # Extract blob field values BEFORE model_dump() to preserve Pydantic instances
         blob_fields_data = self._extract_blob_field_values()
 
+        omit_none = bool(self.resource_config.get("omit_none_attributes"))
+
         if self.resource_config["compress_data"]:
             # When compressing, use model_dump_json directly with exclude to preserve nested Pydantic models
             # This avoids the model_dump() -> model_copy() round-trip that converts nested models to dicts
@@ -698,7 +716,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         else:
             # Get model data (blob fields will be excluded from dump)
             model_data = self.model_dump(exclude=set(blob_fields_data.keys()) if blob_fields_data else None)
-            dynamodb_data = clean_data(model_data)
+            dynamodb_data = clean_data(model_data, omit_none=omit_none)
 
         dynamodb_data.update({"pk": key, "version": self.version})
 
@@ -952,13 +970,16 @@ class AuditLog(DynamodbResource):
 #     return datetime.now(tz=tz)
 
 
-def clean_data(data: dict):
+def clean_data(data: dict, omit_none: bool = False):
     from decimal import Decimal
 
     data = {**data}
     del_keys = set()
     for key, value in data.items():
-        if isinstance(value, float):
+        if value is None:
+            if omit_none:
+                del_keys.add(key)
+        elif isinstance(value, float):
             # convert floats to Decimal for DynamoDB compatibility
             data[key] = Decimal(str(value))
         elif isinstance(value, datetime):
@@ -969,10 +990,10 @@ def clean_data(data: dict):
             del_keys.add(key)
         elif isinstance(value, dict):
             # run recursively on dicts
-            data[key] = clean_data(value)
+            data[key] = clean_data(value, omit_none=omit_none)
         elif isinstance(value, list):
             # handle lists that might contain floats
-            data[key] = _clean_list(value)
+            data[key] = _clean_list(value, omit_none=omit_none)
 
     for key in del_keys:
         data.pop(key)
@@ -980,7 +1001,7 @@ def clean_data(data: dict):
     return data
 
 
-def _clean_list(lst: list):
+def _clean_list(lst: list, omit_none: bool = False):
     """Clean list items, converting floats to Decimal."""
 
     cleaned = []
@@ -988,9 +1009,9 @@ def _clean_list(lst: list):
         if isinstance(item, float):
             cleaned.append(Decimal(str(item)))
         elif isinstance(item, dict):
-            cleaned.append(clean_data(item))
+            cleaned.append(clean_data(item, omit_none=omit_none))
         elif isinstance(item, list):
-            cleaned.append(_clean_list(item))
+            cleaned.append(_clean_list(item, omit_none=omit_none))
         else:
             cleaned.append(item)
     return cleaned

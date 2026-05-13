@@ -172,6 +172,48 @@ class MyResource(DynamoDbVersionedResource):
         return f"status#{self.status}"
 ```
 
+### Optional Fields and Conditional Writes
+
+By default, Pydantic fields set to `None` are written to DynamoDB as `{"NULL": True}`
+attributes. Boto3's wire protocol treats those attributes as **present**, which means
+`attribute_not_exists(field)` returns False after the very first PUT — even on a
+freshly created resource where the field was never set. This is the dominant
+foot-gun for the standard "claim this slot" pattern:
+
+```python
+class Asset(DynamoDbResource):
+    asset_tag: str
+    assigned_user_id: Optional[str] = None
+
+memory.create_new(Asset, {"asset_tag": "X"})
+
+# Without omit_none_attributes, this rejects every time:
+memory.update_existing(
+    asset, {"assigned_user_id": "alice"},
+    condition="attribute_not_exists(assigned_user_id)",
+)
+```
+
+Set `omit_none_attributes=True` on the resource's `ResourceConfig` to drop
+`None`-valued fields before marshalling. The natural `attribute_not_exists`
+pattern then works as expected:
+
+```python
+class Asset(DynamoDbResource):
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        omit_none_attributes=True,
+    )
+
+    asset_tag: str
+    assigned_user_id: Optional[str] = None
+```
+
+The flag is off by default for backward compatibility, but is recommended for any
+resource that uses `Optional` fields as slot markers or relies on
+`attribute_not_exists` in conditional updates. The flag has no effect on
+compressed (versioned) resources, since their fields live inside the gzipped
+`data` blob rather than as separate DynamoDB attributes.
+
 ### CRUD Operations Pattern
 
 ```python

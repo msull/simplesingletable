@@ -1319,6 +1319,8 @@ class DynamoDbMemory:
             max_api_calls (int): The maximum number of API calls to make. Defaults to QUERY_DEFAULT_MAX_API_CALLS.
             pagination_key (str, optional): Key to start pagination from, if continuing from a previous query.
             ascending (bool): If True, return results in ascending order. Default is False (descending).
+                Maps directly to DynamoDB's ``ScanIndexForward`` parameter: ``ascending=False`` ⇒
+                ``ScanIndexForward=False``, i.e., newest-first on time-ordered sort keys (ULID/ISO timestamps).
             filter_limit_multiplier (int): Multiplier for results limit when using a filter. Default is 3.
             _current_api_calls_on_stack (int, internal): Tracks the number of API calls made
                 during recursive operations.

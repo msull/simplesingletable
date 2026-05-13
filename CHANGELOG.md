@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+* **`ResourceConfig(omit_none_attributes=True)`** opt-in to drop `None`-valued fields from DynamoDB items before marshalling (#1). Without this flag, boto3 marshalls `None` as `{"NULL": True}`, which makes `attribute_not_exists(field)` return False after the very first PUT — breaking the standard "claim this slot" conditional-update pattern. Off by default for backward compatibility; recommended for any resource that uses `Optional` fields as slot markers.
+
+    ```python
+    class Asset(DynamoDbResource):
+        resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+            omit_none_attributes=True,
+        )
+        asset_tag: str
+        assigned_user_id: Optional[str] = None
+    ```
+
+* **`PaginatedList.pagination_key`** property aliases `next_pagination_key` so callers can use the same attribute name as the query's input parameter (#1).
+
+### Changed
+
+* **`paginated_dynamodb_query`** docstring now documents that `ascending` maps directly to DynamoDB's `ScanIndexForward` parameter (#1).
+
 ## [16.5.0] 2026-02-02
 
 ### Added
