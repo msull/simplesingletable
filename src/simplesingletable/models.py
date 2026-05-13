@@ -98,19 +98,55 @@ class BlobFieldConfig(TypedDict, total=False):
 
 
 class AuditConfig(TypedDict, total=False):
-    """Configuration for audit logging behavior."""
+    """Configuration for audit logging behavior.
+
+    Field interactions (the non-obvious parts):
+
+    - ``track_field_changes=True`` only produces a ``changed_fields`` diff for
+      ``UPDATE`` operations *and* only when the caller passes an ``old_resource`` (or
+      the library has one cached, e.g., from ``txn.read(...)`` or ``current=``).
+      Without an old_resource, ``changed_fields`` is silently ``None``.
+    - ``include_snapshot=True`` populates ``resource_snapshot`` on the audit row
+      with a full ``model_dump`` of the post-operation state (blob fields replaced
+      with metadata pointers, not raw bytes). Independent of
+      ``track_field_changes``.
+    - To recover a full state-at-time-T view, you need ``include_snapshot=True``.
+      A diff alone (``track_field_changes=True``) lets you reconstruct the field
+      changes but not the surrounding context.
+
+    "What you get" matrix::
+
+        track_field_changes  include_snapshot  old_resource provided  →  audit row contains
+        ─────────────────── ───────────────── ──────────────────────   ──────────────────────
+        False               False             —                          minimal: who/what/when
+        False               True              —                          full snapshot
+        True                False             yes                        diff only
+        True                False             no                         minimal (diff is None)
+        True                True              yes                        diff + full snapshot
+    """
 
     enabled: bool
     """Enable audit logging for this resource type."""
 
     track_field_changes: bool
-    """Track individual field changes (old vs new values)."""
+    """Track individual field changes (old vs new values).
+
+    Only produces output on UPDATE operations when the caller (or library) supplies
+    an ``old_resource``. The non-transactional ``update_existing`` always supplies one.
+    Inside a transaction, supply ``current=resource`` on ``txn.update(...)`` or read
+    the resource via ``txn.read(...)`` first.
+    """
 
     exclude_fields: set[str] | None
     """Fields to exclude from audit logging (e.g., sensitive data)."""
 
     include_snapshot: bool
-    """Include full resource snapshot in audit log."""
+    """Include full resource snapshot in audit log.
+
+    Independent of ``track_field_changes``. Recommended whenever
+    ``track_field_changes`` is enabled, since a diff is only useful if the
+    surrounding state is also recoverable.
+    """
 
     changed_by_required: bool | None
     """Require 'changed_by' parameter to be provided when creating/updating resources. If False, changed_by is optional."""
@@ -912,7 +948,25 @@ class AuditLog(DynamodbResource):
     GSI Configuration:
     - gsi1pk: Query all changes to a specific resource (resource_type#resource_id) sorted by creation time
     - gsi2pk: Query all changes by resource type, sorted by creation time
+    - gsi3pk / gsi3sk: Sparse index keyed on ``changed_by`` for "who did what" queries
+
+    AuditLog rows are stored under the ``_INTERNAL#AuditLog`` namespace — see the
+    README section "Internal Library Resources" for details on the namespace
+    convention.
     """
+
+    # Index name constants — used by AuditLogQuerier instead of inline string literals.
+    INDEX_BY_RESOURCE: ClassVar[str] = "gsi1"
+    """Index for ``get_logs_for_resource`` (per resource_type + resource_id)."""
+
+    INDEX_BY_TYPE: ClassVar[str] = "gsi2"
+    """Index for ``get_logs_for_resource_type`` (per resource_type)."""
+
+    INDEX_BY_CHANGER: ClassVar[str] = "gsi3"
+    """Sparse index for ``get_logs_by_changer`` (rows with ``changed_by`` set)."""
+
+    INDEX_BY_UPDATED_AT: ClassVar[str] = "gsitype"
+    """Index for ``get_recent_changes`` (all audit rows, sorted by created_at)."""
 
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False)
 
@@ -956,8 +1010,18 @@ class AuditLog(DynamodbResource):
         """Configure GSIs for querying audit logs."""
         prefix = cls.get_unique_key_prefix()
         return {
-            "gsi1": {"gsi1pk": lambda self: f"{prefix}#{self.audited_resource_type}#{self.audited_resource_id}"},
-            "gsi2": {"gsi2pk": lambda self: f"{prefix}#{self.audited_resource_type}"},
+            cls.INDEX_BY_RESOURCE: {
+                "gsi1pk": lambda self: f"{prefix}#{self.audited_resource_type}#{self.audited_resource_id}",
+            },
+            cls.INDEX_BY_TYPE: {
+                "gsi2pk": lambda self: f"{prefix}#{self.audited_resource_type}",
+            },
+            cls.INDEX_BY_CHANGER: {
+                # Sparse: only populated when changed_by is set, so audit rows with no
+                # attribution don't appear in this index.
+                "gsi3pk": lambda self: f"{prefix}#changer#{self.changed_by}" if self.changed_by else None,
+                "gsi3sk": lambda self: self.created_at.isoformat() if self.changed_by else None,
+            },
         }
 
 

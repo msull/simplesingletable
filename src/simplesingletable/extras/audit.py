@@ -35,40 +35,16 @@ class AuditLogQuerier:
             memory: DynamoDbMemory instance to use for queries
         """
         self.memory = memory
-        self._audit_memory_view: Optional["DynamoDbMemory"] = None
 
     @property
     def audit_memory(self) -> "DynamoDbMemory":
-        """Get a DynamoDbMemory view configured for the audit table.
+        """A ``DynamoDbMemory`` view that targets the audit table.
 
-        If no separate audit table is configured, returns the main memory instance.
-        Otherwise, creates a lightweight memory instance that treats the audit
-        table as its main table, allowing all existing query methods to work.
-
-        Returns:
-            DynamoDbMemory instance configured to query the audit table
+        Delegates to the parent ``DynamoDbMemory.audit_view`` so multiple
+        ``AuditLogQuerier`` instances against the same memory share a single
+        secondary view (previously each querier built its own).
         """
-        if self._audit_memory_view is not None:
-            return self._audit_memory_view
-
-        # If no separate audit table, just use main memory
-        if not hasattr(self.memory, "audit_table_name") or not self.memory.audit_table_name:
-            self._audit_memory_view = self.memory
-            return self._audit_memory_view
-
-        # Import here to avoid circular dependency
-        from .. import DynamoDbMemory
-
-        # Create a view that makes audit table look like the main table
-        self._audit_memory_view = DynamoDbMemory(
-            logger=self.memory.logger,
-            table_name=self.memory.audit_table_name,
-            endpoint_url=self.memory.audit_endpoint_url or self.memory.endpoint_url,
-            connection_params=self.memory.audit_connection_params or self.memory.connection_params,
-            track_stats=False,  # Don't track stats for audit queries
-            # No S3 configuration - audit logs don't use blobs
-        )
-        return self._audit_memory_view
+        return self.memory.audit_view
 
     def get_logs_for_resource(
         self,
@@ -117,7 +93,7 @@ class AuditLogQuerier:
         # Query using paginated_dynamodb_query (descending=newest first)
         return self.audit_memory.paginated_dynamodb_query(
             key_condition=key_condition,
-            index_name="gsi1",
+            index_name=AuditLog.INDEX_BY_RESOURCE,
             resource_class=AuditLog,
             results_limit=limit,
             ascending=False,  # Newest first (descending by pk/ULID)
@@ -164,7 +140,7 @@ class AuditLogQuerier:
         # Query using paginated_dynamodb_query
         return self.audit_memory.paginated_dynamodb_query(
             key_condition=key_condition,
-            index_name="gsi2",
+            index_name=AuditLog.INDEX_BY_TYPE,
             resource_class=AuditLog,
             results_limit=limit,
             ascending=False,  # Newest first
@@ -213,7 +189,7 @@ class AuditLogQuerier:
         # Query using paginated_dynamodb_query
         logs = self.audit_memory.paginated_dynamodb_query(
             key_condition=key_condition,
-            index_name="gsi2",
+            index_name=AuditLog.INDEX_BY_TYPE,
             resource_class=AuditLog,
             filter_expression=filter_expression,
             results_limit=limit,
@@ -233,9 +209,11 @@ class AuditLogQuerier:
     ) -> List[AuditLog]:
         """Get all audit logs for changes made by a specific user/system.
 
-        Uses DynamoDB filter expressions to filter by changed_by.
-        If resource_type is specified, queries gsi2 with ULID-based date range;
-        otherwise queries gsitype (all audit logs).
+        - Without ``resource_type``: queries the sparse ``INDEX_BY_CHANGER`` GSI
+          (keyed on ``changed_by``) directly — no filter expression, no scan.
+        - With ``resource_type``: queries ``INDEX_BY_TYPE`` with a ULID-based date
+          range and a ``changed_by`` filter expression (because there is no
+          composite ``changed_by + resource_type`` index).
 
         Args:
             changed_by: The user/system identifier who made the changes
@@ -247,13 +225,12 @@ class AuditLogQuerier:
         Returns:
             List of AuditLog resources by the specified changer
         """
-        # Filter expression for changed_by
-        filter_expression = Attr("changed_by").eq(changed_by)
+        prefix = AuditLog.get_unique_key_prefix()
 
-        # Choose index based on whether resource_type is specified
         if resource_type:
-            # Query specific resource type via gsi2 with ULID-based date range
-            key_condition = Key("gsi2pk").eq(AuditLog.get_unique_key_prefix() + "#" + resource_type)
+            # Use the resource-type GSI plus a filter expression. The
+            # changed_by-only path uses the dedicated INDEX_BY_CHANGER index instead.
+            key_condition = Key("gsi2pk").eq(f"{prefix}#{resource_type}")
 
             if start_date and end_date:
                 start_pk = AuditLog.dynamodb_lookup_keys_from_id(from_timestamp(start_date).timestamp().str)["pk"]
@@ -268,35 +245,31 @@ class AuditLogQuerier:
 
             logs = self.audit_memory.paginated_dynamodb_query(
                 key_condition=key_condition,
-                index_name="gsi2",
+                index_name=AuditLog.INDEX_BY_TYPE,
                 resource_class=AuditLog,
-                filter_expression=filter_expression,
+                filter_expression=Attr("changed_by").eq(changed_by),
                 results_limit=limit,
                 ascending=not newest_first,
             )
-        else:
-            # Query all audit logs via gsitype
-            # Note: gsitype uses gsitypesk (updated_at) for sorting, not pk
-            # Date filtering here uses filter expression on created_at
-            key_condition = Key("gsitype").eq(AuditLog.db_get_gsitypepk())
+            return list(logs)
 
-            # For gsitype queries, add date filter to filter_expression
-            if start_date and end_date:
-                key_condition &= Key("gsitypesk").between(start_date.isoformat(), end_date.isoformat())
-            elif start_date:
-                key_condition &= Key("gsitypesk").gte(start_date.isoformat())
-            elif end_date:
-                key_condition &= Key("gsitypesk").lte(end_date.isoformat())
+        # No resource_type filter: query the sparse changed_by GSI directly.
+        # Date range filtering uses gsi3sk (created_at isoformat).
+        key_condition = Key("gsi3pk").eq(f"{prefix}#changer#{changed_by}")
+        if start_date and end_date:
+            key_condition &= Key("gsi3sk").between(start_date.isoformat(), end_date.isoformat())
+        elif start_date:
+            key_condition &= Key("gsi3sk").gte(start_date.isoformat())
+        elif end_date:
+            key_condition &= Key("gsi3sk").lte(end_date.isoformat())
 
-            logs = self.audit_memory.paginated_dynamodb_query(
-                key_condition=key_condition,
-                index_name="gsitype",
-                resource_class=AuditLog,
-                filter_expression=filter_expression,
-                results_limit=limit,
-                ascending=not newest_first,
-            )
-
+        logs = self.audit_memory.paginated_dynamodb_query(
+            key_condition=key_condition,
+            index_name=AuditLog.INDEX_BY_CHANGER,
+            resource_class=AuditLog,
+            results_limit=limit,
+            ascending=not newest_first,
+        )
         return list(logs)
 
     def get_field_history(

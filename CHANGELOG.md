@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * **Transaction retry policy is now condition-aware** (#2). When `auto_retry=True` (still the default), the transaction is only retried if every failed item came from an operation with no user-supplied `condition=` — typically a versioned-update version-token collision. Any user-supplied condition failure raises immediately, because that encodes semantic intent (e.g., "this slot must be empty") that retrying cannot resolve and only adds latency. The previous behavior was to retry every `ConditionalCheckFailed` reason up to `max_retries` times regardless of source.
 
+* **AuditLog gains a sparse GSI on `changed_by`** (#3) for the "what has user X changed across the entire system?" access pattern. Backed by the table's existing `gsi3pk`/`gsi3sk`. `AuditLogQuerier.get_logs_by_changer(changed_by)` (without a resource_type filter) now uses this index directly instead of falling back to `gsitype` + filter expression. `AuditLog.INDEX_BY_RESOURCE`, `INDEX_BY_TYPE`, `INDEX_BY_CHANGER`, and `INDEX_BY_UPDATED_AT` class constants are now the source of truth for index names; `AuditLogQuerier` no longer carries hardcoded `"gsi1"` / `"gsi2"` / `"gsitype"` literals.
+
+* **`DynamoDbMemory.audit_view`** is a new property that returns a cached secondary `DynamoDbMemory` view targeting the audit table (when `audit_table_name` is configured) — or `self` otherwise (#3). `AuditLogQuerier` now delegates to this cached view, so multiple queriers against the same memory share a single secondary instance instead of each lazily building its own.
+
+* **`AuditConfig` docstring** now documents the interactions between `enabled` / `track_field_changes` / `include_snapshot` / `old_resource` with a "what you get" matrix (#3). README has a new "Internal Library Resources" section documenting the `_INTERNAL` namespace convention and the `AuditLog` row shape.
+
 ## [16.5.0] 2026-02-02
 
 ### Added

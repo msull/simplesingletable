@@ -160,6 +160,7 @@ class DynamoDbMemory:
     _dynamodb_resource: Optional[Any] = field(default=None, init=False)
     _audit_dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _audit_dynamodb_table: Optional["Table"] = field(default=None, init=False)
+    _audit_view: Optional["DynamoDbMemory"] = field(default=None, init=False)
     _s3_blob_storage: Optional["S3BlobStorage"] = field(default=None, init=False)
     _transaction_manager: Optional["TransactionManager"] = field(default=None, init=False)
 
@@ -482,6 +483,35 @@ class DynamoDbMemory:
                 self._audit_dynamodb_table = dynamodb.Table(self.audit_table_name)
             return self._audit_dynamodb_table
         return self.dynamodb_table
+
+    @property
+    def audit_view(self) -> "DynamoDbMemory":
+        """A ``DynamoDbMemory`` view that targets the audit table.
+
+        When ``audit_table_name`` is unset, this is just ``self`` (the audit rows
+        live in the same table as everything else). When ``audit_table_name`` is
+        configured, this returns a lightweight ``DynamoDbMemory`` that points at
+        the separate audit table; the instance is cached so multiple
+        ``AuditLogQuerier`` instances share the same view (each previously built
+        its own).
+        """
+        if self._audit_view is not None:
+            return self._audit_view
+
+        if not self.audit_table_name:
+            self._audit_view = self
+            return self._audit_view
+
+        # Lightweight memory that treats the audit table as its main table so the
+        # standard query methods work transparently.
+        self._audit_view = DynamoDbMemory(
+            logger=self.logger,
+            table_name=self.audit_table_name,
+            endpoint_url=self.audit_endpoint_url or self.endpoint_url,
+            connection_params=self.audit_connection_params or self.connection_params,
+            track_stats=False,  # Audit table doesn't need its own stats counter.
+        )
+        return self._audit_view
 
     def create_new(
         self,

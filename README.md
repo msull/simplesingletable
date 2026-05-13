@@ -378,6 +378,62 @@ v2 = memory.read_existing_version(resource_id, MyResource, version=2)
 # (configure via resource_config['max_versions'])
 ```
 
+## Internal Library Resources
+
+simplesingletable stores its own internal resources alongside your application
+data, namespaced under `_INTERNAL`. This keeps the library's bookkeeping
+out of the way of your resource type prefixes (which use the class name) but
+still lives in the same table so it benefits from single-table-design queries.
+
+| Resource     | pk                            | Purpose                                                                 |
+|--------------|-------------------------------|-------------------------------------------------------------------------|
+| `MemoryStats`| `_INTERNAL#MemoryStats`       | Counter of items per resource type; visible via `memory.get_stats()`.   |
+| `AuditLog`   | `_INTERNAL#AuditLog#<ULID>`   | One row per CREATE/UPDATE/DELETE/RESTORE on an audit-enabled resource.  |
+
+When troubleshooting via `aws dynamodb scan`, filter on `begins_with(pk, "_INTERNAL#")`
+to see what the library is storing. Audit rows can also be configured to live in a
+separate table — see `audit_table_name` on `DynamoDbMemory` if your app produces
+enough audit volume that you want to isolate it.
+
+### Auditing
+
+To enable audit logging for a resource, set `audit_config` on its `resource_config`:
+
+```python
+from simplesingletable import DynamoDbResource
+from simplesingletable.models import AuditConfig, ResourceConfig
+
+class User(DynamoDbResource):
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        audit_config=AuditConfig(
+            enabled=True,
+            track_field_changes=True,  # populate `changed_fields` on UPDATEs
+            include_snapshot=True,     # populate `resource_snapshot` on every row
+        ),
+    )
+    email: str
+    role: Optional[str] = None
+```
+
+See the `AuditConfig` docstring for the full "what you get" matrix — in short,
+`track_field_changes=True` only emits a diff if the caller supplies an
+`old_resource` (the non-transactional path always does; for transactions, use
+`txn.read(...)` or pass `current=resource` to `txn.update(...)`).
+
+`AuditLogQuerier` exposes the standard access patterns:
+
+```python
+from simplesingletable import AuditLogQuerier
+
+querier = AuditLogQuerier(memory)
+
+# All changes to a specific resource
+logs = querier.get_logs_for_resource("User", user_id)
+
+# All changes by a user — backed by a sparse GSI on changed_by, no scan.
+edits_by_admin = querier.get_logs_by_changer("admin@example.com")
+```
+
 ## Code Quality Standards
 
 - **Line length**: 120 characters
