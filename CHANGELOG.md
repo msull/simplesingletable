@@ -22,9 +22,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * **`PaginatedList.pagination_key`** property aliases `next_pagination_key` so callers can use the same attribute name as the query's input parameter (#1).
 
+* **Transaction overhaul** brings transactional CRUD to parity with the non-transactional path and fills gaps that previously required workarounds (#2):
+    * **`TransactionContext.put(resource, condition=..., condition_values=...)`** writes the full state of a non-versioned resource via `to_dynamodb_item()`. Naturally recomputes every GSI key and (with `omit_none_attributes=True`) drops nulled-out attributes.
+    * **`TransactionContext.update(..., recompute_gsis=True)`** reads the current state, applies the update in memory, re-runs `get_gsi_config`, and folds the resulting GSI key SETs/REMOVEs into the same update expression. Fixes the long-standing footgun where updating a field that participated in a GSI key left the GSI key attribute stale.
+    * **`TransactionContext.update(..., clear_fields=[...])`** emits a `REMOVE` clause for the given fields in the same update expression — at parity with the non-transactional `update_existing(clear_fields=...)` parameter. Combines with `recompute_gsis=True` to drop a resource out of a sparse GSI cleanly.
+    * **`TransactionContext.update(..., current=...)`** lets callers supply a pre-loaded resource instance to skip the internal `get_existing` read used by versioned updates and by `recompute_gsis=True`. Also used as the pre-image for audit field-change tracking.
+    * **`commit()` post-commit hooks** now emit audit logs and increment `MemoryStats` counters for every operation that should produce them (CREATE / UPDATE / PUT / DELETE on audit-enabled resources). Previously, every transactional mutation silently bypassed the audit feed and counter system. Transaction-wide attribution is provided via the new `memory.transaction(changed_by=..., audit_metadata=...)` kwargs; a `transaction_id` (ULID) is auto-attached to every audit row so they can be grouped post-hoc.
+    * **`DynamoDbMemory.emit_audit_log(...)` and `emit_audit_logs(entries: list[AuditEntry])`** are now public entry points for the audit-write path used by CRUD methods. Useful for callers that need to emit audit rows for state managed outside the standard CRUD path; the batch variant uses a single `BatchWriteItem` per chunk.
+
 ### Changed
 
 * **`paginated_dynamodb_query`** docstring now documents that `ascending` maps directly to DynamoDB's `ScanIndexForward` parameter (#1).
+
+* **Transaction exception hierarchy** is normalized so a single logical event — "a conditional check inside the transaction did not hold" — surfaces as a single exception class (#2):
+    * **`TransactionConditionFailedError`** (subclass of `TransactionError`) is the new canonical exception for any condition-check failure inside a transaction. Carries `cancellation_reasons` (the raw DynamoDB payload) and `operation_indexes` (the index, into `TransactionContext.operations`, of the operation(s) that triggered the failure).
+    * **`VersionConflictError`** is preserved as a subclass of `TransactionConditionFailedError` so existing `except VersionConflictError` blocks continue to behave as before.
+    * **`TransactionError.__init__`** now accepts the same `cancellation_reasons` / `operation_indexes` kwargs so this metadata is available on the parent class too.
+    * Raw `botocore.exceptions.ClientError` is never re-raised from `TransactionContext.commit()` for a recognized DynamoDB transaction-cancellation case.
+
+* **Transaction retry policy is now condition-aware** (#2). When `auto_retry=True` (still the default), the transaction is only retried if every failed item came from an operation with no user-supplied `condition=` — typically a versioned-update version-token collision. Any user-supplied condition failure raises immediately, because that encodes semantic intent (e.g., "this slot must be empty") that retrying cannot resolve and only adds latency. The previous behavior was to retry every `ConditionalCheckFailed` reason up to `max_retries` times regardless of source.
 
 ## [16.5.0] 2026-02-02
 

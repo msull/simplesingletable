@@ -34,6 +34,23 @@ NonversionedDbResourceOnly = TypeVar("NonversionedDbResourceOnly", bound=DynamoD
 _PlainBaseModel = TypeVar("_PlainBaseModel", bound=BaseModel)
 
 
+@dataclass
+class AuditEntry:
+    """Describes a single audit log entry to be emitted.
+
+    Used with :meth:`DynamoDbMemory.emit_audit_logs` for batching multiple entries
+    into a single :class:`BatchWriteItem` call.
+    """
+
+    operation: str
+    resource: Any  # DynamoDbResource | DynamoDbVersionedResource
+    changed_by: Optional[str] = None
+    old_resource: Optional[Any] = None
+    audit_metadata: Optional[dict] = None
+    force: bool = False
+    """If True, emit even when the resource's audit_config is disabled."""
+
+
 def exhaust_pagination(query: Callable[[Optional[str]], PaginatedList]):
     result = query(None)
     while result.next_pagination_key:
@@ -400,10 +417,26 @@ class DynamoDbMemory:
             self._transaction_manager = TransactionManager(self)
         return self._transaction_manager
 
-    def transaction(self, isolation_level: str = "read_committed", auto_retry: bool = True, max_retries: int = 3):
-        """Create a transaction context for atomic operations."""
+    def transaction(
+        self,
+        isolation_level: str = "read_committed",
+        auto_retry: bool = True,
+        max_retries: int = 3,
+        changed_by: Optional[str] = None,
+        audit_metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Create a transaction context for atomic operations.
+
+        See :meth:`simplesingletable.transactions.TransactionManager.transaction` for
+        full argument documentation, including the retry policy and audit attribution
+        semantics.
+        """
         return self.transaction_manager.transaction(
-            isolation_level=isolation_level, auto_retry=auto_retry, max_retries=max_retries
+            isolation_level=isolation_level,
+            auto_retry=auto_retry,
+            max_retries=max_retries,
+            changed_by=changed_by,
+            audit_metadata=audit_metadata,
         )
 
     @property
@@ -1744,31 +1777,28 @@ class DynamoDbMemory:
 
         return changed_fields if changed_fields else None
 
-    def _create_audit_log(
+    def _build_audit_log(
         self,
         operation: str,
         resource: AnyDbResource,
         changed_by: Optional[str],
         old_resource: Optional[AnyDbResource] = None,
         audit_metadata: Optional[dict[str, Any]] = None,
-    ):
-        """Create an audit log entry for a resource operation.
+        force: bool = False,
+    ) -> Optional[AuditLog]:
+        """Construct an :class:`AuditLog` instance for the given operation, or return
+        ``None`` if auditing is disabled for this resource (and ``force`` is False).
 
-        Args:
-            operation: The operation performed ("CREATE", "UPDATE", "DELETE")
-            resource: The resource that was modified
-            changed_by: Identifier of user/service that made the change
-            old_resource: Previous resource state (for UPDATE operations)
-            audit_metadata: Additional audit metadata to store
+        This is the shared core for both single and batched audit emission. It does
+        not write anything to DynamoDB.
         """
-
         # Don't audit AuditLog itself (prevent infinite recursion)
         if isinstance(resource, AuditLog):
-            return
+            return None
 
         audit_config = resource.resource_config.get("audit_config", {}) or {}
-        if not audit_config.get("enabled"):
-            return
+        if not force and not audit_config.get("enabled"):
+            return None
 
         # Extract changed_by from resource if specified and not provided
         if not changed_by and (field := audit_config.get("changed_by_field")):
@@ -1789,7 +1819,6 @@ class DynamoDbMemory:
         # Build snapshot if configured
         snapshot = self._build_audit_snapshot(resource, audit_config)
 
-        # Create the audit log entry
         audit_log_data = {
             "audited_resource_type": resource.__class__.__name__,
             "audited_resource_id": resource.resource_id,
@@ -1799,13 +1828,111 @@ class DynamoDbMemory:
             "resource_snapshot": snapshot,
             "audit_metadata": audit_metadata or {},
         }
+        return AuditLog.create_new(audit_log_data)
 
-        # Create the audit log resource
-        audit_log = AuditLog.create_new(audit_log_data)
+    def emit_audit_log(
+        self,
+        *,
+        operation: str,
+        resource: AnyDbResource,
+        changed_by: Optional[str] = None,
+        old_resource: Optional[AnyDbResource] = None,
+        audit_metadata: Optional[dict[str, Any]] = None,
+        force: bool = False,
+    ) -> Optional[AuditLog]:
+        """Emit a single audit log entry.
 
-        # Write to audit table (won't recurse because AuditLog doesn't have audit enabled)
+        Public counterpart to the (now internal) audit-write path used by ``create_new``,
+        ``update_existing``, and ``delete_existing``. Useful for callers that need to
+        emit an audit row for state managed outside the standard CRUD path — most
+        notably from inside a :class:`TransactionContext.commit` walk.
+
+        Args:
+            operation: ``"CREATE"``, ``"UPDATE"``, ``"DELETE"``, or any custom string.
+            resource: The resource the audit entry describes.
+            changed_by: Identifier of the user/service that made the change.
+            old_resource: Previous resource state. Required for ``UPDATE`` audit
+                entries when ``audit_config.track_field_changes`` is enabled.
+            audit_metadata: Free-form dict stored on the audit row.
+            force: When True, emit even if the resource has audit logging disabled.
+
+        Returns:
+            The :class:`AuditLog` row that was written, or ``None`` if the resource's
+            audit config is disabled and ``force`` is False.
+        """
+        audit_log = self._build_audit_log(
+            operation=operation,
+            resource=resource,
+            changed_by=changed_by,
+            old_resource=old_resource,
+            audit_metadata=audit_metadata,
+            force=force,
+        )
+        if audit_log is None:
+            return None
+
         item = audit_log.to_dynamodb_item()
         self.audit_dynamodb_table.put_item(Item=item)
+        return audit_log
+
+    def emit_audit_logs(self, entries: list["AuditEntry"]) -> list[AuditLog]:
+        """Emit multiple audit log entries in a single ``BatchWriteItem`` call.
+
+        Entries whose resource has audit disabled (and ``force=False``) are silently
+        skipped, matching :meth:`emit_audit_log` behavior. Internally chunks into
+        groups of 25 (the ``BatchWriteItem`` limit) and retries ``UnprocessedItems``.
+
+        Returns:
+            The list of :class:`AuditLog` rows that were actually written.
+        """
+        if not entries:
+            return []
+
+        audit_logs: list[AuditLog] = []
+        for entry in entries:
+            audit_log = self._build_audit_log(
+                operation=entry.operation,
+                resource=entry.resource,
+                changed_by=entry.changed_by,
+                old_resource=entry.old_resource,
+                audit_metadata=entry.audit_metadata,
+                force=entry.force,
+            )
+            if audit_log is not None:
+                audit_logs.append(audit_log)
+
+        if not audit_logs:
+            return []
+
+        table = self.audit_dynamodb_table
+        items = [audit_log.to_dynamodb_item() for audit_log in audit_logs]
+
+        # BatchWriteItem cap is 25; chunk and let boto3's batch_writer retry unprocessed.
+        with table.batch_writer() as batch:
+            for item in items:
+                batch.put_item(Item=item)
+
+        return audit_logs
+
+    def _create_audit_log(
+        self,
+        operation: str,
+        resource: AnyDbResource,
+        changed_by: Optional[str],
+        old_resource: Optional[AnyDbResource] = None,
+        audit_metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Internal wrapper for the audit-write path used by CRUD methods.
+
+        Public callers should use :meth:`emit_audit_log` instead.
+        """
+        self.emit_audit_log(
+            operation=operation,
+            resource=resource,
+            changed_by=changed_by,
+            old_resource=old_resource,
+            audit_metadata=audit_metadata,
+        )
 
 
 def _now(tz: Any = False):
