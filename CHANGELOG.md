@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [17.0.0] 2026-05-13
+
 ### Added
 
 * **`ResourceConfig(omit_none_attributes=True)`** opt-in to drop `None`-valued fields from DynamoDB items before marshalling (#1). Without this flag, boto3 marshalls `None` as `{"NULL": True}`, which makes `attribute_not_exists(field)` return False after the very first PUT — breaking the standard "claim this slot" conditional-update pattern. Off by default for backward compatibility; recommended for any resource that uses `Optional` fields as slot markers.
