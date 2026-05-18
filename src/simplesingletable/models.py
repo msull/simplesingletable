@@ -2,7 +2,7 @@ import gzip
 import json
 import sys
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import (
     TYPE_CHECKING,
@@ -1046,8 +1046,9 @@ def clean_data(data: dict, omit_none: bool = False):
         elif isinstance(value, float):
             # convert floats to Decimal for DynamoDB compatibility
             data[key] = Decimal(str(value))
-        elif isinstance(value, datetime):
-            # convert datetimes to isoformat -- dynamodb has no native datetime
+        elif isinstance(value, date):
+            # datetime is a subclass of date; both serialize to isoformat
+            # since DynamoDB has no native date/datetime type
             data[key] = value.isoformat()
         elif isinstance(value, set) and not value:
             # clear out empty sets entirely from the data
@@ -1066,12 +1067,14 @@ def clean_data(data: dict, omit_none: bool = False):
 
 
 def _clean_list(lst: list, omit_none: bool = False):
-    """Clean list items, converting floats to Decimal."""
+    """Clean list items, converting floats to Decimal and date/datetime to isoformat."""
 
     cleaned = []
     for item in lst:
         if isinstance(item, float):
             cleaned.append(Decimal(str(item)))
+        elif isinstance(item, date):
+            cleaned.append(item.isoformat())
         elif isinstance(item, dict):
             cleaned.append(clean_data(item, omit_none=omit_none))
         elif isinstance(item, list):
