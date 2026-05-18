@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+* **`clean_data` now serializes `datetime.date` values** alongside `datetime.datetime` (#5). Previously, Pydantic fields typed as plain `date` on uncompressed resources reached boto3 as raw `date` instances and raised `TypeError: Unsupported type "<class 'datetime.date'>"` on save. The check now uses `isinstance(value, date)`, which covers both `date` and `datetime` (since `datetime` subclasses `date`). The same conversion is applied inside `_clean_list` so date values nested in lists round-trip correctly as well.
+
 ## [17.0.0] 2026-05-13
 
 ### Added
