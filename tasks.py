@@ -1,3 +1,5 @@
+import re
+from datetime import date as _date
 from pathlib import Path
 from time import sleep
 
@@ -7,10 +9,35 @@ from invoke import Context, task
 class Paths:
     repo_root = Path(__file__).parent
     example_tables = repo_root / "example_tables"
+    changelog = repo_root / "CHANGELOG.md"
+    pyproject = repo_root / "pyproject.toml"
 
 
 def from_repo_root(c: Context):
     return c.cd(Paths.repo_root)
+
+
+def _read_current_version() -> str:
+    text = Paths.pyproject.read_text()
+    # Read from the bumpver-owned line so we always agree with bumpver.
+    match = re.search(r'^current_version = "([^"]+)"', text, flags=re.MULTILINE)
+    if not match:
+        raise SystemExit("Could not find [tool.bumpver].current_version in pyproject.toml")
+    return match.group(1)
+
+
+def _compute_new_version(current: str, major: bool, minor: bool, patch: bool) -> str:
+    parts = current.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        raise SystemExit(f"Unexpected version format (expected MAJOR.MINOR.PATCH): {current!r}")
+    M, m, p = (int(x) for x in parts)
+    if major:
+        return f"{M + 1}.0.0"
+    if minor:
+        return f"{M}.{m + 1}.0"
+    if patch:
+        return f"{M}.{m}.{p + 1}"
+    raise SystemExit("Must specify exactly one of --major, --minor, --patch")
 
 
 @task
@@ -105,10 +132,33 @@ def run_streamlit_app(c: Context):
 
 
 @task
+def stamp_changelog(c: Context, version: str, release_date: str = ""):
+    """Convert the `## [Unreleased]` section into a dated release header for `version`.
+
+    Leaves an empty `## [Unreleased]` section above the new one so the next cycle can
+    accumulate entries in the same place.
+    """
+    if not release_date:
+        release_date = _date.today().isoformat()
+    text = Paths.changelog.read_text()
+    marker = "## [Unreleased]"
+    if marker not in text:
+        raise SystemExit(f"CHANGELOG.md is missing a '{marker}' section")
+    new_header = f"{marker}\n\n## [{version}] {release_date}"
+    Paths.changelog.write_text(text.replace(marker, new_header, 1))
+    print(f"Stamped CHANGELOG.md with [{version}] {release_date}")
+
+
+@task
 def fullrelease(c: Context, major=False, minor=False, patch=False):
     lint(c)
     with from_repo_root(c):
         c.run("pytest", pty=True)
+    new_version = _compute_new_version(_read_current_version(), major, minor, patch)
+    stamp_changelog(c, new_version)
+    with from_repo_root(c):
+        c.run("git add CHANGELOG.md", pty=True)
+        c.run('git commit -m "update CHANGELOG for release"', pty=True)
     bumpver(c, major, minor, patch)
     build(c)
     publish(c, testpypi=False)
