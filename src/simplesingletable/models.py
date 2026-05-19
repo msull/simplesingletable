@@ -542,7 +542,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
 
             # Reconstruct proper types from deserialized data
             # This converts dicts back to Pydantic models for fields like list[BaseModel]
-            field_info = self.model_fields.get(field_name)
+            field_info = type(self).model_fields.get(field_name)
             if field_info and field_info.annotation and blob_data is not None:
                 try:
                     type_adapter = TypeAdapter(field_info.annotation)

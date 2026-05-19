@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+* **Pydantic 2.11+ deprecation warning** when accessing `model_fields` on resource instances. All internal lookups now use `type(instance).model_fields` instead of `instance.model_fields`, which is the canonical class-level access and silences `PydanticDeprecatedSince211`. No behavior change; affects `dynamodb_memory.py`, `local_storage_memory.py`, `models.py`, and `extras/habit_tracker.py`.
+
 ## [17.0.1] 2026-05-18
 
 ### Fixed

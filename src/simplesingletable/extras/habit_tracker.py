@@ -31,7 +31,7 @@ class HabitTracker(BaseModel):
         for all fields whose type is set[str].
         """
         summary = {}
-        for field_name, field_info in self.model_fields.items():
+        for field_name, field_info in type(self).model_fields.items():
             annot_str = str(field_info.annotation)
             if annot_str in ["set[str]", "typing.Set[str]", "Optional[set[str]]", "typing.Optional[set[str]]"]:
                 summary[field_name] = len(getattr(self, field_name) or set())
@@ -41,7 +41,7 @@ class HabitTracker(BaseModel):
         return_list = []
 
         # For each habit field that is a set[str], parse its entries
-        for field_name, field_info in self.model_fields.items():
+        for field_name, field_info in type(self).model_fields.items():
             # Check if this field is a set[str] or optional set[str]
             annot_str = str(field_info.annotation)
             if annot_str not in ["set[str]", "typing.Set[str]", "Optional[set[str]]", "typing.Optional[set[str]]"]:
@@ -76,7 +76,7 @@ class HabitTracker(BaseModel):
         date_summary = defaultdict(lambda: defaultdict(int))
 
         # For each habit field that is a set[str], parse its entries
-        for field_name, field_info in self.model_fields.items():
+        for field_name, field_info in type(self).model_fields.items():
             # Check if this field is a set[str] or optional set[str]
             annot_str = str(field_info.annotation)
             if annot_str not in ["set[str]", "typing.Set[str]", "Optional[set[str]]", "typing.Optional[set[str]]"]:
@@ -170,7 +170,7 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
             raise ValueError(f"Provided datetime {dt} is not in the correct month {self.month}.")
 
         # 2. Ensure habit_name is a declared set[str] field
-        field_info = self.model_fields.get(habit_name)
+        field_info = type(self).model_fields.get(habit_name)
         if not field_info:
             raise ValueError(f"Habit field '{habit_name}' is not declared on this model.")
 
@@ -307,7 +307,7 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
             raise ValueError(f"Provided datetime {dt} is not in the correct month {self.month}.")
 
         # 2. Ensure habit_name is declared as set[str]
-        field_info = self.model_fields.get(habit_name)
+        field_info = type(self).model_fields.get(habit_name)
         if not field_info:
             raise ValueError(f"Habit field '{habit_name}' is not declared on this model.")
 
@@ -400,7 +400,7 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
 
         date_summary = defaultdict(lambda: defaultdict(int))
 
-        for field_name, field_info in self.model_fields.items():
+        for field_name, field_info in type(self).model_fields.items():
             annot_str = str(field_info.annotation)
             if annot_str not in ["set[str]", "typing.Set[str]", "Optional[set[str]]", "typing.Optional[set[str]]"]:
                 continue
@@ -437,7 +437,7 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
         month_int = int(self.month[4:])
 
         return_list = []
-        for field_name, field_info in self.model_fields.items():
+        for field_name, field_info in type(self).model_fields.items():
             annot_str = str(field_info.annotation)
             if annot_str not in ["set[str]", "typing.Set[str]", "Optional[set[str]]", "typing.Optional[set[str]]"]:
                 continue

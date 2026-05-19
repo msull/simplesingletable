@@ -371,7 +371,9 @@ class LocalStorageMemory:
                 if field_name in blob_fields_config and value is not None:
                     # Get field annotation for proper serialization
                     field_annotation = (
-                        resource.model_fields[field_name].annotation if field_name in resource.model_fields else None
+                        type(resource).model_fields[field_name].annotation
+                        if field_name in type(resource).model_fields
+                        else None
                     )
 
                     self.s3_blob_storage.put_blob(
@@ -422,7 +424,9 @@ class LocalStorageMemory:
             for field_name, value in blob_fields_data.items():
                 if field_name in blob_fields_config and value is not None:
                     field_annotation = (
-                        resource.model_fields[field_name].annotation if field_name in resource.model_fields else None
+                        type(resource).model_fields[field_name].annotation
+                        if field_name in type(resource).model_fields
+                        else None
                     )
 
                     self.s3_blob_storage.put_blob(
@@ -539,7 +543,9 @@ class LocalStorageMemory:
             for field_name, value in blob_fields_data.items():
                 if field_name in blob_fields_config and value is not None:
                     field_annotation = (
-                        resource.model_fields[field_name].annotation if field_name in resource.model_fields else None
+                        type(resource).model_fields[field_name].annotation
+                        if field_name in type(resource).model_fields
+                        else None
                     )
 
                     self.s3_blob_storage.put_blob(

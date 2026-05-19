@@ -825,7 +825,9 @@ class DynamoDbMemory:
                 if field_name in blob_fields_config and value is not None:
                     # Get field annotation for proper serialization
                     field_annotation = (
-                        resource.model_fields[field_name].annotation if field_name in resource.model_fields else None
+                        type(resource).model_fields[field_name].annotation
+                        if field_name in type(resource).model_fields
+                        else None
                     )
 
                     self.s3_blob_storage.put_blob(
@@ -883,7 +885,9 @@ class DynamoDbMemory:
                 if field_name in blob_fields_config and value is not None:
                     # Get field annotation for proper serialization
                     field_annotation = (
-                        resource.model_fields[field_name].annotation if field_name in resource.model_fields else None
+                        type(resource).model_fields[field_name].annotation
+                        if field_name in type(resource).model_fields
+                        else None
                     )
 
                     self.s3_blob_storage.put_blob(
@@ -947,7 +951,9 @@ class DynamoDbMemory:
                 if field_name in blob_fields_config and value is not None:
                     # Get field annotation for proper serialization
                     field_annotation = (
-                        resource.model_fields[field_name].annotation if field_name in resource.model_fields else None
+                        type(resource).model_fields[field_name].annotation
+                        if field_name in type(resource).model_fields
+                        else None
                     )
 
                     self.s3_blob_storage.put_blob(
@@ -1303,12 +1309,12 @@ class DynamoDbMemory:
             raise TypeError("increment_counter can only be utilized with non-versioned resources")
         if "." in field_name:
             first_part, remainder = field_name.split(".", maxsplit=1)
-            field = existing_resource.model_fields.get(first_part)
+            field = type(existing_resource).model_fields.get(first_part)
             if not field:
                 raise ValueError(f"Unknown field {first_part=}")
             return self._increment_mapped_counter(existing_resource, first_part, field, remainder, incr_by)
         else:
-            field = existing_resource.model_fields.get(field_name)
+            field = type(existing_resource).model_fields.get(field_name)
             if not field:
                 raise ValueError(f"Unknown field {field_name=}")
             return self._increment_nonmapped_counter(existing_resource, field_name, field, incr_by)
@@ -1317,7 +1323,7 @@ class DynamoDbMemory:
         if not issubclass(existing_resource.__class__, DynamoDbResource):
             raise TypeError("add_to_set can only be utilized with non-versioned resources")
         key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
-        field = existing_resource.model_fields.get(field_name)
+        field = type(existing_resource).model_fields.get(field_name)
         if not field:
             raise ValueError(f"Unknown field {field_name=}")
         if not (field.annotation == set[str] or field.annotation == Optional[set[str]]):
@@ -1334,7 +1340,7 @@ class DynamoDbMemory:
         if not issubclass(existing_resource.__class__, DynamoDbResource):
             raise TypeError("remove_from_set can only be utilized with non-versioned resources")
         key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
-        field = existing_resource.model_fields.get(field_name)
+        field = type(existing_resource).model_fields.get(field_name)
         if not field:
             raise ValueError(f"Unknown field {field_name=}")
         if not (field.annotation == set[str] or field.annotation == Optional[set[str]]):
