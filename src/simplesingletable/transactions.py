@@ -885,6 +885,7 @@ class TransactionContext:
                     if has_condition_failure:
                         if self._should_retry(reasons, failed_op_indexes) and retries < self.max_retries:
                             retries += 1
+                            self._invalidate_cached_state(failed_op_indexes)
                             logger.warning(
                                 f"Transaction failed on implicit condition, retrying " f"({retries}/{self.max_retries})"
                             )
@@ -933,6 +934,23 @@ class TransactionContext:
                     seen.add(op_index)
                     ordered.append(op_index)
         return ordered
+
+    def _invalidate_cached_state(self, failed_op_indexes: List[int]) -> None:
+        """Drop cached pre-images for ops whose implicit conditions failed.
+
+        A retry that rebuilds from ``op.current`` or the read cache re-derives the
+        same stale version number and is guaranteed to fail again. Clearing these
+        forces the rebuild to re-read fresh state from DynamoDB. If the failed ops
+        cannot be resolved back to indexes, all cached state is dropped.
+        """
+        if failed_op_indexes:
+            ops = [self.operations[i] for i in failed_op_indexes if i < len(self.operations)]
+        else:
+            ops = list(self.operations)
+        for op in ops:
+            op.current = None
+            if op.resource_id:
+                self.read_cache.pop(f"{op.resource_class.__name__}#{op.resource_id}", None)
 
     def _should_retry(self, reasons: List[Dict[str, Any]], failed_op_indexes: List[int]) -> bool:
         """Return True only if every failure came from a library-implicit condition.
