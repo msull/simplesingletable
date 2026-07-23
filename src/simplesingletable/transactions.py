@@ -39,6 +39,16 @@ _TRANSIENT_ERROR_CODES = {
 }
 
 
+def _validate_condition_names(condition_names: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+    """Validate a ``#alias -> attribute-name`` mapping for a condition expression."""
+    if not condition_names:
+        return None
+    bad = [alias for alias in condition_names if not alias.startswith("#")]
+    if bad:
+        raise ValueError(f"condition_names aliases must start with '#': {sorted(bad)}")
+    return dict(condition_names)
+
+
 def _marshall_values(values: Dict[str, Any]) -> Dict[str, Any]:
     """Marshall expression values with the same normalization as item writes.
 
@@ -127,6 +137,7 @@ class TransactionOperation:
     value: Optional[Any] = None
     condition: Optional[str] = None
     condition_values: Optional[Dict[str, Any]] = None
+    condition_names: Optional[Dict[str, str]] = None
     recompute_gsis: bool = False
     current: Optional[DynamoDbResource] = None
 
@@ -157,9 +168,21 @@ class TransactionContext:
     resources_by_type: Dict[Type, List[TransactionOperation]] = field(default_factory=lambda: defaultdict(list))
 
     def create(
-        self, resource: DynamoDbResource, condition: Optional[str] = None, **condition_values
+        self,
+        resource: DynamoDbResource,
+        condition: Optional[str] = None,
+        condition_names: Optional[Dict[str, str]] = None,
+        **condition_values,
     ) -> DynamoDbResource:
-        """Queue a create operation."""
+        """Queue a create operation.
+
+        Args:
+            condition: Optional DynamoDB condition expression string.
+            condition_names: ``#alias -> attribute-name`` mapping for the condition,
+                needed when the condition references a DynamoDB reserved word
+                (``status``, ``name``, ``total``, ...).
+            **condition_values: Colon-prefixed values for the condition expression.
+        """
         if not resource.resource_id:
             resource.resource_id = generate_date_sortable_id()
 
@@ -173,6 +196,7 @@ class TransactionContext:
             resource=resource,
             condition=condition,
             condition_values=condition_values or None,
+            condition_names=_validate_condition_names(condition_names),
         )
 
         self.operations.append(op)
@@ -189,6 +213,7 @@ class TransactionContext:
         updates: Optional[Dict[str, Any]] = None,
         condition: Optional[str] = None,
         condition_values: Optional[Dict[str, Any]] = None,
+        condition_names: Optional[Dict[str, str]] = None,
         clear_fields: Optional[Union[List[str], Set[str]]] = None,
         recompute_gsis: bool = False,
         current: Optional[DynamoDbResource] = None,
@@ -202,6 +227,8 @@ class TransactionContext:
             updates: Mapping of field-name to new value.
             condition: Optional DynamoDB condition expression string.
             condition_values: Values for the condition expression.
+            condition_names: ``#alias -> attribute-name`` mapping for the condition,
+                needed when the condition references a DynamoDB reserved word.
             clear_fields: Field names to REMOVE from the item (sets the underlying
                 model field to ``None`` for purposes of GSI recomputation). Emitted
                 as a ``REMOVE`` clause in the same update expression.
@@ -251,6 +278,7 @@ class TransactionContext:
             clear_fields=clear_fields_list,
             condition=condition,
             condition_values=condition_values,
+            condition_names=_validate_condition_names(condition_names),
             recompute_gsis=recompute_gsis,
             current=current,
         )
@@ -264,6 +292,7 @@ class TransactionContext:
         resource: DynamoDbResource,
         condition: Optional[str] = None,
         condition_values: Optional[Dict[str, Any]] = None,
+        condition_names: Optional[Dict[str, str]] = None,
     ) -> TransactionOperation:
         """Queue a full-state PUT operation.
 
@@ -300,6 +329,7 @@ class TransactionContext:
             resource_id=resource.resource_id,
             condition=condition,
             condition_values=condition_values,
+            condition_names=_validate_condition_names(condition_names),
         )
 
         self.operations.append(op)
@@ -312,6 +342,7 @@ class TransactionContext:
         resource: Union[DynamoDbResource, Type[DynamoDbResource]],
         resource_id: Optional[str] = None,
         condition: Optional[str] = None,
+        condition_names: Optional[Dict[str, str]] = None,
         **condition_values,
     ) -> TransactionOperation:
         """Queue a delete operation."""
@@ -332,6 +363,7 @@ class TransactionContext:
             resource_id=resource_id,
             condition=condition,
             condition_values=condition_values or None,
+            condition_names=_validate_condition_names(condition_names),
         )
 
         self.operations.append(op)
@@ -499,6 +531,8 @@ class TransactionContext:
 
             if op.condition_values:
                 put_item["Put"]["ExpressionAttributeValues"] = _marshall_values(op.condition_values)
+            if op.condition_names:
+                put_item["Put"]["ExpressionAttributeNames"] = dict(op.condition_names)
 
             return [put_item]
 
@@ -515,7 +549,9 @@ class TransactionContext:
         set_parts: List[str] = []
         remove_parts: List[str] = []
         expression_values: Dict[str, Any] = {}
-        expression_names: Dict[str, str] = {}
+        # Seed with user-supplied condition aliases so placeholder allocation
+        # reuses them (same mapping) or avoids them (conflicting mapping).
+        expression_names: Dict[str, str] = dict(op.condition_names or {})
 
         # Resolve current state (only needed for GSI recompute on non-versioned).
         current = op.current
@@ -726,6 +762,8 @@ class TransactionContext:
         }
         if op.condition_values:
             put_item["Put"]["ExpressionAttributeValues"] = _marshall_values(op.condition_values)
+        if op.condition_names:
+            put_item["Put"]["ExpressionAttributeNames"] = dict(op.condition_names)
 
         op.result_resource = resource
         return [put_item]
@@ -801,6 +839,8 @@ class TransactionContext:
             delete_item["Delete"]["ConditionExpression"] = op.condition
             if op.condition_values:
                 delete_item["Delete"]["ExpressionAttributeValues"] = _marshall_values(op.condition_values)
+            if op.condition_names:
+                delete_item["Delete"]["ExpressionAttributeNames"] = dict(op.condition_names)
 
         return [delete_item]
 
