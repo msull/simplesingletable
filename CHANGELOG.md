@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+* **BREAKING: `TransactionContext.put()` applies optimistic locking by default** (#8). The put is now guarded on the resource's `updated_at` as captured at queue time, ANDed with any user-supplied `condition=`. If another writer modified the item after the resource was read, the commit raises `TransactionConditionFailedError` instead of silently overwriting the concurrent write — a full-state put built from a stale read is a full-state lost update. The guard is never auto-retried (a resend of the same stale state cannot succeed; re-read and re-apply to make progress). Pass `optimistic=False` to restore the previous last-writer-wins behavior. Callers whose put resources always hold a fresh read are unaffected.
+
+* **Transaction retry policy now covers transient failures** (#8). When `auto_retry=True` (still the default), a `TransactionCanceledException` whose cancellation reasons are all transient (`TransactionConflict`, throttling, capacity) and top-level transient error codes (`TransactionInProgressException`, `ThrottlingException`, `ProvisionedThroughputExceededException`, `RequestLimitExceeded`, `InternalServerError`) are retried up to `max_retries` times with full-jitter exponential backoff. Previously all of these raised `TransactionError` immediately, even though they are the one class of failure where resending identical items can succeed.
+
+* **`TransactionContext.increment(amount=...)`** accepts `int | float | Decimal` (previously typed `int`); float amounts are normalized to `Decimal` like every other transactional expression value (#8).
+
+### Added
+
+* **`condition_names` parameter on `TransactionContext.create` / `put` / `update` / `delete`** (#8) supplies `#alias -> attribute-name` mappings (`ExpressionAttributeNames`) for condition expressions, making it possible to write conditions against DynamoDB reserved words (`status`, `name`, `total`, ...). Previously `Put`/`Delete` items never set `ExpressionAttributeNames` at all, and `Update` only aliased fields that also appeared in `updates=`, so such conditions were impossible to express. On `update`, user-supplied aliases seed the placeholder allocator so they can never collide with auto-generated `SET` placeholders.
+
+### Fixed
+
+* **Transactional expression values are normalized through `clean_data`** (#8). `txn.update(updates=...)`, `condition_values` on every operation, `txn.increment`, and `txn.append` previously passed values straight to boto3's `TypeSerializer`, so a plain `float` raised `TypeError: Float types are not supported` and a `datetime` raised `Unsupported type` at build time. All expression values now get the same `float`→`Decimal` / `date`/`datetime`→ISO-format conversion (recursively, through nested dicts and lists) as `to_dynamodb_item()` on the non-transactional write path. Empty sets — which `clean_data` silently drops on item writes — raise a clear client-side `ValueError` instead of leaving a dangling expression placeholder.
+
+* **Implicit-condition retries no longer rebuild from stale cached state** (#8). When a versioned update failed its version-token check and was retried, the rebuild reused the caller-supplied `current=` pre-image or the snapshot-isolation read cache, re-derived the same stale version number, and was guaranteed to fail again — burning every retry before raising `VersionConflictError`. The failed operations now have `op.current` cleared and their read-cache entries dropped before the rebuild, so the retry re-reads fresh state and can actually make progress.
+
+* **`txn.put` no longer mutates the caller's resource on a failed commit** (#8). The builder previously bumped `updated_at` on the caller's object during every build attempt, so a failed transaction left the object holding a timestamp that was never written (which would in turn poison the new optimistic guard on the next attempt). The builder now works on a copy; `commit()` syncs the written `updated_at` back onto the caller's object only after success, so a successfully-put object remains valid for a follow-up optimistic put.
+
+* **`TRANSACTION_USAGE.md` refreshed** (#8): documents `txn.put` as the overwrite path (with optimistic locking and opt-out), `recompute_gsis`/`clear_fields`, `condition_names` for reserved words, and the actual retry semantics; removed a stale `_version_token` implementation note that described a mechanism that does not exist.
+
 ## [17.0.2] 2026-05-19
 
 ### Fixed
