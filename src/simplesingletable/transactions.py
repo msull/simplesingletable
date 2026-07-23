@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import random
+import time
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -18,6 +20,23 @@ if TYPE_CHECKING:
     from .dynamodb_memory import DynamoDbMemory
 
 logger = logging.getLogger(__name__)
+
+# Cancellation-reason codes (within TransactionCanceledException) that are transient:
+# the write lost a race or hit capacity limits, and an identical resend can succeed.
+_TRANSIENT_CANCELLATION_CODES = {
+    "TransactionConflict",
+    "ThrottlingError",
+    "ProvisionedThroughputExceeded",
+}
+
+# Top-level ClientError codes that are likewise transient for transact_write_items.
+_TRANSIENT_ERROR_CODES = {
+    "TransactionInProgressException",
+    "ThrottlingException",
+    "ProvisionedThroughputExceededException",
+    "RequestLimitExceeded",
+    "InternalServerError",
+}
 
 
 def _marshall_values(values: Dict[str, Any]) -> Dict[str, Any]:
@@ -843,6 +862,10 @@ class TransactionContext:
           ``condition=``, the failure is raised immediately. User-supplied conditions
           encode semantic intent (e.g., "this slot must be empty"); retrying them
           three times is pure latency for what the caller wants to be a fast 409.
+        - Transient failures — a cancellation whose reasons are all
+          ``TransactionConflict``/throttling, or a top-level throttling /
+          ``TransactionInProgressException`` error — are retried up to
+          ``max_retries`` times with full-jitter exponential backoff.
         """
         if not self.operations:
             return  # Nothing to commit
@@ -897,12 +920,39 @@ class TransactionContext:
                             operation_indexes=failed_op_indexes,
                         ) from e
 
-                    # Cancellation with no ConditionalCheckFailed reason (capacity, etc).
+                    # No ConditionalCheckFailed reason. If every real reason is
+                    # transient (write-write conflict, throttling), an identical
+                    # resend can succeed — retry with backoff.
+                    real_reasons = [r.get("Code") for r in reasons if r.get("Code") not in (None, "None")]
+                    all_transient = bool(real_reasons) and all(
+                        code in _TRANSIENT_CANCELLATION_CODES for code in real_reasons
+                    )
+                    if all_transient and self.auto_retry and retries < self.max_retries:
+                        retries += 1
+                        logger.warning(
+                            f"Transaction cancelled for transient reason(s) {sorted(set(real_reasons))}, "
+                            f"retrying ({retries}/{self.max_retries})"
+                        )
+                        self._sleep_backoff(retries)
+                        continue
+
+                    # Non-transient cancellation (or retries exhausted).
                     raise TransactionError(
                         f"Transaction cancelled: {reasons}",
                         cancellation_reasons=reasons,
                         operation_indexes=failed_op_indexes,
                     ) from e
+
+                elif error_code in _TRANSIENT_ERROR_CODES:
+                    if self.auto_retry and retries < self.max_retries:
+                        retries += 1
+                        logger.warning(
+                            f"Transaction failed with transient error {error_code}, "
+                            f"retrying ({retries}/{self.max_retries})"
+                        )
+                        self._sleep_backoff(retries)
+                        continue
+                    raise TransactionError(f"Transaction failed: {e}") from e
 
                 elif error_code == "ConditionalCheckFailedException":
                     # Surfaces on some single-item transaction paths; normalize the same way.
@@ -934,6 +984,11 @@ class TransactionContext:
                     seen.add(op_index)
                     ordered.append(op_index)
         return ordered
+
+    @staticmethod
+    def _sleep_backoff(attempt: int) -> None:
+        """Full-jitter exponential backoff: sleep uniform(0, min(1s, 50ms * 2**attempt))."""
+        time.sleep(random.uniform(0, min(1.0, 0.05 * (2**attempt))))
 
     def _invalidate_cached_state(self, failed_op_indexes: List[int]) -> None:
         """Drop cached pre-images for ops whose implicit conditions failed.
