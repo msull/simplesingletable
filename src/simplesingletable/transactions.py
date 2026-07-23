@@ -11,13 +11,29 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Type, Union
 
 from botocore.exceptions import ClientError
 
-from .models import DynamoDbResource, DynamoDbVersionedResource
+from .models import DynamoDbResource, DynamoDbVersionedResource, clean_data
 from .utils import generate_date_sortable_id, marshall
 
 if TYPE_CHECKING:
     from .dynamodb_memory import DynamoDbMemory
 
 logger = logging.getLogger(__name__)
+
+
+def _marshall_values(values: Dict[str, Any]) -> Dict[str, Any]:
+    """Marshall expression values with the same normalization as item writes.
+
+    Routes values through ``clean_data`` (float→Decimal, date/datetime→isoformat,
+    recursively) before boto3's ``TypeSerializer``, matching what
+    ``to_dynamodb_item()`` does on the non-transactional write path.
+    """
+    cleaned = clean_data(values)
+    # clean_data silently drops empty sets, which is fine for a full item put but
+    # would leave a dangling placeholder in an update/condition expression.
+    missing = set(values) - set(cleaned)
+    if missing:
+        raise ValueError(f"Empty set value(s) not supported in transaction expressions: {sorted(missing)}")
+    return marshall(cleaned)
 
 
 class TransactionError(Exception):
@@ -463,7 +479,7 @@ class TransactionContext:
             }
 
             if op.condition_values:
-                put_item["Put"]["ExpressionAttributeValues"] = marshall(op.condition_values)
+                put_item["Put"]["ExpressionAttributeValues"] = _marshall_values(op.condition_values)
 
             return [put_item]
 
@@ -540,7 +556,7 @@ class TransactionContext:
                 "Key": marshall({"pk": pk, "sk": sk}),
                 "UpdateExpression": update_expr,
                 "ExpressionAttributeNames": expression_names,
-                "ExpressionAttributeValues": marshall(expression_values),
+                "ExpressionAttributeValues": _marshall_values(expression_values),
             }
         }
 
@@ -549,7 +565,7 @@ class TransactionContext:
             update_item["Update"]["ConditionExpression"] = op.condition
             if op.condition_values:
                 # Merge condition values into expression attribute values
-                for k, v in marshall(op.condition_values).items():
+                for k, v in _marshall_values(op.condition_values).items():
                     update_item["Update"]["ExpressionAttributeValues"][k] = v
 
         return [update_item]
@@ -690,7 +706,7 @@ class TransactionContext:
             "Put": {"TableName": self.memory.table_name, "Item": marshall(item), "ConditionExpression": condition}
         }
         if op.condition_values:
-            put_item["Put"]["ExpressionAttributeValues"] = marshall(op.condition_values)
+            put_item["Put"]["ExpressionAttributeValues"] = _marshall_values(op.condition_values)
 
         op.result_resource = resource
         return [put_item]
@@ -765,7 +781,7 @@ class TransactionContext:
         if op.condition:
             delete_item["Delete"]["ConditionExpression"] = op.condition
             if op.condition_values:
-                delete_item["Delete"]["ExpressionAttributeValues"] = marshall(op.condition_values)
+                delete_item["Delete"]["ExpressionAttributeValues"] = _marshall_values(op.condition_values)
 
         return [delete_item]
 
@@ -781,7 +797,7 @@ class TransactionContext:
                 "Key": marshall({"pk": pk, "sk": sk}),
                 "UpdateExpression": f"ADD #{op.field_name} :inc",
                 "ExpressionAttributeNames": {f"#{op.field_name}": op.field_name},
-                "ExpressionAttributeValues": marshall({":inc": op.value}),
+                "ExpressionAttributeValues": _marshall_values({":inc": op.value}),
             }
         }
 
@@ -799,7 +815,7 @@ class TransactionContext:
                 "Key": marshall({"pk": pk, "sk": sk}),
                 "UpdateExpression": f"SET #{op.field_name} = list_append(if_not_exists(#{op.field_name}, :empty_list), :val)",
                 "ExpressionAttributeNames": {f"#{op.field_name}": op.field_name},
-                "ExpressionAttributeValues": marshall({":val": op.value, ":empty_list": []}),
+                "ExpressionAttributeValues": _marshall_values({":val": op.value, ":empty_list": []}),
             }
         }
 
