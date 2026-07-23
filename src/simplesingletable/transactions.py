@@ -293,6 +293,7 @@ class TransactionContext:
         condition: Optional[str] = None,
         condition_values: Optional[Dict[str, Any]] = None,
         condition_names: Optional[Dict[str, str]] = None,
+        optimistic: bool = True,
     ) -> TransactionOperation:
         """Queue a full-state PUT operation.
 
@@ -303,14 +304,23 @@ class TransactionContext:
         - Recomputes every GSI key (via ``_apply_gsi_configuration``).
         - Removes attributes that were nulled out (when paired with
           ``ResourceConfig(omit_none_attributes=True)``).
-        - Updates the ``updated_at`` timestamp if the caller already bumped it.
+        - Bumps the ``updated_at`` timestamp automatically.
 
         ``put`` does NOT exist for versioned resources — those require explicit
         version-incrementing semantics; use :meth:`update` for those.
 
         The default condition is ``attribute_exists(pk)`` (i.e., the resource must
         already exist; for fresh inserts use :meth:`create`). Override via
-        ``condition``/``condition_values``.
+        ``condition``/``condition_values``/``condition_names``.
+
+        Optimistic locking (``optimistic=True``, the default) additionally guards
+        the write on the resource's ``updated_at`` as captured at queue time: if
+        another writer modified the item since this resource was read, the commit
+        raises :class:`TransactionConditionFailedError` instead of silently
+        overwriting their write (full-state put = full-state lost update). The
+        guard is ANDed with any user-supplied ``condition``. It is never
+        auto-retried — the caller must re-read and re-apply to make progress.
+        Pass ``optimistic=False`` for last-writer-wins semantics.
         """
         if isinstance(resource, DynamoDbVersionedResource):
             raise ValueError(
@@ -321,6 +331,17 @@ class TransactionContext:
             raise TypeError("txn.put() requires a DynamoDbResource instance")
         if not resource.resource_id:
             raise ValueError("Resource must have a resource_id before put()")
+
+        condition_names = _validate_condition_names(condition_names)
+        if optimistic:
+            # Capture the expected token NOW — the builder bumps resource.updated_at
+            # on every (re)build, so it must not be read at build time.
+            if resource.updated_at is None:
+                raise ValueError("optimistic=True requires a previously-persisted resource with updated_at set")
+            base = condition or "attribute_exists(pk) AND attribute_exists(sk)"
+            condition = f"({base}) AND #expected_updated_at = :expected_updated_at"
+            condition_values = {**(condition_values or {}), ":expected_updated_at": resource.updated_at}
+            condition_names = {**(condition_names or {}), "#expected_updated_at": "updated_at"}
 
         op = TransactionOperation(
             operation_type=OperationType.PUT,
@@ -750,7 +771,10 @@ class TransactionContext:
         """Build transaction items for a full-state PUT."""
         from datetime import datetime, timezone
 
-        resource = op.resource
+        # Work on a copy: the caller's object must not be mutated unless the
+        # commit succeeds (commit() syncs updated_at back on success), otherwise
+        # a failed attempt poisons the optimistic token for the next try.
+        resource = op.resource.model_copy(deep=True)
         # Always bump updated_at so callers don't have to remember.
         resource.updated_at = datetime.now(timezone.utc)
 
@@ -920,6 +944,12 @@ class TransactionContext:
 
             try:
                 response = self.memory.dynamodb_client.transact_write_items(TransactItems=items)
+
+                # Sync the written updated_at back onto callers' PUT objects so a
+                # follow-up optimistic put with the same object holds a valid token.
+                for op in self.operations:
+                    if op.operation_type == OperationType.PUT and op.result_resource is not None:
+                        op.resource.updated_at = op.result_resource.updated_at
 
                 # Post-commit hooks: audit emission + stats counter updates.
                 # Done before clearing so we can still walk the operations list.
