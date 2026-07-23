@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Type, Union
 
@@ -395,10 +396,10 @@ class TransactionContext:
         self,
         resource: Union[DynamoDbResource, Type[DynamoDbResource]],
         field_name: str,
-        amount: int = 1,
+        amount: Union[int, float, Decimal] = 1,
         resource_id: Optional[str] = None,
     ) -> TransactionOperation:
-        """Queue an increment operation."""
+        """Queue an increment operation (``amount`` may be negative to decrement)."""
         if isinstance(resource, type):
             if not resource_id:
                 raise ValueError("resource_id required when incrementing by class")

@@ -115,10 +115,12 @@ def test_increment_on_number_field(dynamodb_memory: DynamoDbMemory):
         txn.increment(invoice, "payment_count")
     with dynamodb_memory.transaction() as txn:
         txn.increment(invoice, "grand_total", amount=2)
+    with dynamodb_memory.transaction() as txn:
+        txn.increment(invoice, "grand_total", amount=0.25)
 
     reloaded = dynamodb_memory.get_existing(invoice.resource_id, Invoice)
     assert reloaded.payment_count == 1
-    assert reloaded.grand_total == 3.5
+    assert reloaded.grand_total == 3.75
 
 
 def test_empty_set_value_raises_clear_error(dynamodb_memory: DynamoDbMemory):
