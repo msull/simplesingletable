@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [18.0.0] 2026-07-23
+
 ### Changed
 
 * **BREAKING: `TransactionContext.put()` applies optimistic locking by default** (#8). The put is now guarded on the resource's `updated_at` as captured at queue time, ANDed with any user-supplied `condition=`. If another writer modified the item after the resource was read, the commit raises `TransactionConditionFailedError` instead of silently overwriting the concurrent write — a full-state put built from a stale read is a full-state lost update. The guard is never auto-retried (a resend of the same stale state cannot succeed; re-read and re-apply to make progress). Pass `optimistic=False` to restore the previous last-writer-wins behavior. Callers whose put resources always hold a fresh read are unaffected.
