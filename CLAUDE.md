@@ -29,6 +29,24 @@ pytest -k "test_version"
 inv lint
 ```
 
+### Releasing
+
+```bash
+# Lint, test, stamp CHANGELOG, bump version, build, publish, push (tasks.py: fullrelease)
+inv fullrelease --minor    # or --major / --patch
+```
+
+**Write CHANGELOG entries under `## [Unreleased]`, never under a hand-written version
+header.** `inv fullrelease` calls `stamp_changelog`, which replaces the `## [Unreleased]`
+marker with `## [Unreleased]` followed by a dated `## [X.Y.Z]` header for the version it is
+about to release. Adding that header by hand produces a duplicate — one empty, one with the
+entries — which reads as an empty release. The `## [Unreleased]` marker must be present or
+the release aborts.
+
+The version number itself lives in `[tool.bumpver]` in `pyproject.toml` and is propagated by
+`bumpver` to `package_version` in `src/simplesingletable/__init__.py` and to the version
+line in `README.md`. Do not edit those by hand either.
+
 ## Architecture Overview
 
 ### Core Resource Types

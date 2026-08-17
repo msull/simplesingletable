@@ -9,8 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [18.1.0] 2026-08-17
 
-## [18.1.0] 2026-08-17
-
 ### Added
 
 * **Conditional blob reads** (#9). `head_blob` now returns the object's `etag`, and `get_blob` accepts `if_match=`, so a caller can guarantee the bytes it processes are the bytes it validated — the identity gap that made the blob API unusable for presigned uploads, where the object can be replaced between validation and consumption. Quoted and unquoted ETags are both accepted (they are normalized); an ETag is an opaque identity token, never a checksum, since multipart uploads do not produce MD5s. A conditional read always goes to S3: the cache can attest what an object *was*, not what it is now, so it is bypassed whenever `if_match` is given. `put_blob`, `copy_blob_object` and `head_blob` all record the observed ETag on the returned `BlobPlaceholder` (new optional `etag` key).
