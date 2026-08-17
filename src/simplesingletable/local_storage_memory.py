@@ -16,7 +16,8 @@ from typing import Any, Callable, ClassVar, Optional, Set, Type, TypeVar, Union
 from boto3.dynamodb.conditions import ConditionBase, Key
 from pydantic import BaseModel, Field
 
-from .local_blob_storage import LocalBlobStorage
+from .exceptions import BlobNotFoundError
+from .local_blob_storage import LocalBlobStorage, _compute_etag
 from .models import (
     AuditLog,
     BlobPlaceholder,
@@ -931,6 +932,65 @@ class LocalStorageMemory:
 
             self._save_data(f, data)
 
+    @staticmethod
+    def _blob_version_for(resource: AnyDbResource, field_name: str) -> Optional[int]:
+        """Resolve which blob version a resource's field currently points at."""
+        if isinstance(resource, DynamoDbVersionedResource):
+            return resource._blob_versions.get(field_name, resource.version)
+        return None
+
+    def head_blob(self, resource: AnyDbResource, field_name: str) -> dict:
+        """Get metadata about a resource's blob field without reading it.
+
+        Mirrors ``DynamoDbMemory.head_blob``; see there for the ETag contract.
+
+        Returns:
+            Dict with keys: size_bytes, compressed, content_type, metadata, s3_key, etag
+        """
+        if not self.s3_blob_storage:
+            raise ValueError("Blob storage not configured")
+
+        blob_config = resource.resource_config.get("blob_fields", {}) or {}
+        if field_name not in blob_config:
+            raise ValueError(f"Field '{field_name}' is not configured as a blob field on {resource.__class__.__name__}")
+
+        return self.s3_blob_storage.head_blob(
+            resource_type=resource.__class__.__name__,
+            resource_id=resource.resource_id,
+            field_name=field_name,
+            version=self._blob_version_for(resource, field_name),
+        )
+
+    def read_blob(
+        self,
+        resource: AnyDbResource,
+        field_name: str,
+        *,
+        if_match: Optional[str] = None,
+        max_bytes: Optional[int] = None,
+    ) -> Any:
+        """Read a single blob field's value without mutating the resource.
+
+        Mirrors ``DynamoDbMemory.read_blob``; see there for the full contract.
+        """
+        if not self.s3_blob_storage:
+            raise ValueError("Blob storage not configured")
+
+        blob_config = resource.resource_config.get("blob_fields", {}) or {}
+        if field_name not in blob_config:
+            raise ValueError(f"Field '{field_name}' is not configured as a blob field on {resource.__class__.__name__}")
+
+        effective_max_bytes = max_bytes if max_bytes is not None else blob_config[field_name].get("max_size_bytes")
+
+        return self.s3_blob_storage.get_blob(
+            resource_type=resource.__class__.__name__,
+            resource_id=resource.resource_id,
+            field_name=field_name,
+            version=self._blob_version_for(resource, field_name),
+            if_match=if_match,
+            max_bytes=effective_max_bytes,
+        )
+
     def copy_blob(
         self,
         source_resource: AnyDbResource,
@@ -938,6 +998,7 @@ class LocalStorageMemory:
         target_resource: AnyDbResource,
         target_field: str,
         delete_source: bool = False,
+        source_etag: Optional[str] = None,
     ) -> BlobPlaceholder:
         """Copy a blob field between resources using local filesystem.
 
@@ -947,6 +1008,8 @@ class LocalStorageMemory:
             target_resource: Resource to copy the blob to
             target_field: Name of the target blob field
             delete_source: If True, delete the source blob after copy
+            source_etag: ETag the source must still have, verbatim with quotes. Defaults
+                to the ETag observed by this call's own HEAD.
 
         Returns:
             BlobPlaceholder for the newly copied blob
@@ -1013,6 +1076,7 @@ class LocalStorageMemory:
             target_version=target_version,
             compressed=source_head["compressed"],
             content_type=source_head["content_type"],
+            source_etag=source_etag if source_etag is not None else source_head.get("etag"),
         )
 
         # Update local storage metadata
@@ -1044,6 +1108,7 @@ class LocalStorageMemory:
         compressed: bool = False,
         source_bucket: Optional[str] = None,
         delete_source: bool = False,
+        source_etag: Optional[str] = None,
     ) -> BlobPlaceholder:
         """Register an external file as a blob field on a resource.
 
@@ -1058,6 +1123,8 @@ class LocalStorageMemory:
             compressed: Whether the source file is gzip-compressed
             source_bucket: Ignored for local storage
             delete_source: If True, delete source file after copy
+            source_etag: ETag the source must still have, verbatim with quotes. Defaults
+                to the ETag of the source as observed by this call.
 
         Returns:
             BlobPlaceholder for the registered blob
@@ -1074,7 +1141,7 @@ class LocalStorageMemory:
         # Validate source exists
         source_path = self.s3_blob_storage._key_to_path(source_s3_key)
         if not source_path.exists():
-            raise ValueError(f"Source file not found: {source_s3_key}")
+            raise BlobNotFoundError(f"Source file not found: {source_s3_key}", s3_key=source_s3_key)
 
         # Determine target version
         target_version = None
@@ -1090,6 +1157,7 @@ class LocalStorageMemory:
             target_version=target_version,
             compressed=compressed,
             content_type=content_type,
+            source_etag=source_etag if source_etag is not None else _compute_etag(source_path),
         )
 
         # Update local storage metadata

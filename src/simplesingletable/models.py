@@ -22,6 +22,7 @@ import ulid
 from boto3.dynamodb.types import Binary
 from humanize import naturalsize, precisedelta
 from pydantic import BaseModel, ConfigDict, PrivateAttr, TypeAdapter
+from typing_extensions import NotRequired  # typing.NotRequired requires py3.11
 
 from .utils import _now, generate_date_sortable_id
 
@@ -194,6 +195,15 @@ class BlobPlaceholder(TypedDict):
     size_bytes: int
     content_type: Optional[str]
     compressed: bool
+
+    etag: NotRequired[Optional[str]]
+    """Entity tag of the stored object, verbatim (quotes included).
+
+    Only present when the placeholder was produced by an operation that observed the
+    stored object -- a write, a copy, or a read. Pass it back to ``get_blob(if_match=)``
+    or ``copy_blob(source_etag=)`` to assert the bytes have not been replaced since.
+    Never treat it as a checksum: multipart uploads produce ETags that are not MD5s.
+    """
 
 
 class BaseDynamoDbResource(BaseModel, ABC):

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [18.1.0] 2026-08-17
+
+### Added
+
+* **Conditional blob reads** (#9). `head_blob` now returns the object's `etag`, and `get_blob` accepts `if_match=`, so a caller can guarantee the bytes it processes are the bytes it validated — the identity gap that made the blob API unusable for presigned uploads, where the object can be replaced between validation and consumption. Quoted and unquoted ETags are both accepted (they are normalized); an ETag is an opaque identity token, never a checksum, since multipart uploads do not produce MD5s. A conditional read always goes to S3: the cache can attest what an object *was*, not what it is now, so it is bypassed whenever `if_match` is given. `put_blob`, `copy_blob_object` and `head_blob` all record the observed ETag on the returned `BlobPlaceholder` (new optional `etag` key).
+
+* **`DynamoDbMemory.head_blob(resource, field_name)` and `DynamoDbMemory.read_blob(resource, field_name, ...)`** (#9). Blob metadata and single-field reads previously had no memory-level entry point at all — callers had to reach into `memory.s3_blob_storage` and rebuild the resource-type/id/version triple by hand. `read_blob` returns the value without mutating the resource and carries the `if_match=` / `max_bytes=` guards. Mirrored on `LocalStorageMemory`.
+
+* **Typed blob exceptions** (#9): `BlobNotFoundError`, `BlobPreconditionFailedError`, and `BlobTooLargeError` in the new `simplesingletable.exceptions` module, exported from the package root. "Never uploaded", "changed underneath me", and "too big to pull into memory" are now distinguishable without matching on message text — each carries the relevant context (`s3_key`, `bucket`, `expected_etag`, `size_bytes`/`max_bytes`). All subclass `BlobError(ValueError)`, the type these paths raised before, so existing `except ValueError` handlers are unaffected; `BlobNotFoundError` additionally subclasses `FileNotFoundError`.
+
+* **Read-side size enforcement** (#9). `get_blob(max_bytes=)` refuses an oversized object based on `ContentLength`, before the body is read, so the payload is never allocated in a memory-limited process. `memory.read_blob` defaults `max_bytes` to the field's configured `max_size_bytes`, which until now was only enforced on write. A cached entry that looks oversized is not served, so the limit is always decided by S3's authoritative size rather than the cache's approximate accounting.
+
+* **`source_etag=` on `copy_blob` and `register_external_blob`** (#9), guarding the server-side copy via `CopySourceIfMatch`.
+
+### Fixed
+
+* **`register_external_blob` and `copy_blob` no longer race their own validation** (#9). Both HEAD the source to validate it and then issue a separate `copy_object`, with nothing tying the two together — a replacement written in that window was copied silently, and with `delete_source=True` the original was then deleted. The copy is now guarded on the ETag observed by that same HEAD, so a source replaced mid-operation raises `BlobPreconditionFailedError` instead of quietly substituting the new bytes. Callers who can supply an ETag captured earlier (at upload validation time, in another process) should pass `source_etag=` to extend the guarantee back that far.
+
+* **`register_external_blob` raises `BlobNotFoundError`** for a missing source object instead of a bare `ValueError` (`BlobNotFoundError` subclasses `ValueError`, so this is not a breaking change).
+
 ## [18.0.0] 2026-07-23
 
 ### Changed

@@ -6,6 +6,12 @@ from .dynamodb_memory import (
     PaginatedList,
     exhaust_pagination,
 )
+from .exceptions import (
+    BlobError,
+    BlobNotFoundError,
+    BlobPreconditionFailedError,
+    BlobTooLargeError,
+)
 from .extras.audit import AuditLogQuerier
 from .local_blob_storage import LocalBlobStorage
 from .local_storage_memory import LocalStorageMemory
@@ -24,3 +30,7 @@ _ = AuditConfig
 _ = AuditLog
 _ = LocalStorageMemory
 _ = LocalBlobStorage
+_ = BlobError
+_ = BlobNotFoundError
+_ = BlobPreconditionFailedError
+_ = BlobTooLargeError

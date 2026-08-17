@@ -1042,6 +1042,48 @@ doc.load_blob_fields(memory, fields=["content"])  # Load only content
 doc.load_blob_fields(memory)                       # Load all remaining
 ```
 
+### Inspecting and Reading a Single Blob
+
+```python
+head = memory.head_blob(doc, "content")
+# {"size_bytes": ..., "compressed": ..., "content_type": ...,
+#  "metadata": {...}, "s3_key": ..., "etag": '"9d3f..."'}
+
+value = memory.read_blob(doc, "content")  # returns the value, does not mutate `doc`
+```
+
+### Conditional Reads (Object Identity)
+
+A non-versioned resource's blob has a stable S3 key, so the object at that key can be
+replaced — by a re-`PUT` to a presigned URL, or by another process. Capture the ETag when
+the object is validated and pass it back when it is consumed, and the read either returns
+the bytes you validated or raises:
+
+```python
+# at submit time, in one process
+etag = memory.head_blob(doc, "content")["etag"]   # store alongside the resource
+
+# later, in the worker
+try:
+    payload = memory.read_blob(doc, "content", if_match=etag, max_bytes=25_000_000)
+except BlobPreconditionFailedError:
+    ...  # the object was replaced since it was validated — fail the job
+except BlobNotFoundError:
+    ...  # never uploaded — an expected operator state
+except BlobTooLargeError:
+    ...  # refused before the body was read; nothing was allocated
+```
+
+Notes:
+
+- Quoted and unquoted ETags are both accepted; the library normalizes them.
+- An ETag is an opaque identity token, not a checksum — multipart uploads produce ETags
+  that are not MD5s.
+- A conditional read always goes to S3. The blob cache can say what an object *was*, not
+  what it is now, so it is never consulted when `if_match` is given.
+- `max_bytes` defaults to the field's configured `max_size_bytes`, which is otherwise only
+  enforced on write. The size is checked against `ContentLength` before the body is read.
+
 ### Server-Side Blob Copy
 
 ```python
@@ -1051,6 +1093,7 @@ placeholder = memory.copy_blob(
     target_resource=doc2,
     target_field="content",
     delete_source=False,
+    source_etag=None,  # defaults to the ETag this call's own HEAD observes
 )
 ```
 
@@ -1064,8 +1107,27 @@ placeholder = memory.register_external_blob(
     content_type="text/plain",
     source_bucket="upload-bucket",  # Optional, defaults to configured bucket
     delete_source=True,
+    source_etag=etag,  # the ETag captured when the upload was validated
 )
 ```
+
+Both copy paths guard the server-side copy on an ETag. Passing `source_etag` explicitly
+asserts identity all the way back to whenever the object was validated; omitting it still
+closes the window between this call's own HEAD and the copy, which matters most with
+`delete_source=True` — otherwise a replacement written in that window would be copied and
+the original deleted.
+
+### Blob Exceptions
+
+| Exception | Raised when |
+| --- | --- |
+| `BlobNotFoundError` | No object exists at the blob's key |
+| `BlobPreconditionFailedError` | `if_match`/`source_etag` no longer matches (S3 412) |
+| `BlobTooLargeError` | Object exceeds `max_bytes` / configured `max_size_bytes` on read |
+
+All three subclass `BlobError`, which subclasses `ValueError` — the blob API's original
+error type — so existing `except ValueError` handlers keep working. `BlobNotFoundError`
+also subclasses `FileNotFoundError`.
 
 ---
 

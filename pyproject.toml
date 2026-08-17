@@ -19,6 +19,7 @@ dependencies = [
     "boto3",
     "humanize",
     "pydantic>2",
+    "typing-extensions",
     "ulid-py",
 ]
 

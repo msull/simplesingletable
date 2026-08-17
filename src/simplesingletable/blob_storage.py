@@ -9,10 +9,43 @@ from typing import TYPE_CHECKING, Any, Optional, Tuple
 import boto3
 from botocore.exceptions import ClientError
 
+from .exceptions import BlobNotFoundError, BlobPreconditionFailedError, BlobTooLargeError
 from .models import BlobFieldConfig, BlobPlaceholder
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
+
+
+def normalize_etag(etag: Optional[str]) -> Optional[str]:
+    """Put an entity tag in its canonical quoted form.
+
+    HTTP entity tags are quoted strings (RFC 9110) and S3 returns them with the quotes
+    attached, but boto does not re-add quotes that a caller has stripped -- so an ETag
+    that has been round-tripped through a store that trims them (a database column, a
+    JSON payload someone tidied) may arrive here bare. Normalizing on the way in means
+    both forms compare equal and behave identically, rather than one of them silently
+    matching nothing.
+    """
+    if etag is None:
+        return None
+    return '"' + etag.strip('"') + '"'
+
+
+def _is_precondition_failed(error: ClientError) -> bool:
+    """True if a ClientError represents an S3 412 Precondition Failed."""
+    return (
+        error.response.get("Error", {}).get("Code") == "PreconditionFailed"
+        or error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 412
+    )
+
+
+def _is_not_found(error: ClientError) -> bool:
+    """True if a ClientError represents a missing key.
+
+    ``get_object`` reports ``NoSuchKey``; ``head_object`` has no body to carry an error
+    code and surfaces a bare ``404``.
+    """
+    return error.response.get("Error", {}).get("Code") in ("404", "NoSuchKey")
 
 
 @dataclass
@@ -180,7 +213,8 @@ class S3BlobStorage:
             put_params["Metadata"]["version"] = str(version)
 
         # Upload to S3
-        self.s3_client.put_object(**put_params)
+        put_response = self.s3_client.put_object(**put_params)
+        etag = normalize_etag(put_response.get("ETag"))
 
         # Update cache with the original (uncompressed) value
         cache_key = self._cache_key(resource_type, resource_id, field_name, version)
@@ -193,6 +227,7 @@ class S3BlobStorage:
             size_bytes=size_bytes,
             content_type=content_type,
             compressed=compressed,
+            etag=etag,
         )
 
     def _cache_key(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> str:
@@ -200,9 +235,21 @@ class S3BlobStorage:
         version_str = f"v{version}" if version is not None else "latest"
         return f"{resource_type}#{resource_id}#{field_name}#{version_str}"
 
-    def _cache_get(self, cache_key: str) -> Optional[Any]:
-        """Get an item from cache if available and valid."""
-        if not self.cache_enabled:
+    def _cache_get(
+        self, cache_key: str, if_match: Optional[str] = None, max_bytes: Optional[int] = None
+    ) -> Optional[Any]:
+        """Get an item from cache if available and valid.
+
+        A conditional read is never served from cache. A cached ETag is only evidence of
+        what the object was when it was cached, so matching against it would answer the
+        wrong question -- the caller is asking about the object *now*, which only S3 can
+        say. ``if_match`` therefore forces a round trip and lets S3 adjudicate.
+
+        Likewise an entry that looks larger than ``max_bytes`` is not served, so that the
+        limit is decided by S3's authoritative ``ContentLength`` rather than by the
+        cache's approximate size accounting.
+        """
+        if not self.cache_enabled or if_match is not None:
             return None
 
         with self._cache_lock:
@@ -220,6 +267,10 @@ class S3BlobStorage:
                     self._cache_stats.current_items -= 1
                     del self._cache[cache_key]
                     return None
+
+            # Let S3 adjudicate a size limit rather than the cache's approximate size
+            if max_bytes is not None and entry.size_bytes > max_bytes:
+                return None
 
             # Move to end (most recently used)
             self._cache.move_to_end(cache_key)
@@ -295,15 +346,46 @@ class S3BlobStorage:
         self._cache_stats.current_items -= 1
         self._cache_stats.evictions += 1
 
-    def get_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> Any:
+    def get_blob(
+        self,
+        resource_type: str,
+        resource_id: str,
+        field_name: str,
+        version: Optional[int] = None,
+        *,
+        if_match: Optional[str] = None,
+        max_bytes: Optional[int] = None,
+    ) -> Any:
         """Retrieve a blob field from S3 with caching.
+
+        Args:
+            resource_type: Type name of the resource
+            resource_id: Unique ID of the resource
+            field_name: Name of the blob field
+            version: Optional version number for versioned resources
+            if_match: ETag the stored object must still have, as returned by ``head_blob``
+                or ``put_blob``. Quoted and unquoted forms are both accepted -- the value
+                is normalized to the canonical quoted form before use. A conditional read
+                always goes to S3: the cache cannot vouch for what the object is now, only
+                for what it was.
+            max_bytes: Refuse to download an object whose stored (post-compression) size
+                exceeds this. The size is checked before the body is read, so an
+                oversized payload is never allocated.
 
         Returns:
             The deserialized blob data
+
+        Raises:
+            BlobNotFoundError: No object exists at the blob's key.
+            BlobPreconditionFailedError: ``if_match`` was supplied and the stored object
+                has been replaced since that ETag was captured.
+            BlobTooLargeError: The object is larger than ``max_bytes``.
         """
+        if_match = normalize_etag(if_match)
+
         # Check cache first
         cache_key = self._cache_key(resource_type, resource_id, field_name, version)
-        cached_data = self._cache_get(cache_key)
+        cached_data = self._cache_get(cache_key, if_match=if_match, max_bytes=max_bytes)
         if cached_data is not None:
             return cached_data
 
@@ -315,38 +397,58 @@ class S3BlobStorage:
         # Build S3 key
         s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
 
+        get_params: dict[str, Any] = {"Bucket": self.bucket_name, "Key": s3_key}
+        if if_match is not None:
+            get_params["IfMatch"] = if_match
+
         try:
             # Get object from S3
-            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
-
-            # Read data
-            data = response["Body"].read()
-            len(data)
-
-            # Check if compressed (from metadata)
-            metadata = response.get("Metadata", {})
-            compressed = metadata.get("compressed", "False").lower() == "true"
-
-            # Decompress if needed
-            if compressed:
-                data = gzip.decompress(data)
-
-            # Try to deserialize as JSON
-            try:
-                result = json.loads(data.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # Return as bytes if not JSON
-                result = data
-
-            # Cache the result
-            self._cache_put(cache_key, result, size_bytes=len(data))
-
-            return result
-
+            response = self.s3_client.get_object(**get_params)
         except ClientError as e:
-            if e.response["Error"]["Code"] == "NoSuchKey":
-                raise ValueError(f"Blob not found: {s3_key}") from e
+            if _is_precondition_failed(e):
+                raise BlobPreconditionFailedError(
+                    f"Blob changed since it was last observed: {s3_key}",
+                    s3_key=s3_key,
+                    bucket=self.bucket_name,
+                    expected_etag=if_match,
+                ) from e
+            if _is_not_found(e):
+                raise BlobNotFoundError(f"Blob not found: {s3_key}", s3_key=s3_key, bucket=self.bucket_name) from e
             raise
+
+        # ContentLength is available before the body is touched, so an oversized object
+        # can be refused without ever allocating its payload.
+        if max_bytes is not None and response["ContentLength"] > max_bytes:
+            response["Body"].close()
+            raise BlobTooLargeError(
+                f"Blob {s3_key} is {response['ContentLength']} bytes, exceeding max_bytes={max_bytes}",
+                s3_key=s3_key,
+                size_bytes=response["ContentLength"],
+                max_bytes=max_bytes,
+            )
+
+        # Read data
+        data = response["Body"].read()
+
+        # Check if compressed (from metadata)
+        metadata = response.get("Metadata", {})
+        compressed = metadata.get("compressed", "False").lower() == "true"
+
+        # Decompress if needed
+        if compressed:
+            data = gzip.decompress(data)
+
+        # Try to deserialize as JSON
+        try:
+            result = json.loads(data.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # Return as bytes if not JSON
+            result = data
+
+        # Cache the result
+        self._cache_put(cache_key, result, size_bytes=len(data))
+
+        return result
 
     def _cache_invalidate(self, cache_key: str) -> None:
         """Remove a single cache entry by key."""
@@ -361,15 +463,23 @@ class S3BlobStorage:
         """Get metadata about a blob without downloading it.
 
         Returns:
-            Dict with keys: size_bytes, compressed, content_type, metadata
+            Dict with keys: size_bytes, compressed, content_type, metadata, s3_key, etag.
+
+            ``etag`` is preserved verbatim, quotes included -- entity tags are quoted
+            strings (RFC 9110) and must be handed back to ``get_blob(if_match=)`` or
+            ``copy_blob(source_etag=)`` unmodified. It is an opaque identity token, not
+            a checksum: multipart uploads produce ETags that are not MD5s.
+
+        Raises:
+            BlobNotFoundError: No object exists at the blob's key.
         """
         s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
 
         try:
             response = self.s3_client.head_object(Bucket=self.bucket_name, Key=s3_key)
         except ClientError as e:
-            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
-                raise ValueError(f"Blob not found: {s3_key}") from e
+            if _is_not_found(e):
+                raise BlobNotFoundError(f"Blob not found: {s3_key}", s3_key=s3_key, bucket=self.bucket_name) from e
             raise
 
         metadata = response.get("Metadata", {})
@@ -379,6 +489,7 @@ class S3BlobStorage:
             "content_type": response.get("ContentType"),
             "metadata": metadata,
             "s3_key": s3_key,
+            "etag": normalize_etag(response.get("ETag")),
         }
 
     def copy_blob_object(
@@ -391,6 +502,7 @@ class S3BlobStorage:
         compressed: bool = False,
         content_type: Optional[str] = None,
         source_bucket: Optional[str] = None,
+        source_etag: Optional[str] = None,
     ) -> BlobPlaceholder:
         """Server-side copy of an S3 object to a managed blob key.
 
@@ -403,9 +515,17 @@ class S3BlobStorage:
             compressed: Whether the source data is gzip-compressed
             content_type: Content type for the target object
             source_bucket: Source bucket (defaults to managed bucket)
+            source_etag: ETag the source object must still have, verbatim with quotes.
+                Copies the object only if it has not been replaced since that ETag was
+                captured.
 
         Returns:
             BlobPlaceholder with metadata about the copied blob
+
+        Raises:
+            BlobPreconditionFailedError: ``source_etag`` was supplied and the source has
+                been replaced since.
+            BlobNotFoundError: The source object does not exist.
         """
         target_s3_key = self._build_s3_key(target_resource_type, target_resource_id, target_field_name, target_version)
         source_bucket = source_bucket or self.bucket_name
@@ -433,9 +553,26 @@ class S3BlobStorage:
         }
         if content_type:
             copy_params["ContentType"] = content_type
+        source_etag = normalize_etag(source_etag)
+        if source_etag is not None:
+            copy_params["CopySourceIfMatch"] = source_etag
 
         # Perform server-side copy
-        self.s3_client.copy_object(**copy_params)
+        try:
+            self.s3_client.copy_object(**copy_params)
+        except ClientError as e:
+            if _is_precondition_failed(e):
+                raise BlobPreconditionFailedError(
+                    f"Source blob changed since it was last observed: {source_s3_key}",
+                    s3_key=source_s3_key,
+                    bucket=source_bucket,
+                    expected_etag=source_etag,
+                ) from e
+            if _is_not_found(e):
+                raise BlobNotFoundError(
+                    f"Source blob not found: {source_s3_key}", s3_key=source_s3_key, bucket=source_bucket
+                ) from e
+            raise
 
         # Get size of copied object
         head_response = self.s3_client.head_object(Bucket=self.bucket_name, Key=target_s3_key)
@@ -451,6 +588,7 @@ class S3BlobStorage:
             size_bytes=size_bytes,
             content_type=content_type,
             compressed=compressed,
+            etag=normalize_etag(head_response.get("ETag")),
         )
 
     def delete_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> None:

@@ -1,6 +1,7 @@
 """Local file-based blob storage implementation for offline/demo usage."""
 
 import gzip
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -8,7 +9,18 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, TypeAdapter
 
+from .blob_storage import normalize_etag
+from .exceptions import BlobNotFoundError, BlobPreconditionFailedError, BlobTooLargeError
 from .models import BlobFieldConfig, BlobPlaceholder
+
+
+def _compute_etag(file_path: Path) -> str:
+    """Compute an S3-compatible entity tag for a local file.
+
+    Quoted deliberately: S3 entity tags are quoted strings (RFC 9110), and emitting a bare
+    hash here would let a caller's format assumptions diverge between backends.
+    """
+    return normalize_etag(hashlib.md5(file_path.read_bytes()).hexdigest())
 
 
 class LocalBlobStorage:
@@ -143,20 +155,62 @@ class LocalBlobStorage:
             size_bytes=size_bytes,
             content_type=content_type,
             compressed=compressed,
+            etag=_compute_etag(file_path),
         )
 
-    def get_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> Any:
+    def get_blob(
+        self,
+        resource_type: str,
+        resource_id: str,
+        field_name: str,
+        version: Optional[int] = None,
+        *,
+        if_match: Optional[str] = None,
+        max_bytes: Optional[int] = None,
+    ) -> Any:
         """Retrieve a blob field from local filesystem.
+
+        Args:
+            resource_type: Type name of the resource
+            resource_id: Unique ID of the resource
+            field_name: Name of the blob field
+            version: Optional version number for versioned resources
+            if_match: ETag the stored blob must still have; quoted and unquoted forms
+                are both accepted.
+            max_bytes: Refuse to read a blob whose stored (post-compression) size exceeds
+                this.
 
         Returns:
             The deserialized blob data
+
+        Raises:
+            BlobNotFoundError: No blob exists at the key.
+            BlobPreconditionFailedError: ``if_match`` was supplied and the blob has been
+                replaced since that ETag was captured.
+            BlobTooLargeError: The blob is larger than ``max_bytes``.
         """
         # Build storage key and path
         s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
         file_path = self._key_to_path(s3_key)
 
         if not file_path.exists():
-            raise ValueError(f"Blob not found: {s3_key}")
+            raise BlobNotFoundError(f"Blob not found: {s3_key}", s3_key=s3_key)
+
+        size_bytes = file_path.stat().st_size
+        if max_bytes is not None and size_bytes > max_bytes:
+            raise BlobTooLargeError(
+                f"Blob {s3_key} is {size_bytes} bytes, exceeding max_bytes={max_bytes}",
+                s3_key=s3_key,
+                size_bytes=size_bytes,
+                max_bytes=max_bytes,
+            )
+
+        if if_match is not None and _compute_etag(file_path) != normalize_etag(if_match):
+            raise BlobPreconditionFailedError(
+                f"Blob changed since it was last observed: {s3_key}",
+                s3_key=s3_key,
+                expected_etag=if_match,
+            )
 
         # Read data
         data = file_path.read_bytes()
@@ -185,13 +239,16 @@ class LocalBlobStorage:
         """Get metadata about a blob without reading its contents.
 
         Returns:
-            Dict with keys: size_bytes, compressed, content_type, metadata, s3_key
+            Dict with keys: size_bytes, compressed, content_type, metadata, s3_key, etag
+
+        Raises:
+            BlobNotFoundError: No blob exists at the key.
         """
         s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
         file_path = self._key_to_path(s3_key)
 
         if not file_path.exists():
-            raise ValueError(f"Blob not found: {s3_key}")
+            raise BlobNotFoundError(f"Blob not found: {s3_key}", s3_key=s3_key)
 
         size_bytes = file_path.stat().st_size
 
@@ -211,6 +268,7 @@ class LocalBlobStorage:
             "content_type": content_type,
             "metadata": metadata,
             "s3_key": s3_key,
+            "etag": _compute_etag(file_path),
         }
 
     def copy_blob_object(
@@ -223,6 +281,7 @@ class LocalBlobStorage:
         compressed: bool = False,
         content_type: Optional[str] = None,
         source_bucket: Optional[str] = None,
+        source_etag: Optional[str] = None,
     ) -> "BlobPlaceholder":
         """Copy a blob file to a new managed blob location.
 
@@ -235,9 +294,15 @@ class LocalBlobStorage:
             compressed: Whether the source data is gzip-compressed
             content_type: Content type for the target object
             source_bucket: Ignored for local storage (kept for API parity)
+            source_etag: ETag the source must still have, verbatim with quotes
 
         Returns:
             BlobPlaceholder with metadata about the copied blob
+
+        Raises:
+            BlobNotFoundError: The source blob does not exist.
+            BlobPreconditionFailedError: ``source_etag`` was supplied and the source has
+                been replaced since.
         """
         target_s3_key = self._build_s3_key(target_resource_type, target_resource_id, target_field_name, target_version)
 
@@ -245,7 +310,14 @@ class LocalBlobStorage:
         target_path = self._key_to_path(target_s3_key)
 
         if not source_path.exists():
-            raise ValueError(f"Source blob not found: {source_s3_key}")
+            raise BlobNotFoundError(f"Source blob not found: {source_s3_key}", s3_key=source_s3_key)
+
+        if source_etag is not None and _compute_etag(source_path) != normalize_etag(source_etag):
+            raise BlobPreconditionFailedError(
+                f"Source blob changed since it was last observed: {source_s3_key}",
+                s3_key=source_s3_key,
+                expected_etag=source_etag,
+            )
 
         # Create parent directories
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -275,6 +347,7 @@ class LocalBlobStorage:
             size_bytes=size_bytes,
             content_type=content_type,
             compressed=compressed,
+            etag=_compute_etag(target_path),
         )
 
     def delete_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> None:

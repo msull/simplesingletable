@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
 from .blob_storage import S3BlobStorage
+from .exceptions import BlobNotFoundError
 from .models import AuditLog, BlobPlaceholder, DynamoDbResource, DynamoDbVersionedResource, PaginatedList
 from .transactions import TransactionManager
 from .utils import decode_pagination_key, encode_pagination_key, marshall
@@ -1039,6 +1040,91 @@ class DynamoDbMemory:
                 ExpressionAttributeValues={":bf": existing_blob_fields},
             )
 
+    @staticmethod
+    def _blob_version_for(resource: AnyDbResource, field_name: str) -> Optional[int]:
+        """Resolve which blob version a resource's field currently points at."""
+        if isinstance(resource, DynamoDbVersionedResource):
+            return resource._blob_versions.get(field_name, resource.version)
+        return None
+
+    def head_blob(self, resource: AnyDbResource, field_name: str) -> dict:
+        """Get metadata about a resource's blob field without downloading it.
+
+        Returns:
+            Dict with keys: size_bytes, compressed, content_type, metadata, s3_key, etag.
+
+            Capture ``etag`` here and hand it back to ``read_blob(if_match=)`` or
+            ``copy_blob(source_etag=)`` later to guarantee the bytes you act on are the
+            bytes you inspected. It must round-trip verbatim -- entity tags are quoted
+            strings (RFC 9110) and a stripped ETag never matches.
+
+        Raises:
+            ValueError: If S3 is not configured or the field is not a blob field.
+            BlobNotFoundError: No object exists for the field.
+        """
+        if not self.s3_blob_storage:
+            raise ValueError("S3 blob storage not configured")
+
+        blob_config = resource.resource_config.get("blob_fields", {}) or {}
+        if field_name not in blob_config:
+            raise ValueError(f"Field '{field_name}' is not configured as a blob field on {resource.__class__.__name__}")
+
+        return self.s3_blob_storage.head_blob(
+            resource_type=resource.__class__.__name__,
+            resource_id=resource.resource_id,
+            field_name=field_name,
+            version=self._blob_version_for(resource, field_name),
+        )
+
+    def read_blob(
+        self,
+        resource: AnyDbResource,
+        field_name: str,
+        *,
+        if_match: Optional[str] = None,
+        max_bytes: Optional[int] = None,
+    ) -> Any:
+        """Read a single blob field's value without mutating the resource.
+
+        Unlike ``resource.load_blob_fields()``, this returns the value directly and can
+        assert what it is reading. Use it when an object may have been replaced between
+        the time it was validated and the time it is consumed -- a presigned upload that
+        can be re-``PUT``, or any read in a different process from the write.
+
+        Args:
+            resource: Resource owning the blob field
+            field_name: Name of the blob field
+            if_match: ETag from a prior ``head_blob``/``put_blob``, verbatim with quotes.
+                Raises rather than returning bytes that are no longer the ones observed.
+            max_bytes: Refuse to download an object larger than this, checked before the
+                body is read so an oversized payload is never allocated. Defaults to the
+                field's configured ``max_size_bytes`` (which is otherwise only enforced on
+                write); pass a value to override it for this read.
+
+        Raises:
+            ValueError: If S3 is not configured or the field is not a blob field.
+            BlobNotFoundError: No object exists for the field.
+            BlobPreconditionFailedError: ``if_match`` did not match the stored object.
+            BlobTooLargeError: The object exceeds the effective size limit.
+        """
+        if not self.s3_blob_storage:
+            raise ValueError("S3 blob storage not configured")
+
+        blob_config = resource.resource_config.get("blob_fields", {}) or {}
+        if field_name not in blob_config:
+            raise ValueError(f"Field '{field_name}' is not configured as a blob field on {resource.__class__.__name__}")
+
+        effective_max_bytes = max_bytes if max_bytes is not None else blob_config[field_name].get("max_size_bytes")
+
+        return self.s3_blob_storage.get_blob(
+            resource_type=resource.__class__.__name__,
+            resource_id=resource.resource_id,
+            field_name=field_name,
+            version=self._blob_version_for(resource, field_name),
+            if_match=if_match,
+            max_bytes=effective_max_bytes,
+        )
+
     def copy_blob(
         self,
         source_resource: AnyDbResource,
@@ -1046,6 +1132,7 @@ class DynamoDbMemory:
         target_resource: AnyDbResource,
         target_field: str,
         delete_source: bool = False,
+        source_etag: Optional[str] = None,
     ) -> BlobPlaceholder:
         """Server-side copy of a blob field between resources.
 
@@ -1058,13 +1145,21 @@ class DynamoDbMemory:
             target_resource: Resource to copy the blob to
             target_field: Name of the target blob field
             delete_source: If True, delete the source blob after copy (move semantics)
+            source_etag: ETag the source must still have, verbatim with quotes. When
+                omitted the ETag observed by this call's own HEAD is used, so the copy
+                never silently picks up a replacement written between the HEAD and the
+                copy -- important with ``delete_source=True``, which would otherwise
+                delete bytes that were never copied.
 
         Returns:
             BlobPlaceholder for the newly copied blob
 
         Raises:
             ValueError: If S3 not configured, fields not in blob_fields config,
-                        source blob not found, or self-copy detected
+                        or self-copy detected
+            BlobNotFoundError: Source blob not found
+            BlobPreconditionFailedError: The source changed between HEAD and copy, or no
+                longer matches an explicitly supplied ``source_etag``
         """
         # Validate S3 is configured
         if not self.s3_blob_storage:
@@ -1119,7 +1214,8 @@ class DynamoDbMemory:
                 f"Blob will be copied as-is; get_blob reads compression from S3 metadata."
             )
 
-        # Perform server-side copy
+        # Perform server-side copy, guarded on the object we just inspected unless the
+        # caller supplied an identity of their own to assert
         placeholder = self.s3_blob_storage.copy_blob_object(
             source_s3_key=source_head["s3_key"],
             target_resource_type=target_resource.__class__.__name__,
@@ -1128,6 +1224,7 @@ class DynamoDbMemory:
             target_version=target_version,
             compressed=source_head["compressed"],
             content_type=source_head["content_type"],
+            source_etag=source_etag if source_etag is not None else source_head.get("etag"),
         )
 
         # Update DynamoDB metadata
@@ -1159,6 +1256,7 @@ class DynamoDbMemory:
         compressed: bool = False,
         source_bucket: Optional[str] = None,
         delete_source: bool = False,
+        source_etag: Optional[str] = None,
     ) -> BlobPlaceholder:
         """Register an arbitrary S3 object as a blob field on a resource.
 
@@ -1173,13 +1271,21 @@ class DynamoDbMemory:
             compressed: Whether the source object is gzip-compressed
             source_bucket: Source bucket (defaults to managed bucket)
             delete_source: If True, delete source object after copy
+            source_etag: ETag the source must still have, verbatim with quotes. Pass the
+                ETag captured when the object was validated -- typically at upload time,
+                in a different process -- to guarantee the bytes registered here are the
+                bytes that were validated. When omitted, the ETag observed by this call's
+                own HEAD is used, which still closes the window between that HEAD and the
+                copy but cannot speak to anything before it.
 
         Returns:
             BlobPlaceholder for the registered blob
 
         Raises:
-            ValueError: If S3 not configured, field not in blob_fields config,
-                        or source object not found
+            ValueError: If S3 not configured or field not in blob_fields config
+            BlobNotFoundError: Source object not found
+            BlobPreconditionFailedError: The source changed between HEAD and copy, or no
+                longer matches an explicitly supplied ``source_etag``
         """
         # Validate S3 is configured
         if not self.s3_blob_storage:
@@ -1193,10 +1299,14 @@ class DynamoDbMemory:
         # Validate source exists
         effective_bucket = source_bucket or self.s3_blob_storage.bucket_name
         try:
-            self.s3_blob_storage.s3_client.head_object(Bucket=effective_bucket, Key=source_s3_key)
+            source_head = self.s3_blob_storage.s3_client.head_object(Bucket=effective_bucket, Key=source_s3_key)
         except ClientError as e:
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
-                raise ValueError(f"Source S3 object not found: s3://{effective_bucket}/{source_s3_key}") from e
+                raise BlobNotFoundError(
+                    f"Source S3 object not found: s3://{effective_bucket}/{source_s3_key}",
+                    s3_key=source_s3_key,
+                    bucket=effective_bucket,
+                ) from e
             raise
 
         # Determine target version
@@ -1214,6 +1324,7 @@ class DynamoDbMemory:
             compressed=compressed,
             content_type=content_type,
             source_bucket=source_bucket,
+            source_etag=source_etag if source_etag is not None else source_head.get("ETag"),
         )
 
         # Update DynamoDB metadata
