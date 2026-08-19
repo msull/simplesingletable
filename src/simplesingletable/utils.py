@@ -31,6 +31,17 @@ def marshall(python_obj: dict) -> dict:
     return {k: serializer.serialize(v) for k, v in python_obj.items()}
 
 
+def normalize_index_name(index_name: str) -> str:
+    """Reduce an index name to the form its key attributes are named after.
+
+    DynamoDB index names are commonly written with a separator (``gsi-1``) to keep the
+    index name distinct from the attributes it indexes (``gsi1pk`` / ``gsi1sk``). Both
+    spellings name the same index, so comparisons and attribute derivation happen on this
+    reduced form rather than on the string the caller happened to use.
+    """
+    return index_name.replace("-", "").replace("_", "").lower()
+
+
 def encode_pagination_key(last_evaluated_key: dict) -> str:
     """Turn the dynamodb LEK data into a pagination key we can send to clients."""
     return urlsafe_b64encode(json.dumps(last_evaluated_key).encode()).decode()

@@ -25,7 +25,7 @@ from .models import (
     DynamoDbVersionedResource,
     PaginatedList,
 )
-from .utils import decode_pagination_key, encode_pagination_key
+from .utils import decode_pagination_key, encode_pagination_key, normalize_index_name
 
 AnyDbResource = TypeVar("AnyDbResource", bound=Union[DynamoDbVersionedResource, DynamoDbResource])
 VersionedDbResourceOnly = TypeVar("VersionedDbResourceOnly", bound=DynamoDbVersionedResource)
@@ -1363,13 +1363,16 @@ class LocalStorageMemory:
 
     def _sort_items(self, items: list[dict], index_name: str, ascending: bool) -> list[dict]:
         """Sort items based on index."""
-        if index_name == "gsitype":
+        # Normalized so a dashed index name (``gsi-1``) sorts like its undashed spelling
+        # rather than falling through unsorted.
+        normalized = normalize_index_name(index_name) if index_name else index_name
+        if normalized == "gsitype":
             # Sort by gsitypesk (updated_at)
             items.sort(key=lambda x: x.get("gsitypesk", ""), reverse=not ascending)
-        elif index_name in ["gsi1", "gsi2"]:
+        elif normalized in ["gsi1", "gsi2"]:
             # Sort by pk (which includes timestamp for ULID)
             items.sort(key=lambda x: x.get("pk", ""), reverse=not ascending)
-        elif index_name == "gsi3":
+        elif normalized == "gsi3":
             # Sort by gsi3sk
             items.sort(key=lambda x: x.get("gsi3sk", ""), reverse=not ascending)
 

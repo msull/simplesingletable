@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+* **`build_lek_data` handles GSI names that use a separator** (#7). A DynamoDB index named `gsi-1` — a common convention for keeping the index name distinct from the `gsi1pk` / `gsi1sk` attributes it indexes — failed on the secondary pagination path, the one that fires when client-side filtering truncates a page and the library must synthesize a `LastEvaluatedKey` itself. With descriptive `get_gsi_config()` labels (`"by-owner"`) it raised `RuntimeError("Unsupported index 'gsi-1'")`; with the index name used as the label it derived the non-existent attribute `gsi-1pk`, added nothing to the key, and silently restarted pagination from the beginning on the next page. Writes and unfiltered queries were always fine, which is why this only showed up on that one path.
+
+  An index's key attributes are now resolved from two ranked sources, and the key is built from the first one the item actually carries — keeping the partition and sort attribute together, since drawing one from each would synthesize a key that never existed:
+
+  1. **The naming convention**, derived from the index name with separators and case normalized away, so `gsi-1` and `gsi1` both look for `gsi1pk`/`gsi1sk`. The legacy `gsi1`/`gsi2`/`gsi3` names keep their original meaning here and are never resolved by normalization — `gsi1` and `gsi-1` are distinct, legal DynamoDB index names and a table may declare both, so a config entry labeled for one must not capture queries against the other.
+  2. **Attributes declared by a config entry whose label identifies the index**, exactly or after normalization, including pairs declared as a tuple (`("gsi3pk", "gsi3sk")`). This only decides the outcome when an index's attributes do not follow the naming convention — the one case the index name alone cannot resolve.
+
+  A `gsi_config` dict key is a label, not an identifier: the write path only ever iterates `.values()`, so a label may name the index, describe the access pattern, or cover several indexes at once. The index name supplied at query time is what identifies the index, which is why the convention derived from it — not the label — is the primary signal. A genuinely unknown index still raises `RuntimeError`.
+
+  Compatibility is enforced by a test matrix over configs × items × index names asserting that **wherever the previous implementation produced a usable key, the current one produces the identical key**, and separately by pattern shapes drawn from an audit of the library's largest downstream consumers (`tests/test_real_world_gsi_patterns.py`). Behavior differs only where the old code raised `RuntimeError` or returned a `pk`/`sk`-only key that would have silently restarted pagination; the latter now raises instead.
+
+* **`LocalStorageMemory` sorts queries on separator-style index names** (#7). `_sort_items` matched index names literally, so a query against `gsi-1` fell through every branch and returned items in storage order instead of sorted order — the same blind spot as above, in the offline backend.
+
 ## [18.1.0] 2026-08-17
 
 ### Added

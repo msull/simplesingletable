@@ -16,7 +16,7 @@ from .blob_storage import S3BlobStorage
 from .exceptions import BlobNotFoundError
 from .models import AuditLog, BlobPlaceholder, DynamoDbResource, DynamoDbVersionedResource, PaginatedList
 from .transactions import TransactionManager
-from .utils import decode_pagination_key, encode_pagination_key, marshall
+from .utils import decode_pagination_key, encode_pagination_key, marshall, normalize_index_name
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
@@ -60,6 +60,88 @@ def exhaust_pagination(query: Callable[[Optional[str]], PaginatedList]):
     yield result
 
 
+LEGACY_INDEX_NAMES = ("gsi1", "gsi2", "gsi3")
+"""Index names this library defined before GSI configuration was user-supplied.
+
+``gsi1`` and ``gsi2`` range on the table's own ``pk``; only ``gsi3`` has its own sort
+attribute. These names keep their original meaning exactly, and are never resolved by
+normalization -- ``gsi1`` and ``gsi-1`` are distinct, legal DynamoDB index names, and a
+table may legitimately have both.
+"""
+
+
+def _config_entry_attributes(fields: dict) -> list[str]:
+    """The attribute names an entry declares, flattening tuple-declared pk/sk pairs."""
+    attributes = []
+    for key in fields:
+        # Combined definitions declare their pair as a tuple, e.g. ("gsi3pk", "gsi3sk")
+        if isinstance(key, tuple):
+            attributes.extend(key)
+        else:
+            attributes.append(key)
+    return attributes
+
+
+def _lek_attribute_groups(index_name: str, gsi_config: dict) -> list[list[str]]:
+    """Attribute names that might carry ``index_name``'s key, as ranked candidate groups.
+
+    A ``gsi_config`` dict key is only a label. The write path iterates ``.values()`` and
+    never interprets it, so a label is documentation: it may name the index, describe the
+    access pattern ("by-owner"), or cover several indexes at once. The index name itself is
+    always supplied at query time, so that -- not the label -- is what identifies the index,
+    and the attribute naming convention derived from it is the primary signal.
+
+    Groups are returned most-trustworthy first, and the key is built from the first group the
+    item actually carries. Keeping the partition and sort attribute within one group matters:
+    drawing one from the convention and the other from a config entry would synthesize a key
+    that never existed.
+
+    1. The naming convention, derived from the index name with separators and case
+       normalized away, so ``gsi-1`` and ``gsi1`` both look for ``gsi1pk``/``gsi1sk``. The
+       legacy ``gsi1`` / ``gsi2`` / ``gsi3`` names keep their original meaning here and are
+       never resolved by normalization -- ``gsi1`` and ``gsi-1`` are distinct, legal
+       DynamoDB index names and a table may declare both.
+    2. Attributes declared by a config entry whose label identifies this index, exactly or
+       after normalization. This only decides the outcome when an index's attributes do not
+       follow the naming convention, which is the one case the index name alone cannot
+       resolve. Attributes named after this index come first within the group.
+    """
+    normalized = normalize_index_name(index_name)
+    entry = gsi_config.get(index_name)
+
+    if index_name in LEGACY_INDEX_NAMES:
+        sort_attribute = f"{index_name}sk"
+        # gsi1 and gsi2 range on the table pk, which is already in every LEK, so their sort
+        # attribute is only sought where there is reason to think one exists: the resource
+        # declares it, or the index is configured at all (in which case the item deciding is
+        # the long-standing behavior).
+        declares_sort_attribute = any(
+            sort_attribute in _config_entry_attributes(fields) for fields in gsi_config.values()
+        )
+        if index_name == "gsi3" or entry is not None or declares_sort_attribute:
+            groups = [[f"{index_name}pk", sort_attribute]]
+        else:
+            groups = [[f"{index_name}pk"]]
+    else:
+        groups = [[f"{normalized}pk", f"{normalized}sk"]]
+
+    if entry is None:
+        for label, fields in gsi_config.items():
+            if normalize_index_name(str(label)) == normalized:
+                entry = fields
+                break
+
+    if entry is not None:
+        declared = _config_entry_attributes(entry)
+        named_for_this_index = [a for a in declared if normalize_index_name(a).startswith(normalized)]
+        others = [a for a in declared if a not in named_for_this_index]
+        declared_group = named_for_this_index + others
+        if declared_group:
+            groups.append(declared_group)
+
+    return groups
+
+
 def build_lek_data(db_item: dict, index_name: Optional[str], resource_class: Type[AnyDbResource]) -> dict:
     """Build LastEvaluatedKey data dynamically based on index configuration."""
     lek_data = {"pk": db_item["pk"], "sk": db_item["sk"]}
@@ -67,7 +149,7 @@ def build_lek_data(db_item: dict, index_name: Optional[str], resource_class: Typ
     if not index_name:
         return lek_data
 
-    # Handle built-in gsitype index
+    # Handle built-in gsitype index, whose sort key does not follow the naming convention
     if index_name == "gsitype":
         if "gsitype" in db_item:
             lek_data["gsitype"] = db_item["gsitype"]
@@ -75,32 +157,18 @@ def build_lek_data(db_item: dict, index_name: Optional[str], resource_class: Typ
             lek_data["gsitypesk"] = db_item["gsitypesk"]
         return lek_data
 
-    # Handle dynamic GSI configuration
-    gsi_config = resource_class.get_gsi_config()
-    if index_name in gsi_config:
-        # Add pk field for this index
-        pk_field = f"{index_name}pk"
-        if pk_field in db_item:
-            lek_data[pk_field] = db_item[pk_field]
+    # A GSI key is at most one partition attribute plus one sort attribute; anything more
+    # in the LEK would be rejected by DynamoDB as not matching the index's key schema.
+    for group in _lek_attribute_groups(index_name, resource_class.get_gsi_config()):
+        pk_attribute = next((a for a in group if a in db_item and a.endswith("pk")), None)
+        sk_attribute = next((a for a in group if a in db_item and a.endswith("sk")), None)
+        if pk_attribute is None and sk_attribute is None:
+            continue
 
-        # Add sk field if it exists for this index
-        sk_field = f"{index_name}sk"
-        if sk_field in db_item:
-            lek_data[sk_field] = db_item[sk_field]
-
-        return lek_data
-
-    # Handle legacy hardcoded indices for backward compatibility
-    if index_name in ["gsi1", "gsi2", "gsi3"]:
-        pk_field = f"{index_name}pk"
-        if pk_field in db_item:
-            lek_data[pk_field] = db_item[pk_field]
-
-        if index_name == "gsi3":
-            sk_field = f"{index_name}sk"
-            if sk_field in db_item:
-                lek_data[sk_field] = db_item[sk_field]
-
+        if pk_attribute:
+            lek_data[pk_attribute] = db_item[pk_attribute]
+        if sk_attribute:
+            lek_data[sk_attribute] = db_item[sk_attribute]
         return lek_data
 
     raise RuntimeError(f"Unsupported index {index_name=}")
