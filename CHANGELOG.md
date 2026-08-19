@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [19.0.0] 2026-08-19
+
 ### Fixed
 
 * **`build_lek_data` handles GSI names that use a separator** (#7). A DynamoDB index named `gsi-1` — a common convention for keeping the index name distinct from the `gsi1pk` / `gsi1sk` attributes it indexes — failed on the secondary pagination path, the one that fires when client-side filtering truncates a page and the library must synthesize a `LastEvaluatedKey` itself. With descriptive `get_gsi_config()` labels (`"by-owner"`) it raised `RuntimeError("Unsupported index 'gsi-1'")`; with the index name used as the label it derived the non-existent attribute `gsi-1pk`, added nothing to the key, and silently restarted pagination from the beginning on the next page. Writes and unfiltered queries were always fine, which is why this only showed up on that one path.
