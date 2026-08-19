@@ -333,6 +333,26 @@ class BaseDynamoDbResource(BaseModel, ABC):
 
         return blob_fields_data
 
+    def has_pending_blob_data(self) -> bool:
+        """True if this instance carries blob-field values that require an S3 write.
+
+        This is the exact condition under which ``to_dynamodb_item()`` returns a
+        ``(item, blob_data)`` tuple rather than a plain dict: blob fields are
+        configured *and* at least one of them holds a non-``None`` value.
+
+        A blob-configured resource read back from DynamoDB has its blob fields set to
+        ``None`` (the data lives in S3), so it reports ``False`` here and can be
+        written by any code path that only understands plain items.
+        """
+        if not (self.resource_config.get("blob_fields") or {}):
+            return False
+        return any(value is not None for value in self._extract_blob_field_values().values())
+
+    @classmethod
+    def blob_field_names(cls) -> set[str]:
+        """Names of fields configured for blob (S3) storage; empty set if none."""
+        return set((cls.resource_config.get("blob_fields") or {}).keys())
+
     def _apply_gsi_configuration(self, dynamodb_data: dict) -> None:
         """Apply dynamic GSI configuration to DynamoDB item."""
         # Apply dynamic GSI configuration

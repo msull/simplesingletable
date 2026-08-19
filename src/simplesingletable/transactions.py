@@ -50,6 +50,48 @@ def _validate_condition_names(condition_names: Optional[Dict[str, str]]) -> Opti
     return dict(condition_names)
 
 
+_BLOB_TXN_MESSAGE = (
+    "Blob-backed data cannot be written inside a transaction. A blob field is stored as an "
+    "S3 object alongside the DynamoDB item, and the transaction path has no way to make that "
+    "object part of the atomic commit. Write the resource outside the transaction, or keep the "
+    "blob field unset here and attach the blob separately."
+)
+
+
+def _reject_blob_writes(
+    operation: str,
+    resource_class: Type[DynamoDbResource],
+    resource: Optional[DynamoDbResource] = None,
+    updates: Optional[Dict[str, Any]] = None,
+    clear_fields: Optional[List[str]] = None,
+) -> None:
+    """Refuse a queued operation that would need to write blob data.
+
+    Guards two distinct failures, both stemming from ``transactions.py`` having no blob
+    awareness:
+
+    1. A resource instance carrying blob values makes ``to_dynamodb_item()`` return a
+       ``(item, blob_data)`` tuple, which the builders hand straight to ``marshall()``
+       -- an ``AttributeError`` from inside marshalling.
+    2. An update naming a blob field would write the value as an ordinary DynamoDB
+       attribute, silently bypassing S3 and leaving the item's blob metadata stale.
+
+    A blob-configured resource whose blob fields are all unset is *not* rejected: it
+    marshals as a plain item, which is what reading one back from DynamoDB produces.
+    """
+    blob_fields = resource_class.blob_field_names()
+    if not blob_fields:
+        return
+
+    if resource is not None and resource.has_pending_blob_data():
+        carrying = sorted(name for name, value in resource._extract_blob_field_values().items() if value is not None)
+        raise ValueError(f"txn.{operation}() cannot write blob field(s) {carrying}. {_BLOB_TXN_MESSAGE}")
+
+    touched = sorted((blob_fields & set(updates or {})) | (blob_fields & set(clear_fields or [])))
+    if touched:
+        raise ValueError(f"txn.{operation}() cannot modify blob field(s) {touched}. {_BLOB_TXN_MESSAGE}")
+
+
 def _marshall_values(values: Dict[str, Any]) -> Dict[str, Any]:
     """Marshall expression values with the same normalization as item writes.
 
@@ -184,6 +226,8 @@ class TransactionContext:
                 (``status``, ``name``, ``total``, ...).
             **condition_values: Colon-prefixed values for the condition expression.
         """
+        _reject_blob_writes("create", resource.__class__, resource=resource)
+
         if not resource.resource_id:
             resource.resource_id = generate_date_sortable_id()
 
@@ -226,7 +270,9 @@ class TransactionContext:
             resource: The resource instance or class to update.
             resource_id: Required when ``resource`` is a class.
             updates: Mapping of field-name to new value.
-            condition: Optional DynamoDB condition expression string.
+            condition: Optional DynamoDB condition expression string. Not supported for
+                versioned resources -- those build their own version-token condition, and
+                supplying one raises. Use ``current=`` to guard a versioned update.
             condition_values: Values for the condition expression.
             condition_names: ``#alias -> attribute-name`` mapping for the condition,
                 needed when the condition references a DynamoDB reserved word.
@@ -270,6 +316,24 @@ class TransactionContext:
             if overlap:
                 raise ValueError(f"clear_fields and updates cannot reference the same field(s): {sorted(overlap)}")
 
+        _reject_blob_writes(
+            "update",
+            resource_class,
+            resource=resource_obj,
+            updates=all_updates,
+            clear_fields=clear_fields_list,
+        )
+
+        if issubclass(resource_class, DynamoDbVersionedResource) and (condition or condition_values or condition_names):
+            raise ValueError(
+                "txn.update() does not support caller-supplied conditions on versioned resources. "
+                "The versioned update builds its own conditions (attribute_not_exists on the new "
+                "version, plus a version-token check on v0) and has no way to combine them with "
+                "yours, so the condition would not be applied. Guard the write with the version "
+                "token instead -- pass the pre-read object as `current=` so the update is "
+                "conditioned on that exact version."
+            )
+
         op = TransactionOperation(
             operation_type=OperationType.UPDATE,
             resource_class=resource_class,
@@ -307,6 +371,9 @@ class TransactionContext:
           ``ResourceConfig(omit_none_attributes=True)``).
         - Bumps the ``updated_at`` timestamp automatically.
 
+        Resources carrying blob-field data cannot be written through a transaction at
+        all (any of ``create``/``update``/``put``); queuing one raises.
+
         ``put`` does NOT exist for versioned resources — those require explicit
         version-incrementing semantics; use :meth:`update` for those.
 
@@ -314,7 +381,11 @@ class TransactionContext:
         already exist; for fresh inserts use :meth:`create`). Override via
         ``condition``/``condition_values``/``condition_names``.
 
-        Optimistic locking (``optimistic=True``, the default) additionally guards
+        Optimistic locking (``optimistic=True``, the default) requires
+        ``compress_data=False``, since the guard conditions on the ``updated_at``
+        attribute and compression moves every field inside the gzipped ``data``
+        attribute; the combination raises rather than failing on every commit. It
+        additionally guards
         the write on the resource's ``updated_at`` as captured at queue time: if
         another writer modified the item since this resource was read, the commit
         raises :class:`TransactionConditionFailedError` instead of silently
@@ -333,8 +404,20 @@ class TransactionContext:
         if not resource.resource_id:
             raise ValueError("Resource must have a resource_id before put()")
 
+        _reject_blob_writes("put", resource.__class__, resource=resource)
+
         condition_names = _validate_condition_names(condition_names)
         if optimistic:
+            if resource.resource_config.get("compress_data"):
+                raise ValueError(
+                    "optimistic=True is not supported for resources with compress_data=True. "
+                    "The optimistic guard conditions on the `updated_at` attribute, but a "
+                    "compressed resource stores every field inside the gzipped `data` attribute, "
+                    "so `updated_at` is not addressable by a condition expression and the guard "
+                    "could never match -- every such put would fail. Use compress_data=False on "
+                    "this resource to keep its attributes top-level, or pass optimistic=False for "
+                    "last-writer-wins semantics."
+                )
             # Capture the expected token NOW — the builder bumps resource.updated_at
             # on every (re)build, so it must not be read at build time.
             if resource.updated_at is None:

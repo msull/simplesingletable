@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+* **Three silent failures in the transaction path now raise at queue time** (#12). Each was a case where a transaction quietly did something other than what the caller asked, and each now fails at the call site instead — before anything is sent to DynamoDB. None of these guards rejects a write that previously succeeded; only writes that were already broken now fail visibly.
+
+  * **Blob-backed data cannot be written through a transaction.** `to_dynamodb_item()` returns a `(item, blob_data)` tuple when a resource carries blob-field values, but every transaction builder hands its result straight to `marshall()`, producing `AttributeError: 'tuple' object has no attribute 'items'` from inside marshalling. `txn.create()`, `txn.put()` and `txn.update()` now refuse such a write with a message explaining that a blob is an S3 object the transaction cannot make part of its atomic commit.
+
+    The guard keys on whether an instance actually *carries* blob data, not on whether blob fields are configured — a blob-configured resource read back from DynamoDB has those fields set to `None` and marshals as a plain item, so it stays usable in a transaction. Two helpers make the distinction available to callers: `has_pending_blob_data()` and `blob_field_names()`.
+
+    `txn.update()` additionally refuses to name a blob field in `updates` or `clear_fields`. That case never crashed — it wrote the value as an ordinary DynamoDB attribute, bypassing S3 entirely and leaving the item's blob metadata stale.
+
+  * **Caller-supplied conditions on versioned updates are refused.** `_build_versioned_update_items` builds its own conditions and never read `op.condition`, `op.condition_values` or `op.condition_names`, so a guard passed to `txn.update()` for a versioned resource silently did nothing. It was not inert, either: `_should_retry` *did* read `op.condition` and disabled auto-retry when one was present, so the caller paid the cost of the guard and got none of the protection. Guard a versioned update by passing the pre-read object as `current=` instead. The non-versioned branch applies caller conditions as before.
+
+  * **`optimistic=True` is refused for compressed resources.** `txn.put(optimistic=True)` — the default — conditions on the `updated_at` attribute, but `compress_data=True` stores every field inside the gzipped `data` attribute, so the condition can never match and every such put failed. Both halves are defaults in practice and the combination was undetectable at class-definition time. Use `compress_data=False` to keep attributes top-level, or `optimistic=False` for last-writer-wins.
+
 ## [19.0.0] 2026-08-19
 
 ### Fixed
