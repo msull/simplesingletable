@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from typing import Optional
 
 import streamlit as st
 from logzero import logger
@@ -11,13 +10,13 @@ from simplesingletable.extras.habit_tracker import MonthlyHabitTracker, MonthlyH
 
 
 class PersonalHabitsTracker(MonthlyHabitTracker):
-    m: Optional[set[str]] = Field(default=None)
-    s: Optional[set[str]] = Field(default=None)
+    m: set[str] | None = Field(default=None)
+    s: set[str] | None = Field(default=None)
 
 
 class PersonalHabitsTrackerV2(MonthlyHabitTrackerV2):
-    m: Optional[set[str]] = Field(default=None)
-    s: Optional[set[str]] = Field(default=None)
+    m: set[str] | None = Field(default=None)
+    s: set[str] | None = Field(default=None)
 
 
 def main():
@@ -52,7 +51,7 @@ def main():
         st.rerun()
 
     if st.button("Copy to V2"):
-        for habit in {"s", "m"}:
+        for habit in ("s", "m"):
             for entry in getattr(habits, habit):
                 if "#" in entry:
                     when, note = entry.split("#", maxsplit=1)

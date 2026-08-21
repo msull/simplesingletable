@@ -1,6 +1,7 @@
 import json
 import random
-from typing import Any, Callable, Optional, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 from uuid import uuid4
 
 import streamlit as st
@@ -232,7 +233,7 @@ def render_form_management(fdm: FormDataManager):
                                 st.divider()
                             c1, c2 = st.columns(2)
 
-                            def _fix_allowed(allowed_vals: Optional[str] = None) -> list[str]:
+                            def _fix_allowed(allowed_vals: str | None = None) -> list[str]:
                                 if not allowed_vals:
                                     return []
                                 return [x.strip() for x in allowed_vals.split("\n")]
@@ -300,9 +301,9 @@ def display_pydantic_models(
     data: list[_T],
     code_view=True,
     *,
-    display_func: Optional[Callable[[_T], Any]] = None,
-    btn_callbacks: Optional[dict[str, Callable[[_T], Any]]] = None,
-    select_action_callbacks: Optional[dict[str, Callable[[_T], Any]]] = None,
+    display_func: Callable[[_T], Any] | None = None,
+    btn_callbacks: dict[str, Callable[[_T], Any]] | None = None,
+    select_action_callbacks: dict[str, Callable[[_T], Any]] | None = None,
     include_divider: bool = True,
 ):
     for idx, row in enumerate(data):

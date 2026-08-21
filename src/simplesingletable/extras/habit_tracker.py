@@ -1,6 +1,5 @@
 from collections import defaultdict
 from datetime import date, datetime
-from typing import Optional
 
 from boto3.dynamodb.conditions import Key
 from pydantic import BaseModel
@@ -128,7 +127,7 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
     def get_for_month(
         cls,
         memory: "DynamoDbMemory",
-        for_date: Optional[date] = None,
+        for_date: date | None = None,
         consistent_read: bool = True,
     ) -> "MonthlyHabitTracker":
         """
@@ -152,7 +151,7 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
         self,
         memory: "DynamoDbMemory",
         habit_name: str,
-        dt: Optional[datetime] = None,
+        dt: datetime | None = None,
         note: str = "",
     ):
         """
@@ -200,7 +199,7 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
         cls,
         memory: "DynamoDbMemory",
         habit_name: str,
-        dt: Optional[datetime] = None,
+        dt: datetime | None = None,
         note: str = "",
         consistent_read: bool = True,
     ) -> "MonthlyHabitTracker":
@@ -271,7 +270,7 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
     def get_for_month(
         cls,
         memory: "DynamoDbMemory",
-        for_date: Optional[date] = None,
+        for_date: date | None = None,
         consistent_read: bool = True,
     ) -> "MonthlyHabitTrackerV2":
         if for_date is None:
@@ -290,7 +289,7 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
         self,
         memory: "DynamoDbMemory",
         habit_name: str,
-        dt: Optional[datetime] = None,
+        dt: datetime | None = None,
         note: str = "",
     ):
         """
@@ -341,7 +340,7 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
         cls,
         memory: "DynamoDbMemory",
         habit_name: str,
-        dt: Optional[datetime] = None,
+        dt: datetime | None = None,
         note: str = "",
         consistent_read: bool = True,
     ) -> "MonthlyHabitTrackerV2":

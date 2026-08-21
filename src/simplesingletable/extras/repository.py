@@ -39,8 +39,10 @@ Example:
     users = user_repo.list(limit=10)
 """
 
+import builtins
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Type, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -63,13 +65,13 @@ class ResourceRepository:
     def __init__(
         self,
         ddb: DynamoDbMemory,
-        model_class: Type[T],
-        create_schema_class: Type[CreateSchemaType],
-        update_schema_class: Type[UpdateSchemaType],
-        logger: Optional[logging.Logger] = None,
-        default_create_obj_fn: Optional[Callable[[str], CreateSchemaType]] = None,
-        override_id_fn: Optional[Callable[[CreateSchemaType], str]] = None,
-        cache_ttl_seconds: Optional[int] = None,
+        model_class: type[T],
+        create_schema_class: type[CreateSchemaType],
+        update_schema_class: type[UpdateSchemaType],
+        logger: logging.Logger | None = None,
+        default_create_obj_fn: Callable[[str], CreateSchemaType] | None = None,
+        override_id_fn: Callable[[CreateSchemaType], str] | None = None,
+        cache_ttl_seconds: int | None = None,
     ):
         self.ddb = ddb
         self.model_class = model_class
@@ -78,7 +80,7 @@ class ResourceRepository:
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.default_create_object_fn = default_create_obj_fn
         self.override_id_fn = override_id_fn
-        self._cache: Optional[TTLCache] = (
+        self._cache: TTLCache | None = (
             TTLCache(cache_ttl_seconds, copy_fn=lambda v: v.model_copy(deep=True))
             if cache_ttl_seconds and cache_ttl_seconds > 0
             else None
@@ -87,9 +89,9 @@ class ResourceRepository:
     def create(
         self,
         obj_in: CreateSchemaType | dict,
-        override_id: Optional[str] = None,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict] = None,
+        override_id: str | None = None,
+        changed_by: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> T:
         """
         Create a new record using the create schema and return the model instance.
@@ -122,7 +124,7 @@ class ResourceRepository:
             obj_in = self.create_schema_class()
             return self.create(obj_in, override_id=id)
 
-    def get(self, id: Any) -> Optional[T]:
+    def get(self, id: Any) -> T | None:
         """
         Retrieve a record by its identifier. Returns None if not found.
         """
@@ -144,9 +146,9 @@ class ResourceRepository:
         self,
         id_or_obj: Any,
         obj_in: UpdateSchemaType | dict,
-        clear_fields: Optional[Set[str]] = None,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict] = None,
+        clear_fields: set[str] | None = None,
+        changed_by: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> T:
         """
         Update an existing record by its identifier with the update schema.
@@ -177,7 +179,7 @@ class ResourceRepository:
             existing, obj_in, clear_fields=clear_fields, changed_by=changed_by, audit_metadata=audit_metadata
         )
 
-    def delete(self, id: Any, changed_by: Optional[str] = None, audit_metadata: Optional[dict] = None) -> None:
+    def delete(self, id: Any, changed_by: str | None = None, audit_metadata: dict | None = None) -> None:
         """
         Delete a record by its identifier.
 
@@ -190,7 +192,7 @@ class ResourceRepository:
         obj = self.read(id)
         return self._delete(obj, changed_by=changed_by, audit_metadata=audit_metadata)
 
-    def batch_get(self, ids: list[str]) -> Dict[str, T]:
+    def batch_get(self, ids: list[str]) -> dict[str, T]:
         """
         Retrieve multiple records by their identifiers. Returns only found items.
 
@@ -207,7 +209,7 @@ class ResourceRepository:
         if not ids:
             return {}
 
-        results: Dict[str, T] = {}
+        results: dict[str, T] = {}
         ids_to_fetch: list[str] = []
 
         if self._cache:
@@ -230,7 +232,7 @@ class ResourceRepository:
         if self._cache:
             self._cache.clear()
 
-    def list(self, limit: Optional[int] = None) -> List[T]:
+    def list(self, limit: int | None = None) -> list[T]:
         """
         List all records of this type, with optional limit.
         """
@@ -240,9 +242,9 @@ class ResourceRepository:
     def _create(
         self,
         obj_in: CreateSchemaType,
-        override_id: Optional[str] = None,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict] = None,
+        override_id: str | None = None,
+        changed_by: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> T:
         if override_id:
             final_override_id = override_id
@@ -261,7 +263,7 @@ class ResourceRepository:
             self._cache.put(str(result.resource_id), result)
         return result
 
-    def _get(self, id: Any) -> Optional[T]:
+    def _get(self, id: Any) -> T | None:
         if self._cache:
             cached = self._cache.get(str(id))
             if cached is not None:
@@ -275,9 +277,9 @@ class ResourceRepository:
         self,
         existing_obj: T,
         obj_in: UpdateSchemaType,
-        clear_fields: Optional[Set[str]] = None,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict] = None,
+        clear_fields: set[str] | None = None,
+        changed_by: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> T:
         result = self.ddb.update_existing(
             existing_obj,
@@ -290,11 +292,11 @@ class ResourceRepository:
             self._cache.put(str(result.resource_id), result)
         return result
 
-    def _delete(self, obj: T, changed_by: Optional[str] = None, audit_metadata: Optional[dict] = None) -> None:
+    def _delete(self, obj: T, changed_by: str | None = None, audit_metadata: dict | None = None) -> None:
         self.ddb.delete_existing(obj, changed_by=changed_by, audit_metadata=audit_metadata)
         if self._cache:
             self._cache.invalidate(str(obj.resource_id))
 
-    def _list(self, limit: Optional[int]) -> List[T]:
+    def _list(self, limit: int | None) -> builtins.list[T]:
         result = self.ddb.list_type_by_updated_at(self.model_class, results_limit=limit)
         return result.as_list()

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Type, Union
+from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
 
@@ -40,7 +40,7 @@ _TRANSIENT_ERROR_CODES = {
 }
 
 
-def _validate_condition_names(condition_names: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+def _validate_condition_names(condition_names: dict[str, str] | None) -> dict[str, str] | None:
     """Validate a ``#alias -> attribute-name`` mapping for a condition expression."""
     if not condition_names:
         return None
@@ -60,10 +60,10 @@ _BLOB_TXN_MESSAGE = (
 
 def _reject_blob_writes(
     operation: str,
-    resource_class: Type[DynamoDbResource],
-    resource: Optional[DynamoDbResource] = None,
-    updates: Optional[Dict[str, Any]] = None,
-    clear_fields: Optional[List[str]] = None,
+    resource_class: type[DynamoDbResource],
+    resource: DynamoDbResource | None = None,
+    updates: dict[str, Any] | None = None,
+    clear_fields: list[str] | None = None,
 ) -> None:
     """Refuse a queued operation that would need to write blob data.
 
@@ -92,7 +92,7 @@ def _reject_blob_writes(
         raise ValueError(f"txn.{operation}() cannot modify blob field(s) {touched}. {_BLOB_TXN_MESSAGE}")
 
 
-def _marshall_values(values: Dict[str, Any]) -> Dict[str, Any]:
+def _marshall_values(values: dict[str, Any]) -> dict[str, Any]:
     """Marshall expression values with the same normalization as item writes.
 
     Routes values through ``clean_data`` (float→Decimal, date/datetime→isoformat,
@@ -122,8 +122,8 @@ class TransactionError(Exception):
         self,
         message: str,
         *,
-        cancellation_reasons: Optional[List[Dict[str, Any]]] = None,
-        operation_indexes: Optional[List[int]] = None,
+        cancellation_reasons: list[dict[str, Any]] | None = None,
+        operation_indexes: list[int] | None = None,
     ):
         super().__init__(message)
         self.cancellation_reasons = cancellation_reasons or []
@@ -152,7 +152,6 @@ class VersionConflictError(TransactionConditionFailedError):
 class ResourceNotFoundError(Exception):
     """Raised when a resource is not found."""
 
-    pass
 
 
 class OperationType(Enum):
@@ -171,23 +170,23 @@ class TransactionOperation:
     """Represents a single operation within a transaction."""
 
     operation_type: OperationType
-    resource_class: Type[DynamoDbResource]
-    resource: Optional[DynamoDbResource] = None
-    resource_id: Optional[str] = None
-    updates: Optional[Dict[str, Any]] = None
-    clear_fields: Optional[List[str]] = None
-    field_name: Optional[str] = None
-    value: Optional[Any] = None
-    condition: Optional[str] = None
-    condition_values: Optional[Dict[str, Any]] = None
-    condition_names: Optional[Dict[str, str]] = None
+    resource_class: type[DynamoDbResource]
+    resource: DynamoDbResource | None = None
+    resource_id: str | None = None
+    updates: dict[str, Any] | None = None
+    clear_fields: list[str] | None = None
+    field_name: str | None = None
+    value: Any | None = None
+    condition: str | None = None
+    condition_values: dict[str, Any] | None = None
+    condition_names: dict[str, str] | None = None
     recompute_gsis: bool = False
-    current: Optional[DynamoDbResource] = None
+    current: DynamoDbResource | None = None
 
     # Tracking populated by the build phase, used by post-commit hooks for audit/stats.
-    result_resource: Optional[DynamoDbResource] = None
-    pre_image: Optional[DynamoDbResource] = None
-    transact_item: Optional[Dict[str, Any]] = None
+    result_resource: DynamoDbResource | None = None
+    pre_image: DynamoDbResource | None = None
+    transact_item: dict[str, Any] | None = None
 
 
 @dataclass
@@ -195,26 +194,26 @@ class TransactionContext:
     """Context for accumulating transaction operations."""
 
     memory: DynamoDbMemory
-    operations: List[TransactionOperation] = field(default_factory=list)
-    read_cache: Dict[str, DynamoDbResource] = field(default_factory=dict)
-    pending_creates: Dict[str, DynamoDbResource] = field(default_factory=dict)
+    operations: list[TransactionOperation] = field(default_factory=list)
+    read_cache: dict[str, DynamoDbResource] = field(default_factory=dict)
+    pending_creates: dict[str, DynamoDbResource] = field(default_factory=dict)
     isolation_level: str = "read_committed"
     auto_retry: bool = True
     max_retries: int = 3
 
     # Transaction-wide audit attribution. Applied to every audit row emitted by this
     # commit() unless the resource's audit_config provides a more specific override.
-    changed_by: Optional[str] = None
-    audit_metadata: Optional[Dict[str, Any]] = None
+    changed_by: str | None = None
+    audit_metadata: dict[str, Any] | None = None
 
     # Track resources by type for validation
-    resources_by_type: Dict[Type, List[TransactionOperation]] = field(default_factory=lambda: defaultdict(list))
+    resources_by_type: dict[type, list[TransactionOperation]] = field(default_factory=lambda: defaultdict(list))
 
     def create(
         self,
         resource: DynamoDbResource,
-        condition: Optional[str] = None,
-        condition_names: Optional[Dict[str, str]] = None,
+        condition: str | None = None,
+        condition_names: dict[str, str] | None = None,
         **condition_values,
     ) -> DynamoDbResource:
         """Queue a create operation.
@@ -253,15 +252,15 @@ class TransactionContext:
 
     def update(
         self,
-        resource: Union[DynamoDbResource, Type[DynamoDbResource]],
-        resource_id: Optional[str] = None,
-        updates: Optional[Dict[str, Any]] = None,
-        condition: Optional[str] = None,
-        condition_values: Optional[Dict[str, Any]] = None,
-        condition_names: Optional[Dict[str, str]] = None,
-        clear_fields: Optional[Union[List[str], Set[str]]] = None,
+        resource: DynamoDbResource | type[DynamoDbResource],
+        resource_id: str | None = None,
+        updates: dict[str, Any] | None = None,
+        condition: str | None = None,
+        condition_values: dict[str, Any] | None = None,
+        condition_names: dict[str, str] | None = None,
+        clear_fields: list[str] | set[str] | None = None,
         recompute_gsis: bool = False,
-        current: Optional[DynamoDbResource] = None,
+        current: DynamoDbResource | None = None,
         **kwargs,
     ) -> TransactionOperation:
         """Queue an update operation.
@@ -309,7 +308,7 @@ class TransactionContext:
             all_updates.update(updates)
         all_updates.update(kwargs)
 
-        clear_fields_list: Optional[List[str]] = None
+        clear_fields_list: list[str] | None = None
         if clear_fields:
             clear_fields_list = list(clear_fields)
             overlap = set(clear_fields_list) & set(all_updates.keys())
@@ -355,9 +354,9 @@ class TransactionContext:
     def put(
         self,
         resource: DynamoDbResource,
-        condition: Optional[str] = None,
-        condition_values: Optional[Dict[str, Any]] = None,
-        condition_names: Optional[Dict[str, str]] = None,
+        condition: str | None = None,
+        condition_values: dict[str, Any] | None = None,
+        condition_names: dict[str, str] | None = None,
         optimistic: bool = True,
     ) -> TransactionOperation:
         """Queue a full-state PUT operation.
@@ -444,10 +443,10 @@ class TransactionContext:
 
     def delete(
         self,
-        resource: Union[DynamoDbResource, Type[DynamoDbResource]],
-        resource_id: Optional[str] = None,
-        condition: Optional[str] = None,
-        condition_names: Optional[Dict[str, str]] = None,
+        resource: DynamoDbResource | type[DynamoDbResource],
+        resource_id: str | None = None,
+        condition: str | None = None,
+        condition_names: dict[str, str] | None = None,
         **condition_values,
     ) -> TransactionOperation:
         """Queue a delete operation."""
@@ -477,10 +476,10 @@ class TransactionContext:
 
     def increment(
         self,
-        resource: Union[DynamoDbResource, Type[DynamoDbResource]],
+        resource: DynamoDbResource | type[DynamoDbResource],
         field_name: str,
-        amount: Union[int, float, Decimal] = 1,
-        resource_id: Optional[str] = None,
+        amount: float | Decimal = 1,
+        resource_id: str | None = None,
     ) -> TransactionOperation:
         """Queue an increment operation (``amount`` may be negative to decrement)."""
         if isinstance(resource, type):
@@ -508,10 +507,10 @@ class TransactionContext:
 
     def append(
         self,
-        resource: Union[DynamoDbResource, Type[DynamoDbResource]],
+        resource: DynamoDbResource | type[DynamoDbResource],
         field_name: str,
-        values: List[Any],
-        resource_id: Optional[str] = None,
+        values: list[Any],
+        resource_id: str | None = None,
     ) -> TransactionOperation:
         """Queue an append operation for list fields."""
         if isinstance(resource, type):
@@ -538,8 +537,8 @@ class TransactionContext:
         return op
 
     def read(
-        self, resource_class: Type[DynamoDbResource], resource_id: str, force_refresh: bool = False
-    ) -> Optional[DynamoDbResource]:
+        self, resource_class: type[DynamoDbResource], resource_id: str, force_refresh: bool = False
+    ) -> DynamoDbResource | None:
         """Read a resource, using cache if available."""
         cache_key = f"{resource_class.__name__}#{resource_id}"
 
@@ -561,7 +560,7 @@ class TransactionContext:
         except (ValueError, AttributeError):
             return None
 
-    def _build_transaction_items(self) -> tuple[List[Dict[str, Any]], List[int]]:
+    def _build_transaction_items(self) -> tuple[list[dict[str, Any]], list[int]]:
         """Build DynamoDB transaction items from queued operations.
 
         Returns:
@@ -571,8 +570,8 @@ class TransactionContext:
             so this mapping is needed to resolve DynamoDB CancellationReasons back to
             the originating operations.
         """
-        items: List[Dict[str, Any]] = []
-        item_to_op_index: List[int] = []
+        items: list[dict[str, Any]] = []
+        item_to_op_index: list[int] = []
 
         for op_index, op in enumerate(self.operations):
             if op.operation_type == OperationType.CREATE:
@@ -600,7 +599,7 @@ class TransactionContext:
 
         return items, item_to_op_index
 
-    def _build_create_items(self, op: TransactionOperation) -> List[Dict[str, Any]]:
+    def _build_create_items(self, op: TransactionOperation) -> list[dict[str, Any]]:
         """Build transaction items for a create operation."""
         resource = op.resource
 
@@ -641,7 +640,7 @@ class TransactionContext:
 
             return [put_item]
 
-    def _build_update_items(self, op: TransactionOperation) -> List[Dict[str, Any]]:
+    def _build_update_items(self, op: TransactionOperation) -> list[dict[str, Any]]:
         """Build transaction items for an update operation."""
         # For versioned resources, we need special handling
         if issubclass(op.resource_class, DynamoDbVersionedResource):
@@ -651,12 +650,12 @@ class TransactionContext:
 
         from datetime import datetime, timezone
 
-        set_parts: List[str] = []
-        remove_parts: List[str] = []
-        expression_values: Dict[str, Any] = {}
+        set_parts: list[str] = []
+        remove_parts: list[str] = []
+        expression_values: dict[str, Any] = {}
         # Seed with user-supplied condition aliases so placeholder allocation
         # reuses them (same mapping) or avoids them (conflicting mapping).
-        expression_names: Dict[str, str] = dict(op.condition_names or {})
+        expression_names: dict[str, str] = dict(op.condition_names or {})
 
         # Resolve current state (only needed for GSI recompute on non-versioned).
         current = op.current
@@ -664,8 +663,8 @@ class TransactionContext:
             current = self._load_current_for_op(op)
 
         # If we have current state, compute the post-update GSI keys.
-        gsi_set: Dict[str, Any] = {}
-        gsi_remove: Set[str] = set()
+        gsi_set: dict[str, Any] = {}
+        gsi_remove: set[str] = set()
         if op.recompute_gsis and current is not None:
             gsi_set, gsi_remove = self._compute_gsi_changes(op, current)
             # Stash so the audit pre-image walk can use the same state.
@@ -731,7 +730,7 @@ class TransactionContext:
         return [update_item]
 
     @staticmethod
-    def _allocate_placeholder(key: str, expression_names: Dict[str, str]) -> str:
+    def _allocate_placeholder(key: str, expression_names: dict[str, str]) -> str:
         """Allocate a unique ``#name`` placeholder for ``key`` in ``expression_names``.
 
         Re-uses an existing placeholder if one already maps to ``key``.
@@ -748,7 +747,7 @@ class TransactionContext:
         expression_names[placeholder] = key
         return placeholder
 
-    def _load_current_for_op(self, op: TransactionOperation) -> Optional[DynamoDbResource]:
+    def _load_current_for_op(self, op: TransactionOperation) -> DynamoDbResource | None:
         """Return the current resource state for ``op``, using the read cache when possible."""
         cache_key = f"{op.resource_class.__name__}#{op.resource_id}"
         if cache_key in self.read_cache:
@@ -762,7 +761,7 @@ class TransactionContext:
         return current
 
     @staticmethod
-    def _compute_gsi_changes(op: TransactionOperation, current: DynamoDbResource) -> tuple[Dict[str, Any], Set[str]]:
+    def _compute_gsi_changes(op: TransactionOperation, current: DynamoDbResource) -> tuple[dict[str, Any], set[str]]:
         """Apply ``op.updates`` / ``op.clear_fields`` to ``current`` and recompute GSI keys.
 
         Returns ``(keys_to_set, keys_to_remove)`` where:
@@ -778,8 +777,8 @@ class TransactionContext:
             if hasattr(projected, key):
                 setattr(projected, key, None)
 
-        keys_to_set: Dict[str, Any] = {}
-        keys_to_remove: Set[str] = set()
+        keys_to_set: dict[str, Any] = {}
+        keys_to_remove: set[str] = set()
 
         gsi_config = projected.get_gsi_config()
         for fields in gsi_config.values():
@@ -851,7 +850,7 @@ class TransactionContext:
         keys_to_remove -= set(keys_to_set.keys())
         return keys_to_set, keys_to_remove
 
-    def _build_put_items(self, op: TransactionOperation) -> List[Dict[str, Any]]:
+    def _build_put_items(self, op: TransactionOperation) -> list[dict[str, Any]]:
         """Build transaction items for a full-state PUT."""
         from datetime import datetime, timezone
 
@@ -876,7 +875,7 @@ class TransactionContext:
         op.result_resource = resource
         return [put_item]
 
-    def _build_versioned_update_items(self, op: TransactionOperation) -> List[Dict[str, Any]]:
+    def _build_versioned_update_items(self, op: TransactionOperation) -> list[dict[str, Any]]:
         """Build transaction items for updating a versioned resource."""
         # Reuse caller-supplied pre-image when available to avoid an extra read.
         if op.current is not None:
@@ -934,7 +933,7 @@ class TransactionContext:
             },
         ]
 
-    def _build_delete_items(self, op: TransactionOperation) -> List[Dict[str, Any]]:
+    def _build_delete_items(self, op: TransactionOperation) -> list[dict[str, Any]]:
         """Build transaction items for a delete operation."""
         pk = f"{op.resource_class.get_unique_key_prefix()}#{op.resource_id}"
 
@@ -952,7 +951,7 @@ class TransactionContext:
 
         return [delete_item]
 
-    def _build_increment_items(self, op: TransactionOperation) -> List[Dict[str, Any]]:
+    def _build_increment_items(self, op: TransactionOperation) -> list[dict[str, Any]]:
         """Build transaction items for an increment operation."""
         pk = f"{op.resource_class.get_unique_key_prefix()}#{op.resource_id}"
         # For non-versioned resources, sk is the same as pk
@@ -970,7 +969,7 @@ class TransactionContext:
 
         return [update_item]
 
-    def _build_append_items(self, op: TransactionOperation) -> List[Dict[str, Any]]:
+    def _build_append_items(self, op: TransactionOperation) -> list[dict[str, Any]]:
         """Build transaction items for an append operation."""
         pk = f"{op.resource_class.get_unique_key_prefix()}#{op.resource_id}"
         # For non-versioned resources, sk is the same as pk
@@ -1039,7 +1038,7 @@ class TransactionContext:
                 # Done before clearing so we can still walk the operations list.
                 try:
                     self._run_post_commit_hooks()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     # Post-commit side effects must never mask a successful commit.
                     logger.exception("Post-commit hooks failed; primary transaction already committed")
 
@@ -1122,13 +1121,13 @@ class TransactionContext:
                     raise TransactionError(f"Transaction failed: {e}") from e
 
     @staticmethod
-    def _resolve_failed_op_indexes(reasons: List[Dict[str, Any]], item_to_op_index: List[int]) -> List[int]:
+    def _resolve_failed_op_indexes(reasons: list[dict[str, Any]], item_to_op_index: list[int]) -> list[int]:
         """Map DynamoDB ``CancellationReasons`` (by item index) back to op indexes.
 
         Preserves order and de-duplicates while leaving the first occurrence first.
         """
         seen: set = set()
-        ordered: List[int] = []
+        ordered: list[int] = []
         for item_index, reason in enumerate(reasons):
             if reason.get("Code") in (None, "None"):
                 continue  # Item was fine; only "real" reasons matter.
@@ -1144,7 +1143,7 @@ class TransactionContext:
         """Full-jitter exponential backoff: sleep uniform(0, min(1s, 50ms * 2**attempt))."""
         time.sleep(random.uniform(0, min(1.0, 0.05 * (2**attempt))))
 
-    def _invalidate_cached_state(self, failed_op_indexes: List[int]) -> None:
+    def _invalidate_cached_state(self, failed_op_indexes: list[int]) -> None:
         """Drop cached pre-images for ops whose implicit conditions failed.
 
         A retry that rebuilds from ``op.current`` or the read cache re-derives the
@@ -1161,7 +1160,7 @@ class TransactionContext:
             if op.resource_id:
                 self.read_cache.pop(f"{op.resource_class.__name__}#{op.resource_id}", None)
 
-    def _should_retry(self, reasons: List[Dict[str, Any]], failed_op_indexes: List[int]) -> bool:
+    def _should_retry(self, reasons: list[dict[str, Any]], failed_op_indexes: list[int]) -> bool:
         """Return True only if every failure came from a library-implicit condition.
 
         User-supplied conditions are not retried: if a caller wrote
@@ -1195,8 +1194,8 @@ class TransactionContext:
         # Local import avoids cycle (dynamodb_memory imports from this module).
         from .dynamodb_memory import AuditEntry, MemoryStats
 
-        audit_entries: List[AuditEntry] = []
-        stats_deltas: Dict[str, int] = defaultdict(int)
+        audit_entries: list[AuditEntry] = []
+        stats_deltas: dict[str, int] = defaultdict(int)
 
         for op in self.operations:
             audit_enabled = bool((op.resource_class.resource_config.get("audit_config") or {}).get("enabled"))
@@ -1288,7 +1287,7 @@ class TransactionContext:
                     continue
                 self.memory.increment_counter(stats, "counts_by_type." + type_name, delta)
 
-    def _audit_metadata_for(self, op: TransactionOperation) -> Optional[Dict[str, Any]]:
+    def _audit_metadata_for(self, op: TransactionOperation) -> dict[str, Any] | None:
         """Merge transaction-wide audit_metadata with per-op annotations."""
         base = dict(self.audit_metadata) if self.audit_metadata else {}
         # Tag every row from the same transaction so they can be grouped downstream.
@@ -1320,8 +1319,8 @@ class TransactionManager:
         isolation_level: str = "read_committed",
         auto_retry: bool = True,
         max_retries: int = 3,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[Dict[str, Any]] = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ):
         """Create a transaction context.
 

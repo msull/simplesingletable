@@ -4,7 +4,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
 
-def normalize_etag(etag: Optional[str]) -> Optional[str]:
+def normalize_etag(etag: str | None) -> str | None:
     """Put an entity tag in its canonical quoted form.
 
     HTTP entity tags are quoted strings (RFC 9110) and S3 returns them with the quotes
@@ -81,14 +81,14 @@ class S3BlobStorage:
     def __init__(
         self,
         bucket_name: str,
-        key_prefix: Optional[str] = None,
+        key_prefix: str | None = None,
         s3_client: Optional["S3Client"] = None,
-        connection_params: Optional[dict] = None,
-        endpoint_url: Optional[str] = None,
+        connection_params: dict | None = None,
+        endpoint_url: str | None = None,
         cache_enabled: bool = True,
         cache_max_size_bytes: int = 100 * 1024 * 1024,  # 100MB default
         cache_max_items: int = 1000,
-        cache_ttl_seconds: Optional[float] = 900,  # 15 minutes default
+        cache_ttl_seconds: float | None = 900,  # 15 minutes default
         cache_max_item_size_bytes: int = 1024 * 1024,  # 1MB default
     ):
         self.bucket_name = bucket_name
@@ -116,7 +116,7 @@ class S3BlobStorage:
         return self._s3_client
 
     def _build_s3_key(
-        self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None
+        self, resource_type: str, resource_id: str, field_name: str, version: int | None = None
     ) -> str:
         """Build S3 key for a blob field."""
         parts = []
@@ -136,8 +136,8 @@ class S3BlobStorage:
         field_name: str,
         value: Any,
         config: BlobFieldConfig,
-        version: Optional[int] = None,
-        field_annotation: Optional[type] = None,
+        version: int | None = None,
+        field_annotation: type | None = None,
     ) -> BlobPlaceholder:
         """Store a blob field in S3.
 
@@ -230,14 +230,14 @@ class S3BlobStorage:
             etag=etag,
         )
 
-    def _cache_key(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> str:
+    def _cache_key(self, resource_type: str, resource_id: str, field_name: str, version: int | None = None) -> str:
         """Generate a cache key for a blob."""
         version_str = f"v{version}" if version is not None else "latest"
         return f"{resource_type}#{resource_id}#{field_name}#{version_str}"
 
     def _cache_get(
-        self, cache_key: str, if_match: Optional[str] = None, max_bytes: Optional[int] = None
-    ) -> Optional[Any]:
+        self, cache_key: str, if_match: str | None = None, max_bytes: int | None = None
+    ) -> Any | None:
         """Get an item from cache if available and valid.
 
         A conditional read is never served from cache. A cached ETag is only evidence of
@@ -288,7 +288,7 @@ class S3BlobStorage:
             # For other types, use JSON representation as approximation
             return len(json.dumps(data, default=str).encode("utf-8"))
 
-    def _cache_put(self, cache_key: str, data: Any, size_bytes: Optional[int] = None) -> None:
+    def _cache_put(self, cache_key: str, data: Any, size_bytes: int | None = None) -> None:
         """Put an item into the cache with LRU eviction."""
         if not self.cache_enabled:
             return
@@ -351,10 +351,10 @@ class S3BlobStorage:
         resource_type: str,
         resource_id: str,
         field_name: str,
-        version: Optional[int] = None,
+        version: int | None = None,
         *,
-        if_match: Optional[str] = None,
-        max_bytes: Optional[int] = None,
+        if_match: str | None = None,
+        max_bytes: int | None = None,
     ) -> Any:
         """Retrieve a blob field from S3 with caching.
 
@@ -459,7 +459,7 @@ class S3BlobStorage:
                 self._cache_stats.current_items -= 1
                 del self._cache[cache_key]
 
-    def head_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> dict:
+    def head_blob(self, resource_type: str, resource_id: str, field_name: str, version: int | None = None) -> dict:
         """Get metadata about a blob without downloading it.
 
         Returns:
@@ -498,11 +498,11 @@ class S3BlobStorage:
         target_resource_type: str,
         target_resource_id: str,
         target_field_name: str,
-        target_version: Optional[int] = None,
+        target_version: int | None = None,
         compressed: bool = False,
-        content_type: Optional[str] = None,
-        source_bucket: Optional[str] = None,
-        source_etag: Optional[str] = None,
+        content_type: str | None = None,
+        source_bucket: str | None = None,
+        source_etag: str | None = None,
     ) -> BlobPlaceholder:
         """Server-side copy of an S3 object to a managed blob key.
 
@@ -591,7 +591,7 @@ class S3BlobStorage:
             etag=normalize_etag(head_response.get("ETag")),
         )
 
-    def delete_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> None:
+    def delete_blob(self, resource_type: str, resource_id: str, field_name: str, version: int | None = None) -> None:
         """Delete a blob field from S3 and remove from cache."""
         s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
 
@@ -705,7 +705,7 @@ class S3BlobStorage:
 
     def warm_cache(
         self,
-        items: list[Tuple[str, str, str, Optional[int]]],
+        items: list[tuple[str, str, str, int | None]],
         batch_size: int = 10,
     ) -> int:
         """Pre-load frequently used blobs into cache.

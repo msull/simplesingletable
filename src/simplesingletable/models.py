@@ -8,10 +8,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Dict,
-    List,
-    Optional,
-    Type,
     TypedDict,
     TypeVar,
     get_args,
@@ -34,19 +30,19 @@ _T = TypeVar("_T")
 
 class PaginatedList(list[_T]):
     limit: int
-    current_pagination_key: Optional[str] = None
-    next_pagination_key: Optional[str] = None
+    current_pagination_key: str | None = None
+    next_pagination_key: str | None = None
     api_calls_made: int = 0
     rcus_consumed_by_query: int = 0
-    query_time_ms: Optional[float] = None
-    filter_efficiency: Optional[float] = None  # 0.0-1.0, % of scanned items that matched filter
+    query_time_ms: float | None = None
+    filter_efficiency: float | None = None  # 0.0-1.0, % of scanned items that matched filter
     total_items_scanned: int = 0  # Total items examined across all API calls
 
     def as_list(self) -> list[_T]:
         return self
 
     @property
-    def pagination_key(self) -> Optional[str]:
+    def pagination_key(self) -> str | None:
         """Alias for ``next_pagination_key`` to mirror the query's input parameter name."""
         return self.next_pagination_key
 
@@ -65,8 +61,8 @@ class DynamoDbVersionedItemKeys(TypedDict):
     # keys for the gsitype index that is automatically applied sparsely on v0 objects
     # the sk value is the "updated_at" datetime value on the object, meaning the gsitype index
     # sorts by modified time of the objects for any particular type
-    gsitype: Optional[str]
-    gsitypesk: Optional[str]
+    gsitype: str | None
+    gsitypesk: str | None
 
     # user-defineable attributes, used sparsely on the v0 object to enable secondary lookups / access patterns
     # gsi1 and gsi2 use the pk as the range key; using the default ID generation system, this means it automatically
@@ -78,11 +74,11 @@ class DynamoDbVersionedItemKeys(TypedDict):
     # tasks and set `gsi1pk` to "t|COMPLETE" or "t|INCOMPLETE" based on the "completed" attribute of the Task
 
     # gsi3 has a separate sortkey the user defines, to enable lookups that sort by something other than created_at
-    gsi1pk: Optional[str]
-    gsi2pk: Optional[str]
-    gsi3pk: Optional[str]
-    gsi3sk: Optional[str]
-    metadata: Optional[dict]  # user supplied metadata for anything that needs to be accessible to dynamodb filter expr
+    gsi1pk: str | None
+    gsi2pk: str | None
+    gsi3pk: str | None
+    gsi3sk: str | None
+    metadata: dict | None  # user supplied metadata for anything that needs to be accessible to dynamodb filter expr
 
 
 class BlobFieldConfig(TypedDict, total=False):
@@ -165,7 +161,7 @@ class ResourceConfig(TypedDict, total=False):
     max_versions: int | None
     """For versioned resources, the maximum number of versions to keep."""
 
-    blob_fields: Dict[str, BlobFieldConfig] | None
+    blob_fields: dict[str, BlobFieldConfig] | None
     """Configuration for fields that should be stored as blobs in S3."""
 
     ttl_field: str | None
@@ -193,10 +189,10 @@ class BlobPlaceholder(TypedDict):
     field_name: str
     s3_key: str
     size_bytes: int
-    content_type: Optional[str]
+    content_type: str | None
     compressed: bool
 
-    etag: NotRequired[Optional[str]]
+    etag: NotRequired[str | None]
     """Entity tag of the stored object, verbatim (quotes included).
 
     Only present when the placeholder was produced by an operation that observed the
@@ -213,14 +209,14 @@ class BaseDynamoDbResource(BaseModel, ABC):
     created_at: datetime
     updated_at: datetime
 
-    gsi_config: ClassVar[Dict[str, Dict]] = {}
+    gsi_config: ClassVar[dict[str, dict]] = {}
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None, blob_fields=None)
 
-    _blob_placeholders: Dict[str, BlobPlaceholder] = PrivateAttr(default_factory=dict)
-    _blob_versions: Dict[str, int] = PrivateAttr(default_factory=dict)
+    _blob_placeholders: dict[str, BlobPlaceholder] = PrivateAttr(default_factory=dict)
+    _blob_versions: dict[str, int] = PrivateAttr(default_factory=dict)
 
     @classmethod
-    def get_gsi_config(cls) -> Dict[str, Dict]:
+    def get_gsi_config(cls) -> dict[str, dict]:
         """Get the GSI configuration for this resource.
 
         Override this method to provide dynamic GSI configuration.
@@ -265,11 +261,11 @@ class BaseDynamoDbResource(BaseModel, ABC):
     def resource_id_as_ulid(self) -> ulid.ULID:
         return ulid.parse(self.resource_id)
 
-    def created_ago(self, now: Optional[datetime] = None) -> str:
+    def created_ago(self, now: datetime | None = None) -> str:
         now = now or _now(tz=self.created_at.tzinfo)
         return precisedelta((now - self.created_at), minimum_unit="minutes") + " ago"
 
-    def updated_ago(self, now: Optional[datetime] = None) -> str:
+    def updated_ago(self, now: datetime | None = None) -> str:
         now = now or _now(tz=self.created_at.tzinfo)
         return precisedelta((now - self.updated_at), minimum_unit="minutes") + " ago"
 
@@ -291,7 +287,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
     @staticmethod
     def decompress_model_content(content: bytes | Binary) -> dict:
         if isinstance(content, Binary):
-            content = bytes(content)  # noqa
+            content = bytes(content)
         entry_data: str = gzip.decompress(content).decode()
         return json.loads(entry_data)
 
@@ -417,7 +413,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
         # Return just dict for backward compatibility when no blob fields
         return dynamodb_data
 
-    def _calculate_ttl(self) -> Optional[int]:
+    def _calculate_ttl(self) -> int | None:
         """Calculate TTL value based on resource configuration.
 
         Returns:
@@ -455,10 +451,9 @@ class BaseDynamoDbResource(BaseModel, ABC):
         - dict: DynamoDB item (for backward compatibility)
         - tuple[dict, dict]: (DynamoDB item, blob fields data)
         """
-        pass
 
     @classmethod
-    def _build_resource_from_data(cls, data: dict, blob_placeholders: Optional[Dict[str, BlobPlaceholder]] = None):
+    def _build_resource_from_data(cls, data: dict, blob_placeholders: dict[str, BlobPlaceholder] | None = None):
         """Build resource instance from data dictionary.
 
         Handles blob fields and placeholders.
@@ -481,7 +476,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
             if field_name in data:
                 field_type = field_info.annotation
                 # Check if field is List[float] or similar
-                if get_origin(field_type) in (list, List):
+                if get_origin(field_type) in (list, list):
                     args = get_args(field_type)
                     if args and args[0] is float:
                         # Convert any Decimal values in the list to float
@@ -536,7 +531,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
         """Get list of blob field names that haven't been loaded."""
         return list(self._blob_placeholders.keys())
 
-    def load_blob_fields(self, memory: "DynamoDbMemory", fields: Optional[list[str]] = None) -> None:
+    def load_blob_fields(self, memory: "DynamoDbMemory", fields: list[str] | None = None) -> None:
         """Load blob fields from S3.
 
         Args:
@@ -592,7 +587,7 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
     resource_id: str
     created_at: datetime
     updated_at: datetime
-    _version_token: Optional[str] = PrivateAttr(default=None)
+    _version_token: str | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False)
@@ -665,13 +660,13 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
 
     @classmethod
     def from_dynamodb_item(
-        cls: Type["DynamoDbResource"],
+        cls: type["DynamoDbResource"],
         dynamodb_data: DynamoDbVersionedItemKeys | dict,
-        blob_placeholders: Optional[Dict[str, BlobPlaceholder]] = None,
+        blob_placeholders: dict[str, BlobPlaceholder] | None = None,
     ) -> "DynamoDbResource":
         if cls.resource_config["compress_data"]:
             compressed_data = dynamodb_data["data"]
-            data = cls.decompress_model_content(compressed_data)  # noqa
+            data = cls.decompress_model_content(compressed_data)
         else:
             # Filter out DynamoDB-specific keys
             excluded_keys = cls._get_excluded_dynamodb_keys()
@@ -696,9 +691,9 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
 
     @classmethod
     def create_new(
-        cls: Type["DynamoDbResource"],
+        cls: type["DynamoDbResource"],
         create_data: _PlainBaseModel | dict,
-        override_id: Optional[str] = None,
+        override_id: str | None = None,
     ) -> "DynamoDbResource":
         if isinstance(create_data, BaseModel):
             kwargs = create_data.model_dump()
@@ -711,7 +706,7 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         return cls.model_validate(kwargs)
 
     def update_existing(
-        self: "DynamoDbResource", update_data: _PlainBaseModel | dict, clear_fields: Optional[set[str]] = None
+        self: "DynamoDbResource", update_data: _PlainBaseModel | dict, clear_fields: set[str] | None = None
     ) -> "DynamoDbResource":
         now = _now()
         if isinstance(update_data, BaseModel):
@@ -815,13 +810,13 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
 
     @classmethod
     def from_dynamodb_item(
-        cls: Type["DynamoDbVersionedResource"],
+        cls: type["DynamoDbVersionedResource"],
         dynamodb_data: DynamoDbVersionedItemKeys | dict,
-        blob_placeholders: Optional[Dict[str, BlobPlaceholder]] = None,
+        blob_placeholders: dict[str, BlobPlaceholder] | None = None,
     ) -> "DynamoDbVersionedResource":
         if cls.resource_config["compress_data"]:
             compressed_data = dynamodb_data["data"]
-            data = cls.decompress_model_content(compressed_data)  # noqa
+            data = cls.decompress_model_content(compressed_data)
         else:
             # Filter out DynamoDB-specific keys
             excluded_keys = cls._get_excluded_dynamodb_keys()
@@ -842,9 +837,9 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
 
     @classmethod
     def create_new(
-        cls: Type["DynamoDbVersionedResource"],
+        cls: type["DynamoDbVersionedResource"],
         create_data: _PlainBaseModel | dict,
-        override_id: Optional[str] = None,
+        override_id: str | None = None,
     ) -> "DynamoDbVersionedResource":
         if isinstance(create_data, BaseModel):
             kwargs = create_data.model_dump()
@@ -876,7 +871,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         return new_resource
 
     def update_existing(
-        self: "DynamoDbVersionedResource", update_data: _PlainBaseModel | dict, clear_fields: Optional[set[str]] = None
+        self: "DynamoDbVersionedResource", update_data: _PlainBaseModel | dict, clear_fields: set[str] | None = None
     ) -> "DynamoDbVersionedResource":
         now = _now()
         if isinstance(update_data, BaseModel):
@@ -1020,23 +1015,23 @@ class AuditLog(DynamodbResource):
     operation: str
     """The operation performed: 'CREATE', 'UPDATE', 'DELETE', or 'RESTORE'."""
 
-    changed_by: Optional[str] = None
+    changed_by: str | None = None
     """Identifier of the user or service that made the change."""
 
-    changed_fields: Optional[Dict[str, Dict[str, Any]]] = None
+    changed_fields: dict[str, dict[str, Any]] | None = None
     """Field-level changes for UPDATE operations.
 
     Format: {"field_name": {"old": old_value, "new": new_value}}
     """
 
-    resource_snapshot: Optional[Dict[str, Any]] = None
+    resource_snapshot: dict[str, Any] | None = None
     """Full snapshot of the resource after the operation."""
 
-    audit_metadata: Dict[str, Any] = {}
+    audit_metadata: dict[str, Any] = {}
     """Custom audit metadata (e.g., reason for change, request ID, etc.)."""
 
     @classmethod
-    def get_gsi_config(cls) -> Dict[str, Dict]:
+    def get_gsi_config(cls) -> dict[str, dict]:
         """Configure GSIs for querying audit logs."""
         prefix = cls.get_unique_key_prefix()
         return {

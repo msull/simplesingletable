@@ -7,11 +7,12 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Optional, Set, Type, TypeVar, Union
+from typing import Any, ClassVar, Optional, TypeVar
 
 from boto3.dynamodb.conditions import ConditionBase, Key
 from pydantic import BaseModel, Field
@@ -27,7 +28,7 @@ from .models import (
 )
 from .utils import decode_pagination_key, encode_pagination_key, normalize_index_name
 
-AnyDbResource = TypeVar("AnyDbResource", bound=Union[DynamoDbVersionedResource, DynamoDbResource])
+AnyDbResource = TypeVar("AnyDbResource", bound=DynamoDbVersionedResource | DynamoDbResource)
 VersionedDbResourceOnly = TypeVar("VersionedDbResourceOnly", bound=DynamoDbVersionedResource)
 NonversionedDbResourceOnly = TypeVar("NonversionedDbResourceOnly", bound=DynamoDbResource)
 
@@ -136,11 +137,11 @@ class LocalStorageMemory:
             self._local_blob_storage = LocalBlobStorage(storage_dir=self.storage_dir)
 
     @property
-    def s3_blob_storage(self) -> Optional[LocalBlobStorage]:
+    def s3_blob_storage(self) -> LocalBlobStorage | None:
         """Property to match DynamoDbMemory interface."""
         return self._local_blob_storage
 
-    def _get_resource_file_path(self, resource_class: Type[AnyDbResource]) -> Path:
+    def _get_resource_file_path(self, resource_class: type[AnyDbResource]) -> Path:
         """Get the file path for a resource type."""
         prefix = resource_class.get_unique_key_prefix()
         # Replace any path-unsafe characters
@@ -197,11 +198,11 @@ class LocalStorageMemory:
     def get_existing(
         self,
         existing_id: str,
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         version: int = 0,
         consistent_read=False,
         load_blobs: bool = False,
-    ) -> Optional[AnyDbResource]:
+    ) -> AnyDbResource | None:
         """Get object of the specified type with the provided key.
 
         The `version` parameter is ignored on non-versioned resources.
@@ -268,7 +269,7 @@ class LocalStorageMemory:
     def batch_get_existing(
         self,
         ids: list[str],
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         consistent_read: bool = False,
         load_blobs: bool = False,
     ) -> dict[str, AnyDbResource]:
@@ -298,7 +299,7 @@ class LocalStorageMemory:
     def read_existing(
         self,
         existing_id: str,
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         version: int = 0,
         consistent_read=False,
         load_blobs: bool = False,
@@ -319,11 +320,11 @@ class LocalStorageMemory:
 
     def create_new(
         self,
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         data: _PlainBaseModel | dict,
-        override_id: Optional[str] = None,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        override_id: str | None = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> AnyDbResource:
         """Create a new resource."""
         new_resource = data_class.create_new(data, override_id=override_id)
@@ -451,9 +452,9 @@ class LocalStorageMemory:
         self,
         existing_resource: AnyDbResource,
         update_obj: _PlainBaseModel | dict,
-        clear_fields: Optional[Set[str]] = None,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        clear_fields: set[str] | None = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> AnyDbResource:
         """Update an existing resource."""
         data_class = existing_resource.__class__
@@ -562,8 +563,8 @@ class LocalStorageMemory:
     def delete_existing(
         self,
         existing_resource: AnyDbResource,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ):
         """Delete an existing resource."""
         # Create audit log before deleting
@@ -649,7 +650,7 @@ class LocalStorageMemory:
             stats = MemoryStats.ensure_exists(self)
             self.increment_counter(stats, "counts_by_type." + existing_resource.__class__.__name__, -1)
 
-    def delete_all_versions(self, resource_id: str, data_class: Type[VersionedDbResourceOnly]):
+    def delete_all_versions(self, resource_id: str, data_class: type[VersionedDbResourceOnly]):
         """Delete all versions of a versioned resource."""
         if not issubclass(data_class, DynamoDbVersionedResource):
             raise ValueError("delete_all_versions can only be used with versioned resources")
@@ -692,7 +693,7 @@ class LocalStorageMemory:
     def get_all_versions(
         self,
         resource_id: str,
-        data_class: Type[VersionedDbResourceOnly],
+        data_class: type[VersionedDbResourceOnly],
         load_blobs: bool = False,
     ) -> list[VersionedDbResourceOnly]:
         """Get all versions of a versioned resource, sorted newest first."""
@@ -751,10 +752,10 @@ class LocalStorageMemory:
     def restore_version(
         self,
         resource_id: str,
-        data_class: Type[VersionedDbResourceOnly],
+        data_class: type[VersionedDbResourceOnly],
         version: int,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> VersionedDbResourceOnly:
         """Restore a previous version by creating a new version with the same content."""
         if not issubclass(data_class, DynamoDbVersionedResource):
@@ -880,7 +881,7 @@ class LocalStorageMemory:
         self,
         resource: AnyDbResource,
         field_name: str,
-        blob_version: Optional[int] = None,
+        blob_version: int | None = None,
     ) -> None:
         """Update local storage blob metadata after a copy/register operation.
 
@@ -933,7 +934,7 @@ class LocalStorageMemory:
             self._save_data(f, data)
 
     @staticmethod
-    def _blob_version_for(resource: AnyDbResource, field_name: str) -> Optional[int]:
+    def _blob_version_for(resource: AnyDbResource, field_name: str) -> int | None:
         """Resolve which blob version a resource's field currently points at."""
         if isinstance(resource, DynamoDbVersionedResource):
             return resource._blob_versions.get(field_name, resource.version)
@@ -966,8 +967,8 @@ class LocalStorageMemory:
         resource: AnyDbResource,
         field_name: str,
         *,
-        if_match: Optional[str] = None,
-        max_bytes: Optional[int] = None,
+        if_match: str | None = None,
+        max_bytes: int | None = None,
     ) -> Any:
         """Read a single blob field's value without mutating the resource.
 
@@ -998,7 +999,7 @@ class LocalStorageMemory:
         target_resource: AnyDbResource,
         target_field: str,
         delete_source: bool = False,
-        source_etag: Optional[str] = None,
+        source_etag: str | None = None,
     ) -> BlobPlaceholder:
         """Copy a blob field between resources using local filesystem.
 
@@ -1104,11 +1105,11 @@ class LocalStorageMemory:
         resource: AnyDbResource,
         field_name: str,
         source_s3_key: str,
-        content_type: Optional[str] = None,
+        content_type: str | None = None,
         compressed: bool = False,
-        source_bucket: Optional[str] = None,
+        source_bucket: str | None = None,
         delete_source: bool = False,
-        source_etag: Optional[str] = None,
+        source_etag: str | None = None,
     ) -> BlobPlaceholder:
         """Register an external file as a blob field on a resource.
 
@@ -1179,13 +1180,13 @@ class LocalStorageMemory:
 
     def list_type_by_updated_at(
         self,
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         *,
-        filter_expression: Optional[ConditionBase] = None,
-        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
-        results_limit: Optional[int] = None,
+        filter_expression: ConditionBase | None = None,
+        filter_fn: Callable[[AnyDbResource], bool] | None = None,
+        results_limit: int | None = None,
         max_api_calls: int = Constants.QUERY_DEFAULT_MAX_API_CALLS,
-        pagination_key: Optional[str] = None,
+        pagination_key: str | None = None,
         ascending=False,
         filter_limit_multiplier: int = 3,
     ) -> PaginatedList[AnyDbResource]:
@@ -1207,18 +1208,18 @@ class LocalStorageMemory:
         self,
         *,
         key_condition: ConditionBase,
-        resource_class: Type[AnyDbResource] = None,
-        resource_class_fn: Callable[[dict], Type[AnyDbResource]] = None,
-        index_name: Optional[str] = None,
-        filter_expression: Optional[ConditionBase] = None,
-        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
-        results_limit: Optional[int] = None,
+        resource_class: type[AnyDbResource] = None,
+        resource_class_fn: Callable[[dict], type[AnyDbResource]] = None,
+        index_name: str | None = None,
+        filter_expression: ConditionBase | None = None,
+        filter_fn: Callable[[AnyDbResource], bool] | None = None,
+        results_limit: int | None = None,
         max_api_calls: int = Constants.QUERY_DEFAULT_MAX_API_CALLS,
-        pagination_key: Optional[str] = None,
+        pagination_key: str | None = None,
         ascending=False,
         filter_limit_multiplier: int = 3,
         _current_api_calls_on_stack: int = 0,
-        _observed_filter_efficiency: Optional[float] = None,
+        _observed_filter_efficiency: float | None = None,
         _total_items_scanned: int = 0,
     ) -> PaginatedList[AnyDbResource]:
         """Execute a paginated query with filtering.
@@ -1340,7 +1341,7 @@ class LocalStorageMemory:
 
         return result
 
-    def _matches_key_condition(self, item: dict, key_condition: ConditionBase, index_name: Optional[str]) -> bool:
+    def _matches_key_condition(self, item: dict, key_condition: ConditionBase, index_name: str | None) -> bool:
         """Check if an item matches a key condition."""
         # Access the internal structure of boto3 Condition object
         # The Condition object has _values attribute that contains the field name and comparison value
@@ -1386,7 +1387,7 @@ class LocalStorageMemory:
         value: Any,
         resource: AnyDbResource,
         blob_fields_config: dict,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Extract lightweight metadata for a blob field."""
         if value is None:
             return None
@@ -1411,7 +1412,7 @@ class LocalStorageMemory:
         self,
         resource: AnyDbResource,
         audit_config: dict,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Build resource snapshot with blob placeholders."""
         if not audit_config.get("include_snapshot"):
             return None
@@ -1449,7 +1450,7 @@ class LocalStorageMemory:
         old_resource: AnyDbResource,
         new_resource: AnyDbResource,
         audit_config: dict,
-    ) -> Optional[dict[str, dict[str, Any]]]:
+    ) -> dict[str, dict[str, Any]] | None:
         """Compute which fields changed."""
         changed_fields = {}
         exclude_fields = audit_config.get("exclude_fields", set()) or set()
@@ -1490,9 +1491,9 @@ class LocalStorageMemory:
         self,
         operation: str,
         resource: AnyDbResource,
-        changed_by: Optional[str],
-        old_resource: Optional[AnyDbResource] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        changed_by: str | None,
+        old_resource: AnyDbResource | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ):
         """Create an audit log entry for a resource operation."""
         # Don't audit AuditLog itself

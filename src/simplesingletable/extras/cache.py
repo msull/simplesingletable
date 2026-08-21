@@ -7,7 +7,8 @@ no background threads. Not thread-safe (consistent with rest of library).
 
 import copy
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 
 class TTLCache:
@@ -28,12 +29,12 @@ class TTLCache:
         result = cache.get("key1")  # Returns a *copy*, or None if expired
     """
 
-    def __init__(self, ttl_seconds: int, copy_fn: Optional[Callable[[Any], Any]] = None):
+    def __init__(self, ttl_seconds: int, copy_fn: Callable[[Any], Any] | None = None):
         self._ttl_seconds = ttl_seconds
         self._copy_fn: Callable[[Any], Any] = copy_fn or copy.copy
         self._store: dict[str, tuple[float, Any]] = {}
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         """Get a copy of the value by key. Returns None if missing or expired."""
         entry = self._store.get(key)
         if entry is None:

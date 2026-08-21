@@ -8,7 +8,6 @@ unchanged; new code can catch the specific type it cares about.
 treating blob storage as a filesystem-like interface can use the builtin.
 """
 
-from typing import Optional
 
 __all__ = [
     "BlobError",
@@ -32,7 +31,7 @@ class BlobNotFoundError(FileNotFoundError, BlobError):
     Subclasses both ``FileNotFoundError`` and ``ValueError``.
     """
 
-    def __init__(self, message: str, *, s3_key: Optional[str] = None, bucket: Optional[str] = None):
+    def __init__(self, message: str, *, s3_key: str | None = None, bucket: str | None = None):
         super().__init__(message)
         self.s3_key = s3_key
         self.bucket = bucket
@@ -50,9 +49,9 @@ class BlobPreconditionFailedError(BlobError):
         self,
         message: str,
         *,
-        s3_key: Optional[str] = None,
-        bucket: Optional[str] = None,
-        expected_etag: Optional[str] = None,
+        s3_key: str | None = None,
+        bucket: str | None = None,
+        expected_etag: str | None = None,
     ):
         super().__init__(message)
         self.s3_key = s3_key
@@ -73,9 +72,9 @@ class BlobTooLargeError(BlobError):
         self,
         message: str,
         *,
-        s3_key: Optional[str] = None,
-        size_bytes: Optional[int] = None,
-        max_bytes: Optional[int] = None,
+        s3_key: str | None = None,
+        size_bytes: int | None = None,
+        max_bytes: int | None = None,
     ):
         super().__init__(message)
         self.s3_key = s3_key

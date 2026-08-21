@@ -5,7 +5,7 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -33,7 +33,7 @@ class LocalBlobStorage:
     def __init__(
         self,
         storage_dir: str,
-        key_prefix: Optional[str] = None,
+        key_prefix: str | None = None,
     ):
         """Initialize local blob storage.
 
@@ -49,7 +49,7 @@ class LocalBlobStorage:
         self.blobs_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_s3_key(
-        self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None
+        self, resource_type: str, resource_id: str, field_name: str, version: int | None = None
     ) -> str:
         """Build storage key (path) for a blob field.
 
@@ -76,8 +76,8 @@ class LocalBlobStorage:
         field_name: str,
         value: Any,
         config: BlobFieldConfig,
-        version: Optional[int] = None,
-        field_annotation: Optional[type] = None,
+        version: int | None = None,
+        field_annotation: type | None = None,
     ) -> BlobPlaceholder:
         """Store a blob field in local filesystem.
 
@@ -163,10 +163,10 @@ class LocalBlobStorage:
         resource_type: str,
         resource_id: str,
         field_name: str,
-        version: Optional[int] = None,
+        version: int | None = None,
         *,
-        if_match: Optional[str] = None,
-        max_bytes: Optional[int] = None,
+        if_match: str | None = None,
+        max_bytes: int | None = None,
     ) -> Any:
         """Retrieve a blob field from local filesystem.
 
@@ -235,7 +235,7 @@ class LocalBlobStorage:
 
         return result
 
-    def head_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> dict:
+    def head_blob(self, resource_type: str, resource_id: str, field_name: str, version: int | None = None) -> dict:
         """Get metadata about a blob without reading its contents.
 
         Returns:
@@ -277,11 +277,11 @@ class LocalBlobStorage:
         target_resource_type: str,
         target_resource_id: str,
         target_field_name: str,
-        target_version: Optional[int] = None,
+        target_version: int | None = None,
         compressed: bool = False,
-        content_type: Optional[str] = None,
-        source_bucket: Optional[str] = None,
-        source_etag: Optional[str] = None,
+        content_type: str | None = None,
+        source_bucket: str | None = None,
+        source_etag: str | None = None,
     ) -> "BlobPlaceholder":
         """Copy a blob file to a new managed blob location.
 
@@ -350,7 +350,7 @@ class LocalBlobStorage:
             etag=_compute_etag(target_path),
         )
 
-    def delete_blob(self, resource_type: str, resource_id: str, field_name: str, version: Optional[int] = None) -> None:
+    def delete_blob(self, resource_type: str, resource_id: str, field_name: str, version: int | None = None) -> None:
         """Delete a blob field from local filesystem."""
         s3_key = self._build_s3_key(resource_type, resource_id, field_name, version)
         file_path = self._key_to_path(s3_key)

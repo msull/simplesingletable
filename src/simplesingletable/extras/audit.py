@@ -1,7 +1,7 @@
 """Audit logging utilities for querying and analyzing resource changes."""
 
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING
 
 from boto3.dynamodb.conditions import Attr, Key
 from ulid import from_timestamp
@@ -50,10 +50,10 @@ class AuditLogQuerier:
         self,
         resource_type: str,
         resource_id: str,
-        limit: Optional[int] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        pagination_key: Optional[str] = None,
+        limit: int | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        pagination_key: str | None = None,
     ) -> PaginatedList[AuditLog]:
         """Get all audit logs for a specific resource.
 
@@ -103,10 +103,10 @@ class AuditLogQuerier:
     def get_logs_for_resource_type(
         self,
         resource_type: str,
-        limit: Optional[int] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        pagination_key: Optional[str] = None,
+        limit: int | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        pagination_key: str | None = None,
     ) -> PaginatedList[AuditLog]:
         """Get all audit logs for a resource type (all instances).
 
@@ -151,10 +151,10 @@ class AuditLogQuerier:
         self,
         resource_type: str,
         operation: str,
-        limit: Optional[int] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ) -> List[AuditLog]:
+        limit: int | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ) -> list[AuditLog]:
         """Get audit logs filtered by operation type for a resource type.
 
         Uses gsi2 with ULID-based date range and filter expression for operation.
@@ -201,12 +201,12 @@ class AuditLogQuerier:
     def get_logs_by_changer(
         self,
         changed_by: str,
-        resource_type: Optional[str] = None,
-        limit: Optional[int] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
+        resource_type: str | None = None,
+        limit: int | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
         newest_first: bool = True,
-    ) -> List[AuditLog]:
+    ) -> list[AuditLog]:
         """Get all audit logs for changes made by a specific user/system.
 
         - Without ``resource_type``: queries the sparse ``INDEX_BY_CHANGER`` GSI
@@ -277,7 +277,7 @@ class AuditLogQuerier:
         resource_type: str,
         resource_id: str,
         field_name: str,
-    ) -> List[dict]:
+    ) -> list[dict]:
         """Get the change history for a specific field of a resource.
 
         Args:
@@ -332,7 +332,7 @@ class AuditLogQuerier:
     def get_recent_changes(
         self,
         limit: int = 50,
-        resource_type: Optional[str] = None,
+        resource_type: str | None = None,
     ) -> list[AuditLog]:
         """Get the most recent audit logs across all or specific resource type.
 

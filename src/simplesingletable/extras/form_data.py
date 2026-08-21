@@ -7,9 +7,10 @@ Each form supports multiple "groups" (similar to a spreadsheet "tab") -- all "gr
 
 """
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from logging import Logger
-from typing import Callable, Literal, Mapping, Optional
+from typing import Literal
 
 from boto3.dynamodb.conditions import Key
 from pydantic import BaseModel, Field
@@ -30,7 +31,7 @@ class FormDataEntryField(BaseModel):
 
     name: str
     field_type: Literal["int", "str", "float", "bool"]
-    allowed_values: Optional[list]
+    allowed_values: list | None
 
 
 class FormDataType(DynamoDbVersionedResource):
@@ -68,9 +69,9 @@ class NewFormRequest(BaseFormData):
 class UpdateFormRequest(BaseModel):
     """Things that can be updated on a form directly."""
 
-    name: Optional[str] = None
-    category: Optional[str] = None
-    user_metadata: Optional[dict] = None
+    name: str | None = None
+    category: str | None = None
+    user_metadata: dict | None = None
 
 
 class Form(BaseFormData, DynamoDbVersionedResource):
@@ -81,9 +82,9 @@ class Form(BaseFormData, DynamoDbVersionedResource):
     order in the main `columns` attribute.
     """
 
-    column_display_order: Optional[list[str]] = None
+    column_display_order: list[str] | None = None
 
-    def get_ordered_columns(self, group: Optional[str] = None) -> list[str]:
+    def get_ordered_columns(self, group: str | None = None) -> list[str]:
         """Returns columns in the correct order for display purposes, taking into account deleted columns and
         (optionally) columns hidden for a group."""
         if self.column_display_order:
@@ -155,9 +156,9 @@ class Form(BaseFormData, DynamoDbVersionedResource):
         memory: DynamoDbMemory,
         category: str,
         *,
-        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
-        results_limit: Optional[int] = None,
-        pagination_key: Optional[str] = None,
+        filter_fn: Callable[[AnyDbResource], bool] | None = None,
+        results_limit: int | None = None,
+        pagination_key: str | None = None,
         ascending=False,
     ) -> PaginatedList["Form"]:
         key = cls.get_unique_key_prefix() + f"#{category}"
@@ -206,12 +207,12 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
         memory: DynamoDbMemory,
         existing_form: Form,
         *,
-        group: Optional[str] = None,
-        column: Optional[str] = None,
-        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
-        results_limit: Optional[int] = 1000,
+        group: str | None = None,
+        column: str | None = None,
+        filter_fn: Callable[[AnyDbResource], bool] | None = None,
+        results_limit: int | None = 1000,
         max_api_calls: int = 10,
-        pagination_key: Optional[str] = None,
+        pagination_key: str | None = None,
         ascending=False,
     ) -> PaginatedList["FormEntry"]:
         if column and not group:
@@ -250,11 +251,11 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
         existing_form: Form,
         *,
         row_identifier: str,
-        group_identifier: Optional[str] = None,
-        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
-        results_limit: Optional[int] = 1000,
+        group_identifier: str | None = None,
+        filter_fn: Callable[[AnyDbResource], bool] | None = None,
+        results_limit: int | None = 1000,
         max_api_calls: int = 10,
-        pagination_key: Optional[str] = None,
+        pagination_key: str | None = None,
         ascending=False,
     ) -> PaginatedList["FormEntry"]:
         if group_identifier:
@@ -403,7 +404,7 @@ class FormDataMapping(Mapping):
     def to_list(
         self,
         summary_data=True,
-        extra_data_by_rowid: Optional[dict[str, dict | None] | Callable[[str], dict | None]] = None,
+        extra_data_by_rowid: dict[str, dict | None] | Callable[[str], dict | None] | None = None,
         row_identifier_label="row_identifier",
         group_identifier_label="group_identifier",
     ) -> list[dict]:
@@ -503,7 +504,7 @@ class FormDataManager:
         self.memory.remove_from_set(existing_resource=config, field_name="categories", val=category)
 
     def list_available_types(
-        self, pagination_key: Optional[str] = None, ascending=False
+        self, pagination_key: str | None = None, ascending=False
     ) -> PaginatedList[FormDataType]:
         return self.memory.list_type_by_updated_at(
             FormDataType, results_limit=500, pagination_key=pagination_key, ascending=ascending
@@ -529,10 +530,10 @@ class FormDataManager:
     def list_forms(
         self,
         *,
-        category: Optional[str] = None,
-        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
-        results_limit: Optional[int] = None,
-        pagination_key: Optional[str] = None,
+        category: str | None = None,
+        filter_fn: Callable[[AnyDbResource], bool] | None = None,
+        results_limit: int | None = None,
+        pagination_key: str | None = None,
         ascending=False,
     ) -> PaginatedList[Form]:
         if category:

@@ -29,8 +29,9 @@ Example:
     # user_reader.create(...) # This method doesn't exist
 """
 
+import builtins
 import logging
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, TypeVar
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
 
@@ -48,9 +49,9 @@ class ReadOnlyResourceRepository:
     def __init__(
         self,
         ddb: DynamoDbMemory,
-        model_class: Type[T],
-        logger: Optional[logging.Logger] = None,
-        cache_ttl_seconds: Optional[int] = None,
+        model_class: type[T],
+        logger: logging.Logger | None = None,
+        cache_ttl_seconds: int | None = None,
     ):
         """Initialize a read-only repository.
 
@@ -63,13 +64,13 @@ class ReadOnlyResourceRepository:
         self.ddb = ddb
         self.model_class = model_class
         self.logger = logger or logging.getLogger(self.__class__.__name__)
-        self._cache: Optional[TTLCache] = (
+        self._cache: TTLCache | None = (
             TTLCache(cache_ttl_seconds, copy_fn=lambda v: v.model_copy(deep=True))
             if cache_ttl_seconds and cache_ttl_seconds > 0
             else None
         )
 
-    def get(self, id: Any) -> Optional[T]:
+    def get(self, id: Any) -> T | None:
         """
         Retrieve a record by its identifier. Returns None if not found.
 
@@ -102,7 +103,7 @@ class ReadOnlyResourceRepository:
             raise ValueError(f"{self.model_class.__name__} with id {id} not found")
         return obj
 
-    def batch_get(self, ids: list[str]) -> Dict[str, T]:
+    def batch_get(self, ids: list[str]) -> dict[str, T]:
         """
         Retrieve multiple records by their identifiers. Returns only found items.
 
@@ -119,7 +120,7 @@ class ReadOnlyResourceRepository:
         if not ids:
             return {}
 
-        results: Dict[str, T] = {}
+        results: dict[str, T] = {}
         ids_to_fetch: list[str] = []
 
         if self._cache:
@@ -142,7 +143,7 @@ class ReadOnlyResourceRepository:
         if self._cache:
             self._cache.clear()
 
-    def list(self, limit: Optional[int] = None) -> List[T]:
+    def list(self, limit: int | None = None) -> list[T]:
         """
         List all records of this type, with optional limit.
 
@@ -155,7 +156,7 @@ class ReadOnlyResourceRepository:
         self.logger.debug(f"Listing {self.model_class.__name__} with limit={limit}")
         return self._list(limit)
 
-    def _get(self, id: Any) -> Optional[T]:
+    def _get(self, id: Any) -> T | None:
         """Internal method to retrieve a resource."""
         if self._cache:
             cached = self._cache.get(str(id))
@@ -166,7 +167,7 @@ class ReadOnlyResourceRepository:
             self._cache.put(str(id), result)
         return result
 
-    def _list(self, limit: Optional[int]) -> List[T]:
+    def _list(self, limit: int | None) -> builtins.list[T]:
         """Internal method to list resources."""
         result = self.ddb.list_type_by_updated_at(self.model_class, results_limit=limit)
         return result.as_list()

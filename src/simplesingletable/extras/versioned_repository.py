@@ -41,7 +41,7 @@ Example:
 
 import logging
 from datetime import datetime
-from typing import List, Optional, Type, TypeVar
+from typing import TypeVar
 
 from boto3.dynamodb.conditions import Key
 from pydantic import BaseModel
@@ -74,13 +74,13 @@ class VersionedResourceRepository(ResourceRepository):
     def __init__(
         self,
         ddb: DynamoDbMemory,
-        model_class: Type[T],
-        create_schema_class: Type[CreateSchemaType],
-        update_schema_class: Type[UpdateSchemaType],
-        logger: Optional[logging.Logger] = None,
+        model_class: type[T],
+        create_schema_class: type[CreateSchemaType],
+        update_schema_class: type[UpdateSchemaType],
+        logger: logging.Logger | None = None,
         default_create_obj_fn=None,
         override_id_fn=None,
-        cache_ttl_seconds: Optional[int] = None,
+        cache_ttl_seconds: int | None = None,
     ):
         if not issubclass(model_class, DynamoDbVersionedResource):
             raise ValueError("VersionedResourceRepository can only be used with DynamoDbVersionedResource models")
@@ -96,7 +96,7 @@ class VersionedResourceRepository(ResourceRepository):
             cache_ttl_seconds=cache_ttl_seconds,
         )
 
-    def list_versions(self, item_id: str) -> List[VersionInfo]:
+    def list_versions(self, item_id: str) -> list[VersionInfo]:
         """
         List all versions of a specific item.
 
@@ -149,7 +149,7 @@ class VersionedResourceRepository(ResourceRepository):
 
         return versions
 
-    def get_version(self, item_id: str, version: int) -> Optional[T]:
+    def get_version(self, item_id: str, version: int) -> T | None:
         """
         Retrieve a specific version of an item.
 
@@ -169,7 +169,7 @@ class VersionedResourceRepository(ResourceRepository):
         return self.ddb.get_existing(item_id, self.model_class, version=version)
 
     def restore_version(
-        self, item_id: str, version: int, changed_by: Optional[str] = None, audit_metadata: Optional[dict] = None
+        self, item_id: str, version: int, changed_by: str | None = None, audit_metadata: dict | None = None
     ) -> T:
         """
         Restore a previous version by creating a new version with the same content.

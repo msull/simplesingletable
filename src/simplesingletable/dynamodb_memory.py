@@ -1,10 +1,11 @@
 import decimal
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Optional, Set, Type, TypeVar, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, TypeVar
 
 import boto3
 from boto3.dynamodb.conditions import ConditionBase, Key
@@ -28,7 +29,7 @@ class Constants:
     QUERY_DEFAULT_MAX_API_CALLS = 10
 
 
-AnyDbResource = TypeVar("AnyDbResource", bound=Union[DynamoDbVersionedResource, DynamoDbResource])
+AnyDbResource = TypeVar("AnyDbResource", bound=DynamoDbVersionedResource | DynamoDbResource)
 VersionedDbResourceOnly = TypeVar("VersionedDbResourceOnly", bound=DynamoDbVersionedResource)
 NonversionedDbResourceOnly = TypeVar("NonversionedDbResourceOnly", bound=DynamoDbResource)
 
@@ -45,14 +46,14 @@ class AuditEntry:
 
     operation: str
     resource: Any  # DynamoDbResource | DynamoDbVersionedResource
-    changed_by: Optional[str] = None
-    old_resource: Optional[Any] = None
-    audit_metadata: Optional[dict] = None
+    changed_by: str | None = None
+    old_resource: Any | None = None
+    audit_metadata: dict | None = None
     force: bool = False
     """If True, emit even when the resource's audit_config is disabled."""
 
 
-def exhaust_pagination(query: Callable[[Optional[str]], PaginatedList]):
+def exhaust_pagination(query: Callable[[str | None], PaginatedList]):
     result = query(None)
     while result.next_pagination_key:
         yield result
@@ -142,7 +143,7 @@ def _lek_attribute_groups(index_name: str, gsi_config: dict) -> list[list[str]]:
     return groups
 
 
-def build_lek_data(db_item: dict, index_name: Optional[str], resource_class: Type[AnyDbResource]) -> dict:
+def build_lek_data(db_item: dict, index_name: str | None, resource_class: type[AnyDbResource]) -> dict:
     """Build LastEvaluatedKey data dynamically based on index configuration."""
     lek_data = {"pk": db_item["pk"], "sk": db_item["sk"]}
 
@@ -216,17 +217,17 @@ class MemoryStats(InternalResourceBase):
 class DynamoDbMemory:
     logger: Any
     table_name: str
-    endpoint_url: Optional[str] = None
-    connection_params: Optional[dict] = None
+    endpoint_url: str | None = None
+    connection_params: dict | None = None
     track_stats: bool = True
-    s3_bucket: Optional[str] = None
-    s3_key_prefix: Optional[str] = None
-    audit_table_name: Optional[str] = None
-    audit_endpoint_url: Optional[str] = None
-    audit_connection_params: Optional[dict] = None
+    s3_bucket: str | None = None
+    s3_key_prefix: str | None = None
+    audit_table_name: str | None = None
+    audit_endpoint_url: str | None = None
+    audit_connection_params: dict | None = None
     _dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _dynamodb_table: Optional["Table"] = field(default=None, init=False)
-    _dynamodb_resource: Optional[Any] = field(default=None, init=False)
+    _dynamodb_resource: Any | None = field(default=None, init=False)
     _audit_dynamodb_client: Optional["DynamoDBClient"] = field(default=None, init=False)
     _audit_dynamodb_table: Optional["Table"] = field(default=None, init=False)
     _audit_view: Optional["DynamoDbMemory"] = field(default=None, init=False)
@@ -236,11 +237,11 @@ class DynamoDbMemory:
     def get_existing(
         self,
         existing_id: str,
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         version: int = 0,
         consistent_read=False,
         load_blobs: bool = False,
-    ) -> Optional[AnyDbResource]:
+    ) -> AnyDbResource | None:
         """Get object of the specified type with the provided key.
 
         The `version` parameter is ignored on non-versioned resources.
@@ -271,7 +272,7 @@ class DynamoDbMemory:
     def _build_blob_placeholders(
         self,
         item: dict,
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         resource_id: str,
         version: int = 0,
     ) -> dict[str, BlobPlaceholder]:
@@ -317,7 +318,7 @@ class DynamoDbMemory:
     def batch_get_existing(
         self,
         ids: list[str],
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         consistent_read: bool = False,
         load_blobs: bool = False,
     ) -> dict[str, AnyDbResource]:
@@ -392,7 +393,7 @@ class DynamoDbMemory:
     def read_existing(
         self,
         existing_id: str,
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         version: int = 0,
         consistent_read=False,
         load_blobs: bool = False,
@@ -415,9 +416,9 @@ class DynamoDbMemory:
         self,
         existing_resource: AnyDbResource,
         update_obj: _PlainBaseModel | dict,
-        clear_fields: Optional[Set[str]] = None,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        clear_fields: set[str] | None = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> AnyDbResource:
         data_class = existing_resource.__class__
         updated_resource = existing_resource.update_existing(update_obj, clear_fields=clear_fields)
@@ -492,8 +493,8 @@ class DynamoDbMemory:
         isolation_level: str = "read_committed",
         auto_retry: bool = True,
         max_retries: int = 3,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ):
         """Create a transaction context for atomic operations.
 
@@ -510,7 +511,7 @@ class DynamoDbMemory:
         )
 
     @property
-    def s3_blob_storage(self) -> Optional[S3BlobStorage]:
+    def s3_blob_storage(self) -> S3BlobStorage | None:
         if self.s3_bucket and not self._s3_blob_storage:
             self._s3_blob_storage = S3BlobStorage(
                 bucket_name=self.s3_bucket,
@@ -584,11 +585,11 @@ class DynamoDbMemory:
 
     def create_new(
         self,
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         data: _PlainBaseModel | dict,
-        override_id: Optional[str] = None,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        override_id: str | None = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> AnyDbResource:
         new_resource = data_class.create_new(data, override_id=override_id)
         if issubclass(data_class, DynamoDbResource):
@@ -614,8 +615,8 @@ class DynamoDbMemory:
     def delete_existing(
         self,
         existing_resource: AnyDbResource,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ):
         # Create audit log before deleting (so we still have the resource)
         self._create_audit_log(
@@ -692,7 +693,7 @@ class DynamoDbMemory:
                 stats = MemoryStats.ensure_exists(self)
                 self.increment_counter(stats, "counts_by_type." + existing_resource.__class__.__name__, -1)
 
-    def delete_all_versions(self, resource_id: str, data_class: Type[VersionedDbResourceOnly]):
+    def delete_all_versions(self, resource_id: str, data_class: type[VersionedDbResourceOnly]):
         """Delete all versions of a versioned resource."""
         if not issubclass(data_class, DynamoDbVersionedResource):
             raise ValueError("delete_all_versions can only be used with versioned resources")
@@ -736,7 +737,7 @@ class DynamoDbMemory:
     def get_all_versions(
         self,
         resource_id: str,
-        data_class: Type[VersionedDbResourceOnly],
+        data_class: type[VersionedDbResourceOnly],
         load_blobs: bool = False,
     ) -> list[VersionedDbResourceOnly]:
         """Get all versions of a versioned resource, sorted newest first.
@@ -814,10 +815,10 @@ class DynamoDbMemory:
     def restore_version(
         self,
         resource_id: str,
-        data_class: Type[VersionedDbResourceOnly],
+        data_class: type[VersionedDbResourceOnly],
         version: int,
-        changed_by: Optional[str] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        changed_by: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> VersionedDbResourceOnly:
         """Restore a previous version by creating a new version with the same content.
 
@@ -1039,7 +1040,7 @@ class DynamoDbMemory:
         self,
         resource: AnyDbResource,
         field_name: str,
-        blob_version: Optional[int] = None,
+        blob_version: int | None = None,
     ) -> None:
         """Update DynamoDB blob metadata after a copy/register operation.
 
@@ -1109,7 +1110,7 @@ class DynamoDbMemory:
             )
 
     @staticmethod
-    def _blob_version_for(resource: AnyDbResource, field_name: str) -> Optional[int]:
+    def _blob_version_for(resource: AnyDbResource, field_name: str) -> int | None:
         """Resolve which blob version a resource's field currently points at."""
         if isinstance(resource, DynamoDbVersionedResource):
             return resource._blob_versions.get(field_name, resource.version)
@@ -1149,8 +1150,8 @@ class DynamoDbMemory:
         resource: AnyDbResource,
         field_name: str,
         *,
-        if_match: Optional[str] = None,
-        max_bytes: Optional[int] = None,
+        if_match: str | None = None,
+        max_bytes: int | None = None,
     ) -> Any:
         """Read a single blob field's value without mutating the resource.
 
@@ -1200,7 +1201,7 @@ class DynamoDbMemory:
         target_resource: AnyDbResource,
         target_field: str,
         delete_source: bool = False,
-        source_etag: Optional[str] = None,
+        source_etag: str | None = None,
     ) -> BlobPlaceholder:
         """Server-side copy of a blob field between resources.
 
@@ -1320,11 +1321,11 @@ class DynamoDbMemory:
         resource: AnyDbResource,
         field_name: str,
         source_s3_key: str,
-        content_type: Optional[str] = None,
+        content_type: str | None = None,
         compressed: bool = False,
-        source_bucket: Optional[str] = None,
+        source_bucket: str | None = None,
         delete_source: bool = False,
-        source_etag: Optional[str] = None,
+        source_etag: str | None = None,
     ) -> BlobPlaceholder:
         """Register an arbitrary S3 object as a blob field on a resource.
 
@@ -1412,13 +1413,13 @@ class DynamoDbMemory:
 
     def list_type_by_updated_at(
         self,
-        data_class: Type[AnyDbResource],
+        data_class: type[AnyDbResource],
         *,
-        filter_expression: Optional[ConditionBase] = None,
-        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
-        results_limit: Optional[int] = None,
+        filter_expression: ConditionBase | None = None,
+        filter_fn: Callable[[AnyDbResource], bool] | None = None,
+        results_limit: int | None = None,
         max_api_calls: int = Constants.QUERY_DEFAULT_MAX_API_CALLS,
-        pagination_key: Optional[str] = None,
+        pagination_key: str | None = None,
         ascending=False,
         filter_limit_multiplier: int = 3,
     ) -> PaginatedList[AnyDbResource]:
@@ -1468,7 +1469,7 @@ class DynamoDbMemory:
         now = _now(tz=existing_resource.created_at.tzinfo)
         key = existing_resource.dynamodb_lookup_keys_from_id(existing_resource.resource_id)
 
-        if not field.annotation == int:  # noqa
+        if not field.annotation == int:
             raise TypeError(f"Field {field_name=} must be an int; {field.annotation=}")
 
         response = self.dynamodb_table.update_item(
@@ -1536,18 +1537,18 @@ class DynamoDbMemory:
         self,
         *,
         key_condition: ConditionBase,
-        resource_class: Type[AnyDbResource] = None,
-        resource_class_fn: Callable[[dict], Type[AnyDbResource]] = None,
-        index_name: Optional[str] = None,
-        filter_expression: Optional[ConditionBase] = None,
-        filter_fn: Optional[Callable[[AnyDbResource], bool]] = None,
-        results_limit: Optional[int] = None,
+        resource_class: type[AnyDbResource] = None,
+        resource_class_fn: Callable[[dict], type[AnyDbResource]] = None,
+        index_name: str | None = None,
+        filter_expression: ConditionBase | None = None,
+        filter_fn: Callable[[AnyDbResource], bool] | None = None,
+        results_limit: int | None = None,
         max_api_calls: int = Constants.QUERY_DEFAULT_MAX_API_CALLS,
-        pagination_key: Optional[str] = None,
+        pagination_key: str | None = None,
         ascending=False,
         filter_limit_multiplier: int = 3,
         _current_api_calls_on_stack: int = 0,
-        _observed_filter_efficiency: Optional[float] = None,
+        _observed_filter_efficiency: float | None = None,
         _total_items_scanned: int = 0,
     ) -> PaginatedList[AnyDbResource]:
         """
@@ -1854,7 +1855,7 @@ class DynamoDbMemory:
         value: Any,
         resource: AnyDbResource,
         blob_fields_config: dict,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Extract lightweight metadata for a blob field instead of full content.
 
         Args:
@@ -1891,7 +1892,7 @@ class DynamoDbMemory:
         self,
         resource: AnyDbResource,
         audit_config: dict,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Build resource snapshot with blob placeholders instead of full data.
 
         Args:
@@ -1941,7 +1942,7 @@ class DynamoDbMemory:
         old_resource: AnyDbResource,
         new_resource: AnyDbResource,
         audit_config: dict,
-    ) -> Optional[dict[str, dict[str, Any]]]:
+    ) -> dict[str, dict[str, Any]] | None:
         """Compute which fields changed and their old/new values.
 
         For blob fields, stores metadata instead of full content.
@@ -1996,11 +1997,11 @@ class DynamoDbMemory:
         self,
         operation: str,
         resource: AnyDbResource,
-        changed_by: Optional[str],
-        old_resource: Optional[AnyDbResource] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        changed_by: str | None,
+        old_resource: AnyDbResource | None = None,
+        audit_metadata: dict[str, Any] | None = None,
         force: bool = False,
-    ) -> Optional[AuditLog]:
+    ) -> AuditLog | None:
         """Construct an :class:`AuditLog` instance for the given operation, or return
         ``None`` if auditing is disabled for this resource (and ``force`` is False).
 
@@ -2050,11 +2051,11 @@ class DynamoDbMemory:
         *,
         operation: str,
         resource: AnyDbResource,
-        changed_by: Optional[str] = None,
-        old_resource: Optional[AnyDbResource] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        changed_by: str | None = None,
+        old_resource: AnyDbResource | None = None,
+        audit_metadata: dict[str, Any] | None = None,
         force: bool = False,
-    ) -> Optional[AuditLog]:
+    ) -> AuditLog | None:
         """Emit a single audit log entry.
 
         Public counterpart to the (now internal) audit-write path used by ``create_new``,
@@ -2133,9 +2134,9 @@ class DynamoDbMemory:
         self,
         operation: str,
         resource: AnyDbResource,
-        changed_by: Optional[str],
-        old_resource: Optional[AnyDbResource] = None,
-        audit_metadata: Optional[dict[str, Any]] = None,
+        changed_by: str | None,
+        old_resource: AnyDbResource | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ):
         """Internal wrapper for the audit-write path used by CRUD methods.
 

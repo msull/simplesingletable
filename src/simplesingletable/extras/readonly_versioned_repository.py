@@ -31,7 +31,7 @@ Example:
 
 import logging
 from datetime import datetime
-from typing import List, Optional, Type, TypeVar
+from typing import TypeVar
 
 from boto3.dynamodb.conditions import Key
 from pydantic import BaseModel
@@ -61,9 +61,9 @@ class ReadOnlyVersionedResourceRepository(ReadOnlyResourceRepository):
     def __init__(
         self,
         ddb: DynamoDbMemory,
-        model_class: Type[T],
-        logger: Optional[logging.Logger] = None,
-        cache_ttl_seconds: Optional[int] = None,
+        model_class: type[T],
+        logger: logging.Logger | None = None,
+        cache_ttl_seconds: int | None = None,
     ):
         """Initialize a read-only versioned repository.
 
@@ -88,7 +88,7 @@ class ReadOnlyVersionedResourceRepository(ReadOnlyResourceRepository):
             cache_ttl_seconds=cache_ttl_seconds,
         )
 
-    def list_versions(self, item_id: str) -> List[VersionInfo]:
+    def list_versions(self, item_id: str) -> list[VersionInfo]:
         """
         List all versions of a specific item.
 
@@ -141,7 +141,7 @@ class ReadOnlyVersionedResourceRepository(ReadOnlyResourceRepository):
 
         return versions
 
-    def get_version(self, item_id: str, version: int) -> Optional[T]:
+    def get_version(self, item_id: str, version: int) -> T | None:
         """
         Retrieve a specific version of an item.
 
