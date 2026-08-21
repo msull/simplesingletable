@@ -15,8 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   564 violations were fixed, almost all mechanical: PEP 604 / PEP 585 typing (`Optional[X]` → `X | None`, `Dict` → `dict`), plus assorted `SIM`/`PERF`/`PIE`/`RUF` cleanups. Behavioral fixes of note: four implicit-`Optional` annotations on the public `paginated_dynamodb_query` (`RUF013`), timezone-aware fallbacks in `list_versions`, and a `# noqa: BLE001` that the sweep had stripped as unused while that rule was disabled. `TRY004` is ignored rather than adopted — it would switch 19 public entry points from `ValueError` to `TypeError`, breaking every caller catching `ValueError`; that question belongs to the typed-exception work in #13.
 
-### Changed
-
 * **Three silent failures in the transaction path now raise at queue time** (#12). Each was a case where a transaction quietly did something other than what the caller asked, and each now fails at the call site instead — before anything is sent to DynamoDB. None of these guards rejects a write that previously succeeded; only writes that were already broken now fail visibly.
 
   * **Blob-backed data cannot be written through a transaction.** `to_dynamodb_item()` returns a `(item, blob_data)` tuple when a resource carries blob-field values, but every transaction builder hands its result straight to `marshall()`, producing `AttributeError: 'tuple' object has no attribute 'items'` from inside marshalling. `txn.create()`, `txn.put()` and `txn.update()` now refuse such a write with a message explaining that a blob is an S3 object the transaction cannot make part of its atomic commit.
