@@ -36,7 +36,7 @@ dev = [
     "pytest-cov",
     "pytest-docker",
     "pytest-mock",
-    "ruff",
+    "ruff>=0.16,<0.17",  # rule set is version-sensitive; see [tool.ruff.lint]
     "streamlit",
     "streamlit-extras",
     "tabulate",
@@ -56,10 +56,28 @@ line_length = 120
 
 [tool.black]
 line-length = 120
+# Pinned for the same reason as ruff: without it black infers a target from the
+# source and warned it was formatting for py3.15 while running on 3.12.
+target-version = ["py310"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+
+[tool.ruff.lint]
+# This project lints against ruff's DEFAULT rule set (413 rules as of 0.16), which is
+# why `ruff` is version-pinned in the dev extra: the default set widened substantially
+# in 0.16 and silently turned `inv lint` from passing into 575 errors on an unchanged
+# codebase. Pinning makes a rule-set change a deliberate upgrade rather than a surprise.
+# The set is not enumerated here because doing so would mean listing all 413 codes.
+ignore = [
+    # Would change public API. 19 call sites raise ValueError("Invalid data_class
+    # provided") from entry points such as get_existing(); switching them to TypeError
+    # breaks every caller catching ValueError. The exception-type question for these
+    # paths is tracked in #13, where it can carry a deprecation story.
+    "TRY004",
+]
+
 
 [tool.bumpver]
 current_version = "19.0.0"

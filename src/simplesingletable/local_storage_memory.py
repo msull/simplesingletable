@@ -78,7 +78,7 @@ def _encode_binary_data(obj: Any) -> Any:
         # Convert set to list with a marker
         # Try to sort for consistent output, but fallback to unsorted if not sortable
         try:
-            data = sorted(list(obj))
+            data = sorted(obj)
         except (TypeError, AttributeError):
             # Items not sortable (mixed types or non-comparable objects)
             data = list(obj)
@@ -239,9 +239,9 @@ class LocalStorageMemory:
                 for field_name in item["_blob_fields"]:
                     if field_name in blob_fields_config:
                         # Only create placeholder if this field has a blob stored
-                        if issubclass(data_class, DynamoDbVersionedResource):
-                            if field_name not in blob_versions:
-                                continue  # No blob stored for this field
+                        # No blob stored for this field on a versioned resource
+                        if issubclass(data_class, DynamoDbVersionedResource) and field_name not in blob_versions:
+                            continue
 
                         # Build placeholder for this blob field
                         s3_key = self.s3_blob_storage._build_s3_key(
@@ -662,7 +662,7 @@ class LocalStorageMemory:
 
         with self._lock_and_load(file_path) as (data, f):
             # Find all keys for this resource
-            keys_to_delete = [k for k in data.keys() if k.startswith(prefix + "#")]
+            keys_to_delete = [k for k in data if k.startswith(prefix + "#")]
 
             if not keys_to_delete:
                 self.logger.warning(f"No versions found for resource {resource_id}")
@@ -1208,8 +1208,8 @@ class LocalStorageMemory:
         self,
         *,
         key_condition: ConditionBase,
-        resource_class: type[AnyDbResource] = None,
-        resource_class_fn: Callable[[dict], type[AnyDbResource]] = None,
+        resource_class: type[AnyDbResource] | None = None,
+        resource_class_fn: Callable[[dict], type[AnyDbResource]] | None = None,
         index_name: str | None = None,
         filter_expression: ConditionBase | None = None,
         filter_fn: Callable[[AnyDbResource], bool] | None = None,
@@ -1252,7 +1252,7 @@ class LocalStorageMemory:
         with self._lock_and_load(file_path) as (data, _):
             # Filter by key condition
             matching_items = []
-            for storage_key, item in data.items():
+            for item in data.values():
                 if self._matches_key_condition(item, key_condition, index_name):
                     matching_items.append(item)
 
@@ -1311,7 +1311,7 @@ class LocalStorageMemory:
             try:
                 decoded_key = decode_pagination_key(pagination_key)
                 offset = decoded_key.get("offset", 0)
-            except Exception:
+            except Exception:  # noqa: BLE001 - malformed pagination key restarts from 0
                 offset = 0
 
         # Slice for pagination

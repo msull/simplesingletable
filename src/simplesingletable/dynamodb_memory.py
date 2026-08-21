@@ -296,9 +296,8 @@ class DynamoDbMemory:
 
         for field_name in item["_blob_fields"]:
             if field_name in blob_fields_config:
-                if issubclass(data_class, DynamoDbVersionedResource):
-                    if field_name not in blob_versions:
-                        continue
+                if issubclass(data_class, DynamoDbVersionedResource) and field_name not in blob_versions:
+                    continue
 
                 s3_key = self.s3_blob_storage._build_s3_key(
                     resource_type=data_class.__name__,
@@ -1506,7 +1505,7 @@ class DynamoDbMemory:
         field = type(existing_resource).model_fields.get(field_name)
         if not field:
             raise ValueError(f"Unknown field {field_name=}")
-        if not (field.annotation == set[str] or field.annotation == Optional[set[str]]):
+        if not (field.annotation == set[str] or field.annotation == set[str] | None):
             raise TypeError(f"Field {field_name=} must be set[str]")
         self.dynamodb_table.update_item(
             Key=key,
@@ -1523,7 +1522,7 @@ class DynamoDbMemory:
         field = type(existing_resource).model_fields.get(field_name)
         if not field:
             raise ValueError(f"Unknown field {field_name=}")
-        if not (field.annotation == set[str] or field.annotation == Optional[set[str]]):
+        if not (field.annotation == set[str] or field.annotation == set[str] | None):
             raise TypeError(f"Field {field_name=} must be set[str]")
         self.dynamodb_table.update_item(
             Key=key,
@@ -1537,8 +1536,8 @@ class DynamoDbMemory:
         self,
         *,
         key_condition: ConditionBase,
-        resource_class: type[AnyDbResource] = None,
-        resource_class_fn: Callable[[dict], type[AnyDbResource]] = None,
+        resource_class: type[AnyDbResource] | None = None,
+        resource_class_fn: Callable[[dict], type[AnyDbResource]] | None = None,
         index_name: str | None = None,
         filter_expression: ConditionBase | None = None,
         filter_fn: Callable[[AnyDbResource], bool] | None = None,
@@ -1688,9 +1687,9 @@ class DynamoDbMemory:
                     if field_name in blob_fields_config:
                         # Only create placeholder if this field has a blob stored
                         # Check _blob_versions for versioned resources
-                        if version is not None:  # Versioned resource
-                            if field_name not in blob_versions:
-                                continue  # No blob stored for this field
+                        # No blob stored for this field on a versioned resource
+                        if version is not None and field_name not in blob_versions:
+                            continue
 
                         # Build placeholder for this blob field
                         s3_key = self.s3_blob_storage._build_s3_key(

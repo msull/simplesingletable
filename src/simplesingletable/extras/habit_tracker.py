@@ -1,10 +1,30 @@
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, tzinfo
 
 from boto3.dynamodb.conditions import Key
 from pydantic import BaseModel
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource
+
+
+def habit_now(tz: tzinfo | None = None) -> datetime:
+    """Current time as an aware datetime, in ``tz`` or the system local zone.
+
+    Habit tracking is a local-time question -- "did I do this today?" is asked and
+    answered wherever the person is, not in UTC. Defaulting to UTC would record an
+    evening habit against tomorrow's date for anyone west of it, so the default here
+    is deliberately local; pass ``tz`` to pin a specific zone instead.
+
+    The result is timezone-aware either way. Stored entries are unaffected by the
+    choice of representation: they were already serialized through ``.astimezone()``,
+    so a naive local value and an aware local value produce the identical string.
+    """
+    return datetime.now(tz) if tz is not None else datetime.now().astimezone()
+
+
+def habit_today(tz: tzinfo | None = None) -> date:
+    """Current date in ``tz`` or the system local zone. See :func:`habit_now`."""
+    return habit_now(tz).date()
 
 
 class HabitTracker(BaseModel):
@@ -129,13 +149,14 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
         memory: "DynamoDbMemory",
         for_date: date | None = None,
         consistent_read: bool = True,
+        tz: tzinfo | None = None,
     ) -> "MonthlyHabitTracker":
         """
         Retrieve or create the tracker for the given date’s month.
         Default is today's date if none provided.
         """
         if for_date is None:
-            for_date = date.today()
+            for_date = habit_today(tz)
 
         month_key = for_date.strftime("%Y%m")  # e.g. "202501"
 
@@ -153,6 +174,7 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
         habit_name: str,
         dt: datetime | None = None,
         note: str = "",
+        tz: tzinfo | None = None,
     ):
         """
         Records a habit occurrence by adding to the appropriate set.
@@ -160,7 +182,7 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
         and that habit_name is declared as set[str].
         """
         if dt is None:
-            dt = datetime.now()
+            dt = habit_now(tz)
 
         # 1. Validate that dt is within this tracker's month
         year_str, month_str = self.month[:4], self.month[4:]  # e.g. '2025', '01'
@@ -202,6 +224,7 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
         dt: datetime | None = None,
         note: str = "",
         consistent_read: bool = True,
+        tz: tzinfo | None = None,
     ) -> "MonthlyHabitTracker":
         """
         Convenience classmethod that:
@@ -211,7 +234,7 @@ class MonthlyHabitTracker(DynamoDbResource, HabitTracker):
          - Returns the updated tracker
         """
         if dt is None:
-            dt = datetime.now()
+            dt = habit_now(tz)
 
         # 1. Get the correct monthly tracker based on dt
         tracker_date = dt.date()
@@ -272,9 +295,10 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
         memory: "DynamoDbMemory",
         for_date: date | None = None,
         consistent_read: bool = True,
+        tz: tzinfo | None = None,
     ) -> "MonthlyHabitTrackerV2":
         if for_date is None:
-            for_date = date.today()
+            for_date = habit_today(tz)
 
         month_key = for_date.strftime("%Y%m")  # e.g. "202501"
 
@@ -291,13 +315,14 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
         habit_name: str,
         dt: datetime | None = None,
         note: str = "",
+        tz: tzinfo | None = None,
     ):
         """
         V2 approach: store only day, hour, minute in the set entry:
         'DDTHH:MM[#note]'
         """
         if dt is None:
-            dt = datetime.now()
+            dt = habit_now(tz)
 
         # 1. Validate that dt is within this tracker's month
         year_str, month_str = self.month[:4], self.month[4:]  # e.g. '2025', '01'
@@ -343,9 +368,10 @@ class MonthlyHabitTrackerV2(DynamoDbResource, HabitTracker):
         dt: datetime | None = None,
         note: str = "",
         consistent_read: bool = True,
+        tz: tzinfo | None = None,
     ) -> "MonthlyHabitTrackerV2":
         if dt is None:
-            dt = datetime.now()
+            dt = habit_now(tz)
 
         tracker_date = dt.date()
         tracker = cls.get_for_month(

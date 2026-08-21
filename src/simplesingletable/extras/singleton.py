@@ -1,12 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import TypeVar
 
 from typing_extensions import Self
 
 from .. import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
-from ..models import BaseDynamoDbResource
-
-_T = TypeVar("_T", bound=BaseDynamoDbResource)
 
 
 class BaseSingleton(ABC):

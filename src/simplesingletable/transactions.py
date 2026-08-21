@@ -153,7 +153,6 @@ class ResourceNotFoundError(Exception):
     """Raised when a resource is not found."""
 
 
-
 class OperationType(Enum):
     """Types of operations that can be performed in a transaction."""
 
@@ -547,9 +546,8 @@ class TransactionContext:
             return self.pending_creates[cache_key]
 
         # Check read cache if using snapshot isolation
-        if self.isolation_level == "snapshot" and not force_refresh:
-            if cache_key in self.read_cache:
-                return self.read_cache[cache_key]
+        if self.isolation_level == "snapshot" and not force_refresh and cache_key in self.read_cache:
+            return self.read_cache[cache_key]
 
         # Read from database
         try:

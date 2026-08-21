@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+* **`MonthlyHabitTracker` / `MonthlyHabitTrackerV2` take an injectable timezone.** `get_for_month`, `track_item` and `track_item_for_date` now accept `tz`, and two helpers — `habit_now(tz)` and `habit_today(tz)` — resolve "now" and "today". The default is deliberately **local**, not UTC: habit tracking is a local-time question, and defaulting to UTC would file an evening entry under tomorrow's date for anyone west of it. Stored entries are unchanged — they were already serialized through `.astimezone()`, so a naive-local and an aware-local value produce the identical string.
+
+* **Lint tooling is pinned, and the codebase is modernized to the current rule set.** `ruff` was unpinned, and its *default* rule set widened substantially in 0.16, which silently turned `inv lint` from passing into 575 errors on an unchanged codebase — blocking releases, since `inv fullrelease` lints first. `ruff` is now pinned to `>=0.16,<0.17` and `black` to `target-version = ["py310"]`, so a rule-set change is a deliberate upgrade rather than a surprise.
+
+  564 violations were fixed, almost all mechanical: PEP 604 / PEP 585 typing (`Optional[X]` → `X | None`, `Dict` → `dict`), plus assorted `SIM`/`PERF`/`PIE`/`RUF` cleanups. Behavioral fixes of note: four implicit-`Optional` annotations on the public `paginated_dynamodb_query` (`RUF013`), timezone-aware fallbacks in `list_versions`, and a `# noqa: BLE001` that the sweep had stripped as unused while that rule was disabled. `TRY004` is ignored rather than adopted — it would switch 19 public entry points from `ValueError` to `TypeError`, breaking every caller catching `ValueError`; that question belongs to the typed-exception work in #13.
+
+### Changed
+
 * **Three silent failures in the transaction path now raise at queue time** (#12). Each was a case where a transaction quietly did something other than what the caller asked, and each now fails at the call site instead — before anything is sent to DynamoDB. None of these guards rejects a write that previously succeeded; only writes that were already broken now fail visibly.
 
   * **Blob-backed data cannot be written through a transaction.** `to_dynamodb_item()` returns a `(item, blob_data)` tuple when a resource carries blob-field values, but every transaction builder hands its result straight to `marshall()`, producing `AttributeError: 'tuple' object has no attribute 'items'` from inside marshalling. `txn.create()`, `txn.put()` and `txn.update()` now refuse such a write with a message explaining that a blob is an S3 object the transaction cannot make part of its atomic commit.

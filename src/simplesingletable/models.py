@@ -17,7 +17,7 @@ from typing import (
 import ulid
 from boto3.dynamodb.types import Binary
 from humanize import naturalsize, precisedelta
-from pydantic import BaseModel, ConfigDict, PrivateAttr, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter
 from typing_extensions import NotRequired  # typing.NotRequired requires py3.11
 
 from .utils import _now, generate_date_sortable_id
@@ -360,11 +360,10 @@ class BaseDynamoDbResource(BaseModel, ABC):
                     # This is a combined pk/sk definition
                     if value_or_func and callable(value_or_func):
                         result = value_or_func(self)
-                        if result:
-                            # Result should be a tuple of (pk_value, sk_value)
-                            if len(key) == 2 and len(result) == 2:
-                                dynamodb_data[key[0]] = result[0]
-                                dynamodb_data[key[1]] = result[1]
+                        # Result should be a tuple of (pk_value, sk_value)
+                        if result and len(key) == 2 and len(result) == 2:
+                            dynamodb_data[key[0]] = result[0]
+                            dynamodb_data[key[1]] = result[1]
                 else:
                     # Handle regular single-field definitions
                     if value_or_func:
@@ -476,14 +475,13 @@ class BaseDynamoDbResource(BaseModel, ABC):
             if field_name in data:
                 field_type = field_info.annotation
                 # Check if field is List[float] or similar
-                if get_origin(field_type) in (list, list):
+                if get_origin(field_type) is list:
                     args = get_args(field_type)
-                    if args and args[0] is float:
-                        # Convert any Decimal values in the list to float
-                        if isinstance(data[field_name], list):
-                            data[field_name] = [
-                                float(item) if isinstance(item, Decimal) else item for item in data[field_name]
-                            ]
+                    # Convert any Decimal values in the list to float
+                    if args and args[0] is float and isinstance(data[field_name], list):
+                        data[field_name] = [
+                            float(item) if isinstance(item, Decimal) else item for item in data[field_name]
+                        ]
 
         # Create the resource instance
         resource = cls.model_validate(data)
@@ -572,7 +570,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
                 try:
                     type_adapter = TypeAdapter(field_info.annotation)
                     blob_data = type_adapter.validate_python(blob_data)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - deliberate: fall back to raw data
                     # If type validation fails, use raw data (backward compatibility)
                     pass
 
@@ -1027,7 +1025,7 @@ class AuditLog(DynamodbResource):
     resource_snapshot: dict[str, Any] | None = None
     """Full snapshot of the resource after the operation."""
 
-    audit_metadata: dict[str, Any] = {}
+    audit_metadata: dict[str, Any] = Field(default_factory=dict)
     """Custom audit metadata (e.g., reason for change, request ID, etc.)."""
 
     @classmethod

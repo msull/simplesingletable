@@ -48,9 +48,7 @@ class LocalBlobStorage:
         self.blobs_dir = self.storage_dir / "blobs"
         self.blobs_dir.mkdir(parents=True, exist_ok=True)
 
-    def _build_s3_key(
-        self, resource_type: str, resource_id: str, field_name: str, version: int | None = None
-    ) -> str:
+    def _build_s3_key(self, resource_type: str, resource_id: str, field_name: str, version: int | None = None) -> str:
         """Build storage key (path) for a blob field.
 
         Mirrors S3BlobStorage._build_s3_key for compatibility.

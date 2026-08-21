@@ -115,9 +115,7 @@ class S3BlobStorage:
             self._s3_client = boto3.client("s3", endpoint_url=self.endpoint_url, **self.connection_params)
         return self._s3_client
 
-    def _build_s3_key(
-        self, resource_type: str, resource_id: str, field_name: str, version: int | None = None
-    ) -> str:
+    def _build_s3_key(self, resource_type: str, resource_id: str, field_name: str, version: int | None = None) -> str:
         """Build S3 key for a blob field."""
         parts = []
         if self.key_prefix:
@@ -235,9 +233,7 @@ class S3BlobStorage:
         version_str = f"v{version}" if version is not None else "latest"
         return f"{resource_type}#{resource_id}#{field_name}#{version_str}"
 
-    def _cache_get(
-        self, cache_key: str, if_match: str | None = None, max_bytes: int | None = None
-    ) -> Any | None:
+    def _cache_get(self, cache_key: str, if_match: str | None = None, max_bytes: int | None = None) -> Any | None:
         """Get an item from cache if available and valid.
 
         A conditional read is never served from cache. A cached ETag is only evidence of
@@ -341,7 +337,7 @@ class S3BlobStorage:
             return
 
         # Pop the first item (oldest due to OrderedDict)
-        cache_key, entry = self._cache.popitem(last=False)
+        _cache_key, entry = self._cache.popitem(last=False)
         self._cache_stats.current_size_bytes -= entry.size_bytes
         self._cache_stats.current_items -= 1
         self._cache_stats.evictions += 1
@@ -615,7 +611,7 @@ class S3BlobStorage:
         # Clear matching items from cache
         with self._cache_lock:
             cache_prefix = f"{resource_type}#{resource_id}#"
-            keys_to_remove = [k for k in self._cache.keys() if k.startswith(cache_prefix)]
+            keys_to_remove = [k for k in self._cache if k.startswith(cache_prefix)]
             for cache_key in keys_to_remove:
                 entry = self._cache[cache_key]
                 self._cache_stats.current_size_bytes -= entry.size_bytes
@@ -723,7 +719,7 @@ class S3BlobStorage:
                 # This will load the item into cache as a side effect
                 self.get_blob(resource_type, resource_id, field_name, version)
                 loaded += 1
-            except Exception:
+            except Exception:  # noqa: BLE001, S112 - prefetch is best-effort
                 # Skip items that fail to load
                 continue
         return loaded

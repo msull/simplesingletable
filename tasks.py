@@ -139,7 +139,7 @@ def stamp_changelog(c: Context, version: str, release_date: str = ""):
     accumulate entries in the same place.
     """
     if not release_date:
-        release_date = _date.today().isoformat()
+        release_date = _date.today().isoformat()  # noqa: DTZ011 - local release date is intended
     text = Paths.changelog.read_text()
     marker = "## [Unreleased]"
     if marker not in text:

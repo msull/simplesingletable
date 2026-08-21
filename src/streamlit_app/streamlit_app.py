@@ -14,7 +14,9 @@ st.header("Simple Single Table usage example")
 basic_tab, advanced_tab, admin_tab = st.tabs(("Basic usage", "Advanced Usage", "Admin"))
 
 
-with basic_tab, st.expander('Start with imports and setting up the basic "memory" client'):
+# Nesting is deliberate: echo_expander renders its own body by source introspection,
+# so the inner `with` block is what gets displayed -- combining these changes the output.
+with basic_tab, st.expander('Start with imports and setting up the basic "memory" client'):  # noqa: SIM117
     with echo_expander(expander=False, label="Basic Setup"):
         from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
 

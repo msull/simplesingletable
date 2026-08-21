@@ -362,7 +362,7 @@ class FormDataMapping(Mapping):
                 import logging
 
                 logging.basicConfig(level=logging.DEBUG)
-                logger = logging.getLogger(__file__)
+                logger = logging.getLogger(__name__)
 
         self.logger = logger
 
@@ -503,9 +503,7 @@ class FormDataManager:
             raise ValueError("Cannot remove category that has forms assigned!")
         self.memory.remove_from_set(existing_resource=config, field_name="categories", val=category)
 
-    def list_available_types(
-        self, pagination_key: str | None = None, ascending=False
-    ) -> PaginatedList[FormDataType]:
+    def list_available_types(self, pagination_key: str | None = None, ascending=False) -> PaginatedList[FormDataType]:
         return self.memory.list_type_by_updated_at(
             FormDataType, results_limit=500, pagination_key=pagination_key, ascending=ascending
         )

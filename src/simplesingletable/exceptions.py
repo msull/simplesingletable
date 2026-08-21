@@ -8,7 +8,6 @@ unchanged; new code can catch the specific type it cares about.
 treating blob storage as a filesystem-like interface can use the builtin.
 """
 
-
 __all__ = [
     "BlobError",
     "BlobNotFoundError",

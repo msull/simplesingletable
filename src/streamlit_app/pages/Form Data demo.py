@@ -337,7 +337,7 @@ def display_pydantic_models(
                 def _handle_btn_action(act: str, dbojb):
                     btn_callbacks[act](dbojb)
 
-                for label, callback in btn_callbacks.items():
+                for label in btn_callbacks:
                     st.button(label, on_click=_handle_btn_action, args=(label, row), key=f"{row}-btn-{label}")
 
 

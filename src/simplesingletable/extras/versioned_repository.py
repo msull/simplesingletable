@@ -40,7 +40,7 @@ Example:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypeVar
 
 from boto3.dynamodb.conditions import Key
@@ -132,8 +132,8 @@ class VersionedResourceRepository(ResourceRepository):
                 VersionInfo(
                     version_id=sk,
                     version_number=version_number,
-                    created_at=item.get("created_at", datetime.now()),
-                    updated_at=item.get("updated_at", datetime.now()),
+                    created_at=item.get("created_at", datetime.now(timezone.utc)),
+                    updated_at=item.get("updated_at", datetime.now(timezone.utc)),
                     is_latest=False,  # Will be updated after we know the latest
                 )
             )
