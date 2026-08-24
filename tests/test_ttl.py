@@ -255,7 +255,7 @@ def test_invalid_ttl_field_type():
         invalid_ttl="not a valid ttl",
     )
 
-    with pytest.raises(ValueError, match="Unsupported TTL field type"):
+    with pytest.raises(TypeError, match="Unsupported TTL field type"):
         resource._calculate_ttl()
 
 

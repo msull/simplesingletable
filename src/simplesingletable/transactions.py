@@ -14,6 +14,12 @@ from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
 
+from .exceptions import (
+    ResourceNotFoundError,
+    TransactionConditionFailedError,
+    TransactionError,
+    VersionConflictError,
+)
 from .models import DynamoDbResource, DynamoDbVersionedResource, clean_data
 from .utils import generate_date_sortable_id, marshall
 
@@ -21,6 +27,19 @@ if TYPE_CHECKING:
     from .dynamodb_memory import DynamoDbMemory
 
 logger = logging.getLogger(__name__)
+
+# The exception types now live in exceptions.py alongside the rest of the hierarchy,
+# but are re-exported here: they were defined in this module first, and callers
+# import them from it.
+__all__ = [
+    "ResourceNotFoundError",
+    "TransactionConditionFailedError",
+    "TransactionContext",
+    "TransactionError",
+    "TransactionManager",
+    "TransactionOperation",
+    "VersionConflictError",
+]
 
 # Cancellation-reason codes (within TransactionCanceledException) that are transient:
 # the write lost a race or hit capacity limits, and an identical resend can succeed.
@@ -106,51 +125,6 @@ def _marshall_values(values: dict[str, Any]) -> dict[str, Any]:
     if missing:
         raise ValueError(f"Empty set value(s) not supported in transaction expressions: {sorted(missing)}")
     return marshall(cleaned)
-
-
-class TransactionError(Exception):
-    """Raised when a transaction fails.
-
-    Attributes:
-        cancellation_reasons: The raw DynamoDB ``CancellationReasons`` payload, when the
-            failure originated from a ``TransactionCanceledException``. Empty otherwise.
-        operation_indexes: Indexes (into ``TransactionContext.operations``) of the
-            specific operations whose conditions/conflicts caused the cancellation.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        cancellation_reasons: list[dict[str, Any]] | None = None,
-        operation_indexes: list[int] | None = None,
-    ):
-        super().__init__(message)
-        self.cancellation_reasons = cancellation_reasons or []
-        self.operation_indexes = operation_indexes or []
-
-
-class TransactionConditionFailedError(TransactionError):
-    """Raised when a transaction is cancelled because one or more conditions did not hold.
-
-    This is the canonical exception for both version-token collisions (implicit
-    conditions set by the library) and user-supplied ``condition=`` checks. The two
-    cases can be distinguished by inspecting the ``condition`` field of each operation
-    referenced by ``operation_indexes``.
-    """
-
-
-class VersionConflictError(TransactionConditionFailedError):
-    """Back-compat alias raised for any condition-check failure inside a transaction.
-
-    New code should catch :class:`TransactionConditionFailedError` (or the parent
-    :class:`TransactionError`). This subclass exists so that pre-existing
-    ``except VersionConflictError`` blocks continue to behave as before.
-    """
-
-
-class ResourceNotFoundError(Exception):
-    """Raised when a resource is not found."""
 
 
 class OperationType(Enum):
@@ -393,7 +367,7 @@ class TransactionContext:
         Pass ``optimistic=False`` for last-writer-wins semantics.
         """
         if isinstance(resource, DynamoDbVersionedResource):
-            raise ValueError(
+            raise TypeError(
                 "txn.put() is only supported for non-versioned resources. "
                 "Use txn.update() for versioned resources so version-token semantics are preserved."
             )

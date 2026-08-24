@@ -234,7 +234,7 @@ class TestReadOnlyVersionedResourceRepository:
 
     def test_init_requires_versioned_resource(self, memory):
         """Test that repository requires a versioned resource model."""
-        with pytest.raises(ValueError, match="can only be used with DynamoDbVersionedResource"):
+        with pytest.raises(TypeError, match="can only be used with DynamoDbVersionedResource"):
             ReadOnlyVersionedResourceRepository(
                 ddb=memory,
                 model_class=User,  # Non-versioned model

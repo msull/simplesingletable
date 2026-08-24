@@ -70,13 +70,6 @@ target-version = "py310"
 # in 0.16 and silently turned `inv lint` from passing into 575 errors on an unchanged
 # codebase. Pinning makes a rule-set change a deliberate upgrade rather than a surprise.
 # The set is not enumerated here because doing so would mean listing all 413 codes.
-ignore = [
-    # Would change public API. 19 call sites raise ValueError("Invalid data_class
-    # provided") from entry points such as get_existing(); switching them to TypeError
-    # breaks every caller catching ValueError. The exception-type question for these
-    # paths is tracked in #13, where it can carry a deprecation story.
-    "TRY004",
-]
 
 
 [tool.bumpver]

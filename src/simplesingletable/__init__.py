@@ -11,6 +11,12 @@ from .exceptions import (
     BlobNotFoundError,
     BlobPreconditionFailedError,
     BlobTooLargeError,
+    ConflictError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+    TransactionConditionFailedError,
+    TransactionError,
+    VersionConflictError,
 )
 from .extras.audit import AuditLogQuerier
 from .local_blob_storage import LocalBlobStorage
@@ -34,3 +40,9 @@ _ = BlobError
 _ = BlobNotFoundError
 _ = BlobPreconditionFailedError
 _ = BlobTooLargeError
+_ = ConflictError
+_ = ResourceExistsError
+_ = ResourceNotFoundError
+_ = TransactionConditionFailedError
+_ = TransactionError
+_ = VersionConflictError

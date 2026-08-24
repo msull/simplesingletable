@@ -74,10 +74,10 @@ class ReadOnlyVersionedResourceRepository(ReadOnlyResourceRepository):
             cache_ttl_seconds: Optional TTL for cache entries. When set and > 0, enables caching.
 
         Raises:
-            ValueError: If model_class is not a DynamoDbVersionedResource
+            TypeError: If model_class is not a DynamoDbVersionedResource
         """
         if not issubclass(model_class, DynamoDbVersionedResource):
-            raise ValueError(
+            raise TypeError(
                 "ReadOnlyVersionedResourceRepository can only be used with DynamoDbVersionedResource models"
             )
 

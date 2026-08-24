@@ -17,7 +17,7 @@ from typing import Any, ClassVar, Optional, TypeVar
 from boto3.dynamodb.conditions import ConditionBase, Key
 from pydantic import BaseModel, Field
 
-from .exceptions import BlobNotFoundError
+from .exceptions import BlobNotFoundError, ResourceExistsError, VersionConflictError
 from .local_blob_storage import LocalBlobStorage, _compute_etag
 from .models import (
     AuditLog,
@@ -217,7 +217,7 @@ class LocalStorageMemory:
         elif issubclass(data_class, DynamoDbVersionedResource):
             key = data_class.dynamodb_lookup_keys_from_id(existing_id, version=version)
         else:
-            raise ValueError("Invalid data_class provided")
+            raise TypeError("Invalid data_class provided")
 
         file_path = self._get_resource_file_path(data_class)
         if not file_path.exists():
@@ -334,7 +334,7 @@ class LocalStorageMemory:
         elif issubclass(data_class, DynamoDbVersionedResource):
             resource = self._create_new_versioned(new_resource)
         else:
-            raise ValueError("Invalid data_class provided")
+            raise TypeError("Invalid data_class provided")
 
         if self.track_stats:
             stats = MemoryStats.ensure_exists(self)
@@ -413,7 +413,11 @@ class LocalStorageMemory:
             v0_key = self._make_storage_key(v0_item["pk"], v0_item["sk"])
 
             if main_key in data or v0_key in data:
-                raise ValueError("Resource already exists")
+                raise ResourceExistsError(
+                    "Resource already exists",
+                    resource_type=resource.__class__.__name__,
+                    resource_id=resource.resource_id,
+                )
 
             # Store both items
             data[main_key] = main_item
@@ -477,7 +481,13 @@ class LocalStorageMemory:
                 data_class=data_class,
             )
             if existing_resource.version != latest_resource.version:
-                raise ValueError("Cannot update from non-latest version")
+                raise VersionConflictError(
+                    "Cannot update from non-latest version",
+                    resource_type=data_class.__name__,
+                    resource_id=existing_resource.resource_id,
+                    expected_version=existing_resource.version,
+                    actual_version=latest_resource.version,
+                )
 
             self._update_existing_versioned(updated_resource, previous_version=latest_resource.version)
 
@@ -501,7 +511,7 @@ class LocalStorageMemory:
             )
             return result
         else:
-            raise ValueError("Invalid data_class provided")
+            raise TypeError("Invalid data_class provided")
 
     def _update_existing_versioned(self, resource: VersionedDbResourceOnly, previous_version: int):
         """Update a versioned resource."""
@@ -526,13 +536,24 @@ class LocalStorageMemory:
 
             # Check that main item doesn't exist and v0 item has correct version
             if main_key in data:
-                raise ValueError("Version already exists")
+                raise VersionConflictError(
+                    "Version already exists",
+                    resource_type=resource.__class__.__name__,
+                    resource_id=resource.resource_id,
+                    expected_version=previous_version,
+                )
 
             if v0_key not in data:
                 raise ValueError("Resource does not exist")
 
             if data[v0_key].get("version") != previous_version:
-                raise ValueError("Version conflict")
+                raise VersionConflictError(
+                    "Version conflict",
+                    resource_type=resource.__class__.__name__,
+                    resource_id=resource.resource_id,
+                    expected_version=previous_version,
+                    actual_version=data[v0_key].get("version"),
+                )
 
             # Store both items
             data[main_key] = main_item
@@ -580,7 +601,7 @@ class LocalStorageMemory:
         elif issubclass(existing_resource.__class__, DynamoDbVersionedResource):
             self._delete_versioned_resource(existing_resource)
         else:
-            raise ValueError("Invalid resource type provided")
+            raise TypeError("Invalid resource type provided")
 
     def _delete_nonversioned_resource(self, existing_resource: NonversionedDbResourceOnly):
         """Delete a non-versioned resource."""
@@ -653,7 +674,7 @@ class LocalStorageMemory:
     def delete_all_versions(self, resource_id: str, data_class: type[VersionedDbResourceOnly]):
         """Delete all versions of a versioned resource."""
         if not issubclass(data_class, DynamoDbVersionedResource):
-            raise ValueError("delete_all_versions can only be used with versioned resources")
+            raise TypeError("delete_all_versions can only be used with versioned resources")
 
         self.logger.info(f"Deleting all versions of resource:{data_class.__name__} with resource_id='{resource_id}'")
 
@@ -698,7 +719,7 @@ class LocalStorageMemory:
     ) -> list[VersionedDbResourceOnly]:
         """Get all versions of a versioned resource, sorted newest first."""
         if not issubclass(data_class, DynamoDbVersionedResource):
-            raise ValueError("get_all_versions can only be used with versioned resources")
+            raise TypeError("get_all_versions can only be used with versioned resources")
 
         self.logger.debug(f"Getting all versions of {data_class.__name__} with resource_id='{resource_id}'")
 
@@ -759,7 +780,7 @@ class LocalStorageMemory:
     ) -> VersionedDbResourceOnly:
         """Restore a previous version by creating a new version with the same content."""
         if not issubclass(data_class, DynamoDbVersionedResource):
-            raise ValueError("restore_version can only be used with versioned resources")
+            raise TypeError("restore_version can only be used with versioned resources")
 
         if version <= 0:
             raise ValueError(f"Version must be a positive integer, got: {version}")

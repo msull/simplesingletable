@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
 from .blob_storage import S3BlobStorage
-from .exceptions import BlobNotFoundError
+from .exceptions import BlobNotFoundError, ResourceExistsError, VersionConflictError
 from .models import AuditLog, BlobPlaceholder, DynamoDbResource, DynamoDbVersionedResource, PaginatedList
 from .transactions import TransactionManager
 from .utils import decode_pagination_key, encode_pagination_key, marshall, normalize_index_name
@@ -176,7 +176,16 @@ def build_lek_data(db_item: dict, index_name: str | None, resource_class: type[A
 
 
 def transact_write_safe(client: "DynamoDBClient", transact_items: list):
-    """Execute transact_write_items with better error handling."""
+    """Execute transact_write_items with better error handling.
+
+    A cancellation caused by a failed condition check raises
+    :class:`VersionConflictError` -- the caller lost a race and should re-read. Any
+    other cancellation raises a bare ``ValueError``, as before: those are bugs or
+    capacity problems, not conflicts, and nothing distinguishes them usefully here.
+
+    Both are ``ValueError`` subclasses, so the message format is left exactly as it
+    was and pre-existing ``except ValueError`` handlers are unaffected.
+    """
     try:
         return client.transact_write_items(TransactItems=transact_items)
     except ClientError as e:
@@ -187,10 +196,17 @@ def transact_write_safe(client: "DynamoDBClient", transact_items: list):
             for i, reason in enumerate(cancellation_reasons):
                 if reason and reason.get("Code"):
                     detailed_reasons.append(f"Item {i}: {reason['Code']} - {reason.get('Message', 'No message')}")
-            if detailed_reasons:
-                raise ValueError(f"Transaction failed: {'; '.join(detailed_reasons)}") from e
-            else:
-                raise ValueError(f"Transaction failed: {cancellation_reasons}") from e
+            has_condition_failure = any(
+                reason and reason.get("Code") == "ConditionalCheckFailed" for reason in cancellation_reasons
+            )
+            message = (
+                f"Transaction failed: {'; '.join(detailed_reasons)}"
+                if detailed_reasons
+                else f"Transaction failed: {cancellation_reasons}"
+            )
+            if has_condition_failure:
+                raise VersionConflictError(message, cancellation_reasons=cancellation_reasons) from e
+            raise ValueError(message) from e
         else:
             raise
 
@@ -256,7 +272,7 @@ class DynamoDbMemory:
         elif issubclass(data_class, DynamoDbVersionedResource):
             key = data_class.dynamodb_lookup_keys_from_id(existing_id, version=version)
         else:
-            raise ValueError("Invalid data_class provided")
+            raise TypeError("Invalid data_class provided")
         response = self.dynamodb_table.get_item(Key=key, ConsistentRead=consistent_read)
         item = response.get("Item")
         if item:
@@ -347,7 +363,7 @@ class DynamoDbMemory:
             elif issubclass(data_class, DynamoDbResource):
                 keys.append(data_class.dynamodb_lookup_keys_from_id(rid))
             else:
-                raise ValueError("Invalid data_class provided")
+                raise TypeError("Invalid data_class provided")
 
         # Ensure the dynamodb resource is initialized
         _ = self.dynamodb_table
@@ -439,7 +455,13 @@ class DynamoDbMemory:
                 data_class=data_class,
             )
             if existing_resource.version != latest_resource.version:
-                raise ValueError("Cannot update from non-latest version")
+                raise VersionConflictError(
+                    "Cannot update from non-latest version",
+                    resource_type=data_class.__name__,
+                    resource_id=existing_resource.resource_id,
+                    expected_version=existing_resource.version,
+                    actual_version=latest_resource.version,
+                )
 
             self._update_existing_versioned(updated_resource, previous_version=latest_resource.version)
 
@@ -463,7 +485,7 @@ class DynamoDbMemory:
             )
             return result
         else:
-            raise ValueError("Invalid data_class provided")
+            raise TypeError("Invalid data_class provided")
 
     @property
     def dynamodb_client(self) -> "DynamoDBClient":
@@ -596,7 +618,7 @@ class DynamoDbMemory:
         elif issubclass(data_class, DynamoDbVersionedResource):
             resource = self._create_new_versioned(new_resource)
         else:
-            raise ValueError("Invalid data_class provided")
+            raise TypeError("Invalid data_class provided")
         if self.track_stats:
             stats = MemoryStats.ensure_exists(self)
             self.increment_counter(stats, "counts_by_type." + data_class.__name__)
@@ -630,7 +652,7 @@ class DynamoDbMemory:
         elif issubclass(existing_resource.__class__, DynamoDbVersionedResource):
             self._delete_versioned_resource(existing_resource)
         else:
-            raise ValueError("Invalid resource type provided")
+            raise TypeError("Invalid resource type provided")
 
     def _delete_nonversioned_resource(self, existing_resource: NonversionedDbResourceOnly):
         self.logger.info(
@@ -695,7 +717,7 @@ class DynamoDbMemory:
     def delete_all_versions(self, resource_id: str, data_class: type[VersionedDbResourceOnly]):
         """Delete all versions of a versioned resource."""
         if not issubclass(data_class, DynamoDbVersionedResource):
-            raise ValueError("delete_all_versions can only be used with versioned resources")
+            raise TypeError("delete_all_versions can only be used with versioned resources")
 
         from boto3.dynamodb.conditions import Key
 
@@ -750,7 +772,7 @@ class DynamoDbMemory:
             List of all versions, sorted by version number (newest first)
 
         Raises:
-            ValueError: If data_class is not a versioned resource
+            TypeError: If data_class is not a versioned resource
 
         Example:
             >>> versions = memory.get_all_versions(doc.resource_id, Document)
@@ -758,7 +780,7 @@ class DynamoDbMemory:
             >>>     print(f"Version {v.version}: {v.title}")
         """
         if not issubclass(data_class, DynamoDbVersionedResource):
-            raise ValueError("get_all_versions can only be used with versioned resources")
+            raise TypeError("get_all_versions can only be used with versioned resources")
 
         self.logger.debug(f"Getting all versions of {data_class.__name__} with resource_id='{resource_id}'")
 
@@ -835,7 +857,8 @@ class DynamoDbMemory:
             The newly created resource that matches the restored version
 
         Raises:
-            ValueError: If data_class is not versioned, version not found, or version <= 0
+            TypeError: If data_class is not a versioned resource
+            ValueError: If the version is not found, or version <= 0
 
         Example:
             >>> # Restore document to version 2, creating a new version 5
@@ -843,7 +866,7 @@ class DynamoDbMemory:
             >>> print(f"Restored v2 as new v{restored.version}")
         """
         if not issubclass(data_class, DynamoDbVersionedResource):
-            raise ValueError("restore_version can only be used with versioned resources")
+            raise TypeError("restore_version can only be used with versioned resources")
 
         if version <= 0:
             raise ValueError(f"Version must be a positive integer, got: {version}")
@@ -925,25 +948,34 @@ class DynamoDbMemory:
         else:
             v0_item = v0_result
         self.logger.debug("transact_write_items begin")
-        transact_write_safe(
-            self.dynamodb_client,
-            [
-                {
-                    "Put": {
-                        "TableName": self.table_name,
-                        "Item": marshall(main_item),
-                        "ConditionExpression": "attribute_not_exists(pk) and attribute_not_exists(sk)",
-                    }
-                },
-                {
-                    "Put": {
-                        "TableName": self.table_name,
-                        "Item": marshall(v0_item),
-                        "ConditionExpression": "attribute_not_exists(pk) and attribute_not_exists(sk)",
-                    }
-                },
-            ],
-        )
+        try:
+            transact_write_safe(
+                self.dynamodb_client,
+                [
+                    {
+                        "Put": {
+                            "TableName": self.table_name,
+                            "Item": marshall(main_item),
+                            "ConditionExpression": "attribute_not_exists(pk) and attribute_not_exists(sk)",
+                        }
+                    },
+                    {
+                        "Put": {
+                            "TableName": self.table_name,
+                            "Item": marshall(v0_item),
+                            "ConditionExpression": "attribute_not_exists(pk) and attribute_not_exists(sk)",
+                        }
+                    },
+                ],
+            )
+        except VersionConflictError as e:
+            # Both conditions here are attribute_not_exists, so the only way this
+            # cancels on a condition is that the resource id is already taken.
+            raise ResourceExistsError(
+                f"{resource.__class__.__name__} {resource.resource_id} already exists",
+                resource_type=resource.__class__.__name__,
+                resource_id=resource.resource_id,
+            ) from e
         self.logger.debug("transact_write_items complete")
 
         # Store blob fields in S3 if configured

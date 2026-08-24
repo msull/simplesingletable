@@ -279,7 +279,7 @@ def test_put_rejects_versioned_resources(dynamodb_memory: DynamoDbMemory):
     """Versioned resources must go through txn.update (for version semantics)."""
     post = dynamodb_memory.create_new(AuditedPost, {"title": "T", "body": "B"})
 
-    with pytest.raises(ValueError, match="only supported for non-versioned"):
+    with pytest.raises(TypeError, match="only supported for non-versioned"):
         with dynamodb_memory.transaction() as txn:
             txn.put(post)
 

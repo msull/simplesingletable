@@ -47,6 +47,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
+from simplesingletable.exceptions import VersionConflictError
 
 from .cache import TTLCache
 
@@ -178,6 +179,90 @@ class ResourceRepository:
         return self._update(
             existing, obj_in, clear_fields=clear_fields, changed_by=changed_by, audit_metadata=audit_metadata
         )
+
+    def save(
+        self,
+        id: Any,
+        obj_in: CreateSchemaType | UpdateSchemaType | dict,
+        expected_version: int,
+        clear_fields: set[str] | None = None,
+        changed_by: str | None = None,
+        audit_metadata: dict | None = None,
+    ) -> T:
+        """Write a record, failing if it is not at exactly ``expected_version``.
+
+        This is the "create or update, but only from the state I read" primitive.
+        ``expected_version=0`` means *must not exist yet* and validates ``obj_in``
+        against the create schema; any higher value means *must currently be at that
+        version* and validates against the update schema. Either way a lost race
+        raises a :class:`ConflictError` subclass, so the caller writes one
+        ``except`` instead of branching on create-vs-update and matching message text::
+
+            try:
+                doc = repo.save(doc_id, changes, expected_version=known_version)
+            except ConflictError:
+                ...  # re-read and retry, or return HTTP 409
+
+        The read this performs is only for the pre-image and to fail early: the write
+        itself is conditioned on the stored version, so a writer that slips in between
+        the read and the write is still caught. That is what makes this safe where a
+        hand-rolled ``get`` then ``update`` is not.
+
+        Args:
+            id: Resource id to write. Required even on create -- ``save`` is for
+                callers who already know the identity of the thing they are writing.
+            obj_in: Create schema (``expected_version=0``) or update schema.
+            expected_version: ``0`` to create; otherwise the version the caller read.
+            clear_fields: Fields to explicitly clear to None; update only.
+            changed_by: Optional identifier of user/service making the change.
+            audit_metadata: Optional additional metadata for the audit log.
+
+        Raises:
+            TypeError: If this repository's model is not a versioned resource.
+            ValueError: If ``expected_version`` is negative.
+            ResourceExistsError: ``expected_version=0`` but the resource exists.
+            VersionConflictError: The resource is absent, or at a different version.
+        """
+        if not issubclass(self.model_class, DynamoDbVersionedResource):
+            raise TypeError(
+                f"save() requires a versioned resource; {self.model_class.__name__} is not a "
+                "DynamoDbVersionedResource and has no version to condition on. Use create()/update()."
+            )
+        if expected_version < 0:
+            raise ValueError(f"expected_version must be 0 (create) or a positive version, got {expected_version}")
+
+        if expected_version == 0:
+            self.logger.debug(f"Saving new {self.model_class.__name__} id={id}")
+            if isinstance(obj_in, dict):
+                obj_in = self.create_schema_class.model_validate(obj_in)
+            return self._create(obj_in, override_id=id, changed_by=changed_by, audit_metadata=audit_metadata)
+
+        self.logger.debug(f"Saving {self.model_class.__name__} id={id} from version {expected_version}")
+        if isinstance(obj_in, dict):
+            obj_in = self.update_schema_class.model_validate(obj_in)
+
+        # Deliberately bypasses the repository cache: a cached pre-image could be
+        # stale, which would turn the guard into a rubber stamp.
+        existing = self.ddb.get_existing(id, self.model_class)
+        if existing is None or existing.version != expected_version:
+            if self._cache:
+                self._cache.invalidate(str(id))
+            raise VersionConflictError(
+                f"{self.model_class.__name__} {id} is not at version {expected_version}"
+                + ("; it does not exist" if existing is None else f"; it is at version {existing.version}"),
+                resource_type=self.model_class.__name__,
+                resource_id=str(id),
+                expected_version=expected_version,
+                actual_version=None if existing is None else existing.version,
+            )
+        try:
+            return self._update(
+                existing, obj_in, clear_fields=clear_fields, changed_by=changed_by, audit_metadata=audit_metadata
+            )
+        except VersionConflictError:
+            if self._cache:
+                self._cache.invalidate(str(id))
+            raise
 
     def delete(self, id: Any, changed_by: str | None = None, audit_metadata: dict | None = None) -> None:
         """

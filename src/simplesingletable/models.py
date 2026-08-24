@@ -438,7 +438,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
             expiration = self.created_at + timedelta(seconds=ttl_value)
             return int(expiration.timestamp())
         else:
-            raise ValueError(
+            raise TypeError(
                 f"Unsupported TTL field type: {type(ttl_value).__name__}. Only datetime and int are supported."
             )
 

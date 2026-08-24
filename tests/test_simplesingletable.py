@@ -377,7 +377,7 @@ def test_delete_all_versions_invalid_class(dynamodb_memory: DynamoDbMemory):
     """Test that delete_all_versions raises an error for non-versioned resources."""
     import pytest
 
-    with pytest.raises(ValueError, match="delete_all_versions can only be used with versioned resources"):
+    with pytest.raises(TypeError, match="delete_all_versions can only be used with versioned resources"):
         dynamodb_memory.delete_all_versions("test_id", MyNonversionedTestResource)
 
 

@@ -61,7 +61,7 @@ class TestVersionedResourceRepository:
         class NonVersionedModel(DynamoDbResource):
             name: str
 
-        with pytest.raises(ValueError, match="can only be used with DynamoDbVersionedResource"):
+        with pytest.raises(TypeError, match="can only be used with DynamoDbVersionedResource"):
             VersionedResourceRepository(
                 ddb=memory,
                 model_class=NonVersionedModel,

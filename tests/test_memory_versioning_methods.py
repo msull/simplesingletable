@@ -117,7 +117,7 @@ class TestGetAllVersions:
         resource = memory.create_new(NonVersionedResource, {"name": "Test"})
 
         # Try to get versions - should fail
-        with pytest.raises(ValueError, match="can only be used with versioned resources"):
+        with pytest.raises(TypeError, match="can only be used with versioned resources"):
             memory.get_all_versions(resource.resource_id, NonVersionedResource)
 
     def test_get_all_versions_double_digit_versions(self, dynamodb_memory):
@@ -289,7 +289,7 @@ class TestRestoreVersion:
 
         resource = memory.create_new(NonVersionedResource, {"name": "Test"})
 
-        with pytest.raises(ValueError, match="can only be used with versioned resources"):
+        with pytest.raises(TypeError, match="can only be used with versioned resources"):
             memory.restore_version(resource.resource_id, NonVersionedResource, 1)
 
     def test_restore_version_with_changed_by(self, dynamodb_memory):

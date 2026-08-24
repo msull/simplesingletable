@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Breaking.** Two changes to what the library raises, which together sort failures into the three
+kinds a caller actually needs to tell apart: *you lost a race* (409), *you sent bad input* (400),
+and *you called this wrong* (500).
+
+* **Conflicts are typed, and remain `ValueError` subclasses.** Existing `except ValueError`
+  handlers and the exact message strings are unchanged. What does change: `TransactionConditionFailedError`
+  (and `VersionConflictError` under it) is now *also* a `ValueError`, so a `try` block catching
+  `ValueError` before `TransactionError` will now take the first branch.
+
+* **Passing the wrong class raises `TypeError`, not `ValueError`.** 19 entry points —
+  `get_existing`, `create_new`, `update_existing`, `delete_existing`, `delete_all_versions`,
+  `get_all_versions`, `restore_version`, the versioned repository constructors, `txn.put()` on a
+  versioned resource, and an unsupported TTL field type — previously reported "you handed me the
+  wrong class" as a `ValueError`. That is the specific complaint in #10: an app mapping
+  `ValueError -> 400` showed a programming error to the operator as "bad request". Anything
+  catching `ValueError` around these calls must now catch `TypeError` as well.
+
+  This was deferred from 20.0.0 pending #13, and is landed here rather than later so that callers
+  adjusting to the conflict types adjust once. `TRY004` is consequently no longer in the ruff
+  `ignore` list.
+
+### Added
+
+* **A conflict hierarchy, rooted at `ConflictError`** (#13). Losing an optimistic-concurrency race
+  now raises the same catchable type on every write path, so an HTTP layer can map conflicts to 409
+  without knowing whether the repository used a transaction underneath:
+
+  ```
+  ValueError
+  └── ConflictError                        # "the stored state was not what I expected"
+      ├── ResourceExistsError              # a conditional create hit an existing item
+      └── TransactionConditionFailedError  # (also TransactionError)
+          └── VersionConflictError         # a write lost the race
+  ```
+
+  Concretely: `transact_write_safe` raises `VersionConflictError` when a cancellation carries a
+  `ConditionalCheckFailed` reason (other cancellations stay a bare `ValueError` — those are bugs or
+  capacity problems, not conflicts); `update_existing` raises `VersionConflictError` rather than
+  `ValueError("Cannot update from non-latest version")`; and creating a versioned resource whose id
+  is taken raises `ResourceExistsError`. `LocalStorageMemory` raises the identical types, so code
+  written against one backend ports to the other.
+
+  Conflicts carry structured context — `resource_type`, `resource_id`, `expected_version`,
+  `actual_version` — which is what replaces matching on message text. The workaround #10 reported
+  in the field collapses to a single `except ConflictError`:
+
+  ```python
+  # before
+  @staticmethod
+  def _is_lost_race(exc: ValueError) -> bool:
+      message = str(exc)
+      return "ConditionalCheckFailed" in message or "non-latest version" in message
+  ```
+
+  The transaction types (`TransactionError`, `TransactionConditionFailedError`,
+  `VersionConflictError`, `ResourceNotFoundError`) moved to `exceptions.py` so the hierarchy has one
+  home. `simplesingletable.transactions` re-exports them and the objects are identical, so
+  `from simplesingletable.transactions import VersionConflictError` is unaffected. All of the above
+  are now exported from the package root.
+
+* **`ResourceRepository.save(id, obj_in, expected_version)`** (#13) — the create-or-update-from-a-known-version
+  primitive. `expected_version=0` means *must not exist yet* and validates against the create schema;
+  any higher value means *must currently be at that version* and validates against the update schema.
+  Either way a lost race raises a `ConflictError` subclass, so the caller writes one `except` instead
+  of hand-rolling the branch:
+
+  ```python
+  try:
+      doc = repo.save(doc_id, changes, expected_version=known_version)
+  except ConflictError:
+      ...  # re-read and retry, or return 409
+  ```
+
+  The read `save` performs is only for the pre-image and to fail early — the write itself is
+  conditioned on the stored version, so a writer that slips in between is still caught. That is what
+  makes it safe where a hand-rolled `get`-then-`update` is not. It deliberately bypasses the
+  repository cache for the same reason: a stale cached pre-image would turn the guard into a rubber
+  stamp. `save` requires a versioned model and raises `TypeError` otherwise; non-versioned
+  conditional creates are not covered yet, since `_put_nonversioned_resource` writes without a
+  condition.
+
+### Changed
+
+* **19 wrong-class call sites now raise `TypeError`** (#13). Mechanical — messages are unchanged,
+  only the type. See the breaking-change summary above for the full list and rationale.
+
+* **The transaction exception types moved to `exceptions.py`.** `simplesingletable.transactions`
+  re-exports them and the objects are identical (`transactions.VersionConflictError is
+  exceptions.VersionConflictError`), so no import needs to change.
+
 ## [20.0.0] 2026-08-24
 
 **Breaking.** Two previously-succeeding transaction calls now raise at queue time. Both were

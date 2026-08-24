@@ -83,7 +83,7 @@ class VersionedResourceRepository(ResourceRepository):
         cache_ttl_seconds: int | None = None,
     ):
         if not issubclass(model_class, DynamoDbVersionedResource):
-            raise ValueError("VersionedResourceRepository can only be used with DynamoDbVersionedResource models")
+            raise TypeError("VersionedResourceRepository can only be used with DynamoDbVersionedResource models")
 
         super().__init__(
             ddb=ddb,
