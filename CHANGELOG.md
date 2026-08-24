@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [21.0.0] 2026-08-24
+
 **Breaking.** Two changes to what the library raises, which together sort failures into the three
 kinds a caller actually needs to tell apart: *you lost a race* (409), *you sent bad input* (400),
 and *you called this wrong* (500).
