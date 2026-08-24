@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [20.0.0] 2026-08-24
+
 **Breaking.** Two previously-succeeding transaction calls now raise at queue time. Both were
 silently doing the wrong thing, which is why they are corrected rather than deprecated:
 
