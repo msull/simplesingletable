@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplesingletable"
-version = "19.0.0"
+version = "20.0.0"
 description = "A simple boto3/Pydantic implementation of DynamoDB Single Table Design and related utilities."
 readme = "README.md"
 authors = [{ name = "Sully", email = "sully@sadburger.com" }]
@@ -80,7 +80,7 @@ ignore = [
 
 
 [tool.bumpver]
-current_version = "19.0.0"
+current_version = "20.0.0"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "Bump version {old_version} -> {new_version}"
 commit = true
