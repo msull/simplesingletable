@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `test` (the full pytest suite on Python 3.10, with DynamoDB Local and MinIO via
   pytest-docker). The `lint` job also runs `uv lock --check`, so a PR that changes dependencies
   without re-locking fails. No library changes. (#22)
+* **Test MinIO image is `cgr.dev/chainguard/minio`.** `minio/minio` was withdrawn from Docker Hub,
+  so `tests/docker-compose.yml` could no longer start on a machine without a cached copy (including
+  CI). The Chainguard build has no curl, so the compose healthcheck is dropped; the
+  `minio_via_docker` fixture already waits on `/minio/health/live`. (#22)
 * **`uv.lock` is current again, and releases keep it that way.** The committed lock still recorded
   the project as 19.0.0 and was missing the `ruff>=0.16,<0.17` pin, so every `uv sync` rewrote it.
   It is refreshed, with no resolved package versions changed. bumpver's new `pre_commit_hook`
