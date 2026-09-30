@@ -202,6 +202,23 @@ class BlobPlaceholder(TypedDict):
     """
 
 
+class PresignedBlobUrl(BaseModel):
+    """A time-limited URL that downloads one blob field directly from storage."""
+
+    url: str
+    """The URL to hand to a browser. On LocalBlobStorage this is a ``file://`` URI."""
+
+    s3_key: str
+    """Storage key the URL points at (same format as ``head_blob()["s3_key"]``)."""
+
+    expires_at: datetime | None
+    """UTC time after which S3 rejects the URL. ``None`` on LocalBlobStorage (no expiry)."""
+
+    etag: str | None
+    """ETag of the object at mint time, verbatim with quotes. Always set: every mint HEADs the object.
+    It identifies what the URL served *when minted*; the key can be replaced afterwards."""
+
+
 class BaseDynamoDbResource(BaseModel, ABC):
     """Exists only to provide a common parent for the resource classes."""
 

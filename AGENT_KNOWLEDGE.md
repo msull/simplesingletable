@@ -1084,6 +1084,50 @@ Notes:
 - `max_bytes` defaults to the field's configured `max_size_bytes`, which is otherwise only
   enforced on write. The size is checked against `ContentLength` before the body is read.
 
+### Presigned Downloads
+
+Mint a short-lived URL a browser can fetch straight from S3, instead of proxying the bytes
+through the application (and Lambda's 6 MB response cap):
+
+```python
+etag = memory.head_blob(doc, "file")["etag"]   # optional: the object you validated
+p = memory.presign_blob_download(doc, "file", filename="report.pdf", if_match=etag)
+p.url         # hand to the browser; a plain <a href> works
+p.expires_at  # UTC; default expires_in=900 (max 604800, the SigV4 limit)
+p.etag        # what was verified at mint time
+```
+
+Notes:
+
+- Every mint HEADs the object: a missing object raises `BlobNotFoundError`, a stale
+  `if_match` raises `BlobPreconditionFailedError`.
+- The checks hold **at mint time only**. While valid, the URL serves whatever is stored at
+  its key — a re-`PUT` to a non-versioned key, or a `copy_blob`/`register_external_blob`
+  into either kind of resource (on a versioned resource those overwrite the current
+  version's key without creating a new version). Keep `expires_in` short, and pass `p.etag`
+  as `if_match` on the next mint to detect a swap.
+- Compressed objects raise `BlobCompressedError`: compression is recorded in object
+  metadata, not `Content-Encoding`, so a browser would save raw gzip. A `compress=True`
+  field is refused without a network call; the HEAD also catches compressed objects in
+  uncompressed fields — registered with `register_external_blob(..., compressed=True)`, or
+  copied from a compressed source by `copy_blob` (which warns and copies as-is).
+- The URL serves the stored bytes. `bytes` values are stored raw; anything else downloads
+  as its stored JSON (a `str` arrives as `"hello"`, quotes included). Use it for
+  uncompressed, `bytes`-valued fields.
+- `If-Match` is not signed into the URL, because a browser navigation cannot send that
+  header. `filename`/`inline` (→ `Content-Disposition`, RFC 6266, non-ASCII safe) and
+  `content_type` are signed query parameters, so they need no headers.
+- URLs are always SigV4 (botocore otherwise defaults S3 presigning to SigV2 in most
+  regions). Signing uses a separate `S3BlobStorage.presign_client`; the operations client
+  is never reconfigured. Pass `S3BlobStorage(..., presign_s3_client=client)` to supply the
+  signing client yourself. With temporary credentials the URL dies early if they expire
+  first.
+- `LocalStorageMemory` returns a `file://` URI after the same checks: unsigned, no expiry
+  (`expires_at=None`), overrides ignored.
+- The URL's host is the presign client's endpoint. `DynamoDbMemory` passes its
+  `endpoint_url` (the DynamoDB endpoint) to the S3 client it builds; with a local DynamoDB
+  endpoint, inject `_s3_blob_storage` or construct `S3BlobStorage` with the right endpoint.
+
 ### Server-Side Blob Copy
 
 ```python
@@ -1124,8 +1168,9 @@ the original deleted.
 | `BlobNotFoundError` | No object exists at the blob's key |
 | `BlobPreconditionFailedError` | `if_match`/`source_etag` no longer matches (S3 412) |
 | `BlobTooLargeError` | Object exceeds `max_bytes` / configured `max_size_bytes` on read |
+| `BlobCompressedError` | Presigning a blob whose stored object is gzip-compressed |
 
-All three subclass `BlobError`, which subclasses `ValueError` — the blob API's original
+All four subclass `BlobError`, which subclasses `ValueError` — the blob API's original
 error type — so existing `except ValueError` handlers keep working. `BlobNotFoundError`
 also subclasses `FileNotFoundError`.
 

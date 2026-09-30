@@ -17,7 +17,8 @@ from typing import Any, ClassVar, Optional, TypeVar
 from boto3.dynamodb.conditions import ConditionBase, Key
 from pydantic import BaseModel, Field
 
-from .exceptions import BlobNotFoundError, ResourceExistsError, VersionConflictError
+from .blob_storage import build_content_disposition
+from .exceptions import BlobCompressedError, BlobNotFoundError, ResourceExistsError, VersionConflictError
 from .local_blob_storage import LocalBlobStorage, _compute_etag
 from .models import (
     AuditLog,
@@ -25,6 +26,7 @@ from .models import (
     DynamoDbResource,
     DynamoDbVersionedResource,
     PaginatedList,
+    PresignedBlobUrl,
 )
 from .utils import decode_pagination_key, encode_pagination_key, normalize_index_name
 
@@ -1011,6 +1013,54 @@ class LocalStorageMemory:
             version=self._blob_version_for(resource, field_name),
             if_match=if_match,
             max_bytes=effective_max_bytes,
+        )
+
+    def presign_blob_download(
+        self,
+        resource: AnyDbResource,
+        field_name: str,
+        *,
+        expires_in: int = 900,
+        if_match: str | None = None,
+        filename: str | None = None,
+        inline: bool = False,
+        content_type: str | None = None,
+    ) -> PresignedBlobUrl:
+        """Mint a download URL for a blob field.
+
+        Mirrors ``DynamoDbMemory.presign_blob_download``; returns a ``file://`` URI with
+        no expiry -- see ``LocalBlobStorage.generate_presigned_get``.
+        """
+        if not self.s3_blob_storage:
+            raise ValueError("Blob storage not configured")
+
+        blob_config = resource.resource_config.get("blob_fields", {}) or {}
+        if field_name not in blob_config:
+            raise ValueError(f"Field '{field_name}' is not configured as a blob field on {resource.__class__.__name__}")
+
+        resource_type = resource.__class__.__name__
+        version = self._blob_version_for(resource, field_name)
+
+        # Every object the library writes to a compress=True field is compressed, so
+        # refuse without a network call. The storage layer's HEAD remains the
+        # authoritative check for compressed objects behind uncompressed fields.
+        if blob_config[field_name].get("compress"):
+            raise BlobCompressedError(
+                f"Blob field '{field_name}' on {resource_type} is configured with compress=True; "
+                "presigned downloads require BlobFieldConfig(compress=False)",
+                s3_key=self.s3_blob_storage._build_s3_key(resource_type, resource.resource_id, field_name, version),
+                field_name=field_name,
+            )
+
+        return self.s3_blob_storage.generate_presigned_get(
+            resource_type=resource_type,
+            resource_id=resource.resource_id,
+            field_name=field_name,
+            version=version,
+            expires_in=expires_in,
+            if_match=if_match,
+            response_content_disposition=build_content_disposition(filename, inline=inline),
+            response_content_type=content_type,
         )
 
     def copy_blob(

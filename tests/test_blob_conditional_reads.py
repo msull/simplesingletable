@@ -11,6 +11,7 @@ import pytest
 from logzero import logger
 
 from simplesingletable import (
+    BlobCompressedError,
     BlobError,
     BlobNotFoundError,
     BlobPreconditionFailedError,
@@ -183,7 +184,7 @@ class TestTypedErrors:
             memory.s3_blob_storage.head_blob("UploadedDoc", "nope", "payload")
 
     def test_all_blob_errors_are_value_errors(self):
-        for exc_type in (BlobNotFoundError, BlobPreconditionFailedError, BlobTooLargeError):
+        for exc_type in (BlobCompressedError, BlobNotFoundError, BlobPreconditionFailedError, BlobTooLargeError):
             assert issubclass(exc_type, BlobError)
             assert issubclass(exc_type, ValueError)
 

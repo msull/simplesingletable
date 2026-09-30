@@ -13,9 +13,16 @@ from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
-from .blob_storage import S3BlobStorage
-from .exceptions import BlobNotFoundError, ResourceExistsError, VersionConflictError
-from .models import AuditLog, BlobPlaceholder, DynamoDbResource, DynamoDbVersionedResource, PaginatedList
+from .blob_storage import S3BlobStorage, build_content_disposition
+from .exceptions import BlobCompressedError, BlobNotFoundError, ResourceExistsError, VersionConflictError
+from .models import (
+    AuditLog,
+    BlobPlaceholder,
+    DynamoDbResource,
+    DynamoDbVersionedResource,
+    PaginatedList,
+    PresignedBlobUrl,
+)
 from .transactions import TransactionManager
 from .utils import decode_pagination_key, encode_pagination_key, marshall, normalize_index_name
 
@@ -1223,6 +1230,97 @@ class DynamoDbMemory:
             version=self._blob_version_for(resource, field_name),
             if_match=if_match,
             max_bytes=effective_max_bytes,
+        )
+
+    def presign_blob_download(
+        self,
+        resource: AnyDbResource,
+        field_name: str,
+        *,
+        expires_in: int = 900,
+        if_match: str | None = None,
+        filename: str | None = None,
+        inline: bool = False,
+        content_type: str | None = None,
+    ) -> PresignedBlobUrl:
+        """Mint a time-limited URL that downloads a blob field directly from S3.
+
+        Lets a browser fetch a blob-backed file straight from S3 instead of proxying the
+        bytes through the application. The URL serves the stored representation:
+        ``bytes`` values are stored raw, anything else as JSON (a ``str`` downloads as
+        ``"hello"``, quotes included). Intended for uncompressed, ``bytes``-valued fields.
+
+        Every mint HEADs the object, and the checks apply **at mint time only**: when
+        the URL was minted, the object existed, was not compressed, and matched
+        ``if_match``; ``result.etag`` identifies what was verified. ``If-Match`` is not
+        signed into the URL, because a plain ``<a href>`` download cannot send that
+        header. While the URL is valid it serves whatever is stored at its key,
+        including a replacement of a non-versioned resource's key, and a versioned
+        resource's current-version key overwritten by ``copy_blob`` or
+        ``register_external_blob`` (neither creates a new version). Keep ``expires_in``
+        short, and pass ``result.etag`` as ``if_match`` on the next mint to detect a swap.
+
+        URLs are always SigV4, signed by ``S3BlobStorage.presign_client`` -- the client
+        used for every other S3 call is not reconfigured. The URL's host is the presign
+        client's endpoint. When ``DynamoDbMemory`` builds its own S3 client it passes
+        ``endpoint_url`` (the DynamoDB endpoint) to it; with a local DynamoDB endpoint,
+        inject ``_s3_blob_storage`` or construct ``S3BlobStorage`` with the right
+        endpoint. With temporary credentials (e.g. Lambda role credentials), the URL
+        stops working early if the credentials expire before ``expires_in`` runs out.
+
+        Args:
+            resource: Resource owning the blob field
+            field_name: Name of the blob field
+            expires_in: URL lifetime in seconds, 1 to 604800 (the SigV4 limit)
+            if_match: ETag the stored object must have at mint time, as returned by
+                ``head_blob``; quoted and unquoted forms are both accepted.
+            filename: Download filename, sent as ``Content-Disposition`` (RFC 6266,
+                non-ASCII safe).
+            inline: Use ``inline`` rather than ``attachment`` disposition.
+            content_type: Overrides the stored ``Content-Type``, which comes from
+                ``BlobFieldConfig.content_type``.
+
+        Both overrides are signed query parameters, so they work in a plain ``<a href>``.
+
+        Raises:
+            ValueError: If S3 is not configured, the field is not a blob field, or
+                ``expires_in`` is out of range.
+            BlobCompressedError: The field is configured with ``compress=True``, or the
+                stored object is gzip-compressed.
+            BlobNotFoundError: No object exists for the field.
+            BlobPreconditionFailedError: ``if_match`` did not match the stored object.
+        """
+        if not self.s3_blob_storage:
+            raise ValueError("S3 blob storage not configured")
+
+        blob_config = resource.resource_config.get("blob_fields", {}) or {}
+        if field_name not in blob_config:
+            raise ValueError(f"Field '{field_name}' is not configured as a blob field on {resource.__class__.__name__}")
+
+        resource_type = resource.__class__.__name__
+        version = self._blob_version_for(resource, field_name)
+
+        # Every object the library writes to a compress=True field is compressed, so
+        # refuse without a network call. The storage layer's HEAD remains the
+        # authoritative check for compressed objects behind uncompressed fields.
+        if blob_config[field_name].get("compress"):
+            raise BlobCompressedError(
+                f"Blob field '{field_name}' on {resource_type} is configured with compress=True; "
+                "presigned downloads require BlobFieldConfig(compress=False)",
+                s3_key=self.s3_blob_storage._build_s3_key(resource_type, resource.resource_id, field_name, version),
+                bucket=self.s3_blob_storage.bucket_name,
+                field_name=field_name,
+            )
+
+        return self.s3_blob_storage.generate_presigned_get(
+            resource_type=resource_type,
+            resource_id=resource.resource_id,
+            field_name=field_name,
+            version=version,
+            expires_in=expires_in,
+            if_match=if_match,
+            response_content_disposition=build_content_disposition(filename, inline=inline),
+            response_content_type=content_type,
         )
 
     def copy_blob(
