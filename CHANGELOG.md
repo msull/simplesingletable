@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [22.0.0] 2026-09-30
+
 ### Added
 
 * **Presigned blob downloads** (#17). `DynamoDbMemory.presign_blob_download(resource, field_name, *,
