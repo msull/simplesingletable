@@ -172,6 +172,11 @@ class MyResource(DynamoDbVersionedResource):
         return f"status#{self.status}"
 ```
 
+A subclass's `resource_config` is shallow-merged over its nearest parent's effective config,
+and a class that declares none inherits its parent's unchanged, so a shared domain base class
+can set defaults like `compress_data=False` for everything below it. Restating `blob_fields` or
+`audit_config` replaces the parent's whole nested dict.
+
 ### Optional Fields and Conditional Writes
 
 By default, Pydantic fields set to `None` are written to DynamoDB as `{"NULL": True}`

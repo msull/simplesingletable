@@ -1,13 +1,16 @@
 import gzip
 import json
 import sys
+import zlib
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
+    NamedTuple,
     TypedDict,
     TypeVar,
     get_args,
@@ -17,7 +20,7 @@ from typing import (
 import ulid
 from boto3.dynamodb.types import Binary
 from humanize import naturalsize, precisedelta
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter, ValidationError
 from typing_extensions import NotRequired  # typing.NotRequired requires py3.11
 
 from .utils import _now, generate_date_sortable_id
@@ -219,6 +222,17 @@ class PresignedBlobUrl(BaseModel):
     It identifies what the URL served *when minted*; the key can be replaced afterwards."""
 
 
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+class _EnvelopeProbe(NamedTuple):
+    payload: dict[str, Any] | None
+    """The decoded model payload, when ``data`` is this record's compressed envelope."""
+    decode_error: Exception | None
+    """Why a gzip-looking ``data`` could not be decoded; reported only if the item also
+    fails to read as an uncompressed resource."""
+
+
 class BaseDynamoDbResource(BaseModel, ABC):
     """Exists only to provide a common parent for the resource classes."""
 
@@ -296,6 +310,95 @@ class BaseDynamoDbResource(BaseModel, ABC):
     @classmethod
     def get_unique_key_prefix(cls) -> str:
         return cls.__name__
+
+    @classmethod
+    def _resolve_resource_config(cls) -> None:
+        """Resolve ``cls.resource_config`` as a shallow merge over the nearest ancestor's.
+
+        Called from each resource root's ``__pydantic_init_subclass__``. Every ancestor has
+        already been resolved the same way when it was defined, so the nearest ancestor that
+        defines ``resource_config`` holds its fully merged config -- no deeper walk is needed.
+
+        The merge is shallow: a subclass that restates ``blob_fields`` or ``audit_config``
+        replaces the parent's whole nested dict rather than merging keys inside it.
+        """
+        own = cls.__dict__.get("resource_config")
+        parent: ResourceConfig = next(
+            base.__dict__["resource_config"] for base in cls.__mro__[1:] if "resource_config" in base.__dict__
+        )
+        merged: ResourceConfig = dict(parent)  # type: ignore[assignment]
+        if own:
+            merged.update(own)
+        cls.resource_config = merged
+
+    @classmethod
+    def _probe_compressed_envelope(cls, dynamodb_data: Mapping[str, Any]) -> _EnvelopeProbe:
+        """Decide from content whether ``dynamodb_data`` is a compressed envelope. Never raises.
+
+        An envelope is gzip bytes at ``data`` that decode to a JSON object whose ``resource_id``
+        matches the item's own ``pk``. That is decided without consulting ``compress_data`` --
+        which is what #15 flips -- or any other attribute name, so GSI/TTL attributes named like
+        model fields, and user fields named ``data`` (str or bytes, even bytes that begin with
+        the gzip magic number or are gzip of something else), are not mistaken for it.
+        """
+        raw = dynamodb_data.get("data")
+        if isinstance(raw, Binary):
+            raw = bytes(raw)
+        if not (isinstance(raw, (bytes, bytearray)) and raw[:2] == _GZIP_MAGIC):
+            return _EnvelopeProbe(None, None)
+        try:
+            payload = cls.decompress_model_content(bytes(raw))
+        except (OSError, EOFError, zlib.error, ValueError) as exc:
+            # gzip.BadGzipFile is an OSError; json and utf-8 decode errors are ValueErrors.
+            return _EnvelopeProbe(None, exc)
+        if not isinstance(payload, dict):
+            return _EnvelopeProbe(None, None)
+        resource_id = payload.get("resource_id")
+        if not isinstance(resource_id, str):
+            return _EnvelopeProbe(None, None)
+        pk = dynamodb_data.get("pk")
+        if pk is not None and pk != f"{cls.get_unique_key_prefix()}#{resource_id}":
+            return _EnvelopeProbe(None, None)
+        return _EnvelopeProbe(payload, None)
+
+    @classmethod
+    def _coerce_top_level_binary(cls, data: dict[str, Any]) -> None:
+        """Unwrap boto3 ``Binary`` for top-level fields annotated ``bytes`` / ``bytes | None``."""
+        for name, field in cls.model_fields.items():
+            value = data.get(name)
+            if isinstance(value, Binary) and field.annotation in (
+                bytes,
+                bytes | None,
+            ):  # Optional[bytes] compares equal
+                data[name] = bytes(value)
+
+    @classmethod
+    def _read_item_data(
+        cls, dynamodb_data: Mapping[str, Any], blob_placeholders: dict[str, BlobPlaceholder] | None
+    ) -> "BaseDynamoDbResource":
+        """Build the resource from an item stored in either format (compressed envelope or plain)."""
+        probe = cls._probe_compressed_envelope(dynamodb_data)
+        if probe.payload is not None:
+            data = probe.payload
+        else:
+            # Filter out DynamoDB-specific keys
+            excluded_keys = cls._get_excluded_dynamodb_keys()
+            data = {k: v for k, v in dynamodb_data.items() if k not in excluded_keys}
+            cls._coerce_top_level_binary(data)
+
+        # Add metadata back temporarily for _build_resource_from_data to process
+        data["_blob_fields"] = dynamodb_data.get("_blob_fields", [])
+        data["_blob_versions"] = dynamodb_data.get("_blob_versions", {})
+
+        try:
+            return cls._build_resource_from_data(data, blob_placeholders)
+        except ValidationError as exc:
+            # Not readable as an uncompressed resource either. If `data` looked like an envelope
+            # but would not decode, and this class is configured compressed, that corruption is the
+            # real error -- the one raised before -- so surface it, chained to the validation error.
+            if probe.decode_error is not None and cls.resource_config.get("compress_data"):
+                raise probe.decode_error from exc
+            raise
 
     def compress_model_content(self) -> bytes:
         """Helper that can be used in to_dynamodb_item."""
@@ -610,14 +713,8 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         super().__pydantic_init_subclass__(**kwargs)
-        # Merge base resource_config into child if it defines its own
-        if "resource_config" in cls.__dict__:
-            merged = DynamoDbResource.resource_config.copy()
-            merged.update(cls.__dict__["resource_config"])
-            cls.resource_config = merged
-        else:
-            # Inherit from base if not defined
-            cls.resource_config = DynamoDbResource.resource_config.copy()
+        # Merge this class's resource_config over its nearest ancestor's (not the library root)
+        cls._resolve_resource_config()
 
     def get_db_resource_base_keys(self) -> set[str]:
         return {"resource_id", "created_at", "updated_at"}
@@ -679,19 +776,7 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         dynamodb_data: DynamoDbVersionedItemKeys | dict,
         blob_placeholders: dict[str, BlobPlaceholder] | None = None,
     ) -> "DynamoDbResource":
-        if cls.resource_config["compress_data"]:
-            compressed_data = dynamodb_data["data"]
-            data = cls.decompress_model_content(compressed_data)
-        else:
-            # Filter out DynamoDB-specific keys
-            excluded_keys = cls._get_excluded_dynamodb_keys()
-            data = {k: v for k, v in dynamodb_data.items() if k not in excluded_keys}
-
-        # Add metadata back temporarily for _build_resource_from_data to process
-        data["_blob_fields"] = dynamodb_data.get("_blob_fields", [])
-        data["_blob_versions"] = dynamodb_data.get("_blob_versions", {})
-
-        resource = cls._build_resource_from_data(data, blob_placeholders)
+        resource = cls._read_item_data(dynamodb_data, blob_placeholders)
 
         # Restore version token if present
         if "_version_token" in dynamodb_data:
@@ -759,14 +844,8 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         super().__pydantic_init_subclass__(**kwargs)
-        # Merge base resource_config into child if it defines its own
-        if "resource_config" in cls.__dict__:
-            merged = DynamoDbVersionedResource.resource_config.copy()
-            merged.update(cls.__dict__["resource_config"])
-            cls.resource_config = merged
-        else:
-            # Inherit from base if not defined
-            cls.resource_config = DynamoDbVersionedResource.resource_config.copy()
+        # Merge this class's resource_config over its nearest ancestor's (not the library root)
+        cls._resolve_resource_config()
 
     def to_dynamodb_item(self, v0_object: bool = False):
         """Convert resource to DynamoDB item format.
@@ -829,19 +908,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         dynamodb_data: DynamoDbVersionedItemKeys | dict,
         blob_placeholders: dict[str, BlobPlaceholder] | None = None,
     ) -> "DynamoDbVersionedResource":
-        if cls.resource_config["compress_data"]:
-            compressed_data = dynamodb_data["data"]
-            data = cls.decompress_model_content(compressed_data)
-        else:
-            # Filter out DynamoDB-specific keys
-            excluded_keys = cls._get_excluded_dynamodb_keys()
-            data = {k: v for k, v in dynamodb_data.items() if k not in excluded_keys}
-
-        # Add metadata back temporarily for _build_resource_from_data to process
-        data["_blob_fields"] = dynamodb_data.get("_blob_fields", [])
-        data["_blob_versions"] = dynamodb_data.get("_blob_versions", {})
-
-        return cls._build_resource_from_data(data, blob_placeholders)
+        return cls._read_item_data(dynamodb_data, blob_placeholders)
 
     @classmethod
     def dynamodb_lookup_keys_from_id(cls, existing_id: str, version: int = 0) -> dict:
