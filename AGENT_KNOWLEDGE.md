@@ -288,6 +288,29 @@ class ResourceConfig(TypedDict, total=False):
     omit_none_attributes: bool | None   # Drop None-valued fields before marshalling
 ```
 
+### Inheritance
+
+A subclass's `resource_config` is shallow-merged over its **nearest parent's effective
+config**; a class that declares no `resource_config` inherits its parent's unchanged. This
+makes a domain base class a reliable place to set shared defaults:
+
+```python
+class Base(DynamoDbVersionedResource):
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=False, max_versions=5)
+
+class Child(Base):
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(max_versions=None)
+# Child.resource_config == {"compress_data": False, "max_versions": None}
+
+class Silent(Base):
+    ...
+# Silent.resource_config == {"compress_data": False, "max_versions": 5}
+```
+
+The merge is shallow: restating `blob_fields` or `audit_config` replaces the parent's whole
+nested dict rather than merging keys inside it. (Before #15, configs merged against the
+library root, so `Child` and `Silent` above silently reverted to `compress_data=True`.)
+
 ### omit_none_attributes — Optional fields and attribute_not_exists
 
 By default, Pydantic fields set to `None` are written to DynamoDB as
@@ -387,6 +410,117 @@ class SpedNote(DynamoDbResource):
         ),
     )
 ```
+
+### Migrating legacy-format items after #15
+
+Fixing config inheritance (#15) can flip the effective `compress_data` of a class that sits
+two or more levels below `DynamoDbResource`/`DynamoDbVersionedResource`, doesn't set
+`compress_data` itself, and has an intermediate base whose value differs from the root:
+versioned classes go compressed → uncompressed, non-versioned classes go uncompressed →
+compressed.
+
+**Reads and full-item writes need no migration.** `from_dynamodb_item` decides the stored
+format from the item itself: `data` is the compressed envelope only if it is gzip that decodes
+to a JSON object whose `resource_id` matches the item's own `pk`. Items written under the old
+config keep reading, and the next full write (`update_existing`, `restore_version`,
+`txn.put`, a versioned `txn.update`) stores them in the corrected format.
+
+**What does not self-heal:** a DynamoDB `filter_expression` on model fields cannot see
+inside a legacy *compressed* item, so until it is rewritten it never matches, while new items
+do. To rewrite eagerly, use this recipe (it is tested in
+`tests/test_resource_config_inheritance.py`). It works in two phases because a rewrite bumps
+`updated_at`, the sort key of the `gsitype` index being paged: phase 1 collects ids read-only,
+following every page; phase 2 rechecks each item by primary key and rewrites only what still
+needs it. It is idempotent and safe to rerun after a crash.
+
+```python
+from pydantic_core import PydanticSerializationError
+
+from simplesingletable import DynamoDbMemory, DynamoDbResource, DynamoDbVersionedResource
+from simplesingletable.dynamodb_memory import exhaust_pagination
+from simplesingletable.exceptions import ConflictError
+
+
+def _collect_ids(
+    memory: DynamoDbMemory,
+    cls: type[DynamoDbResource] | type[DynamoDbVersionedResource],
+    page_size: int = 250,
+) -> list[str]:
+    """Phase 1: snapshot every current resource id of ``cls``, following every page.
+
+    Read-only. Never mutate while paginating: rewriting bumps updated_at, the gsitype
+    index's sort key, and so reorders the very index being paged.
+    """
+    return [
+        obj.resource_id
+        for page in exhaust_pagination(
+            lambda key: memory.list_type_by_updated_at(cls, results_limit=page_size, pagination_key=key)
+        )
+        for obj in page
+    ]
+
+
+def _rewrite_ids(
+    memory: DynamoDbMemory,
+    cls: type[DynamoDbResource] | type[DynamoDbVersionedResource],
+    resource_ids: list[str],
+) -> int:
+    """Phase 2: recheck each id by primary key and rewrite only what still needs it."""
+    want_compressed = bool(cls.resource_config.get("compress_data"))
+    versioned = issubclass(cls, DynamoDbVersionedResource)
+    rewritten = 0
+    for resource_id in resource_ids:
+        pk = f"{cls.get_unique_key_prefix()}#{resource_id}"
+        sk = "v0" if versioned else pk
+        raw = memory.dynamodb_table.get_item(Key={"pk": pk, "sk": sk}, ConsistentRead=True).get("Item")
+        if raw is None:
+            continue  # deleted since phase 1
+        if (cls._probe_compressed_envelope(raw).payload is not None) == want_compressed:
+            continue  # already in the configured format (possibly rewritten by a concurrent write)
+        current = memory.read_existing(resource_id, cls, consistent_read=True)
+        try:
+            memory.update_existing(current, {})  # full-item write in the corrected format
+        except ConflictError:
+            continue  # versioned: a concurrent update won, and it wrote the corrected format
+        except PydanticSerializationError:
+            # e.g. a non-UTF-8 `bytes` field cannot be JSON-compressed (pre-existing limit);
+            # the item stays readable in its legacy uncompressed format.
+            memory.logger.warning(f"Cannot rewrite {cls.__name__} {resource_id} compressed; left as-is")
+            continue
+        rewritten += 1
+    return rewritten
+
+
+def migrate_resource_format(
+    memory: DynamoDbMemory,
+    cls: type[DynamoDbResource] | type[DynamoDbVersionedResource],
+    page_size: int = 250,
+) -> int:
+    """Rewrite every current item of ``cls`` not stored in ``cls``'s configured format.
+
+    Returns the number of items rewritten. Safe to rerun.
+    """
+    return _rewrite_ids(memory, cls, _collect_ids(memory, cls, page_size))
+```
+
+Costs and caveats:
+
+- The recipe uses the private `_probe_compressed_envelope` classmethod; there is no public
+  migration API.
+- It holds only ids in memory, which suits small-to-medium types; batch phase 2 for very large
+  ones.
+- For versioned resources each rewrite creates a new version (counting toward
+  `max_versions`) and bumps `updated_at`. Audited classes emit an `UPDATE` audit row.
+- Historical `vN` items stay in the legacy format. That is harmless (they are only ever
+  read), but filters over *history* need you to rewrite those items yourself.
+- Items a compressed class cannot serialise (e.g. a non-UTF-8 `bytes` field, which pydantic
+  refuses to JSON-encode) are logged, skipped, not counted, and stay readable as-is.
+- Blob fields are preserved without being loaded, through the normal `_blob_versions`
+  reference path.
+- A non-versioned `update_existing` is an unconditional put, so a concurrent writer between
+  the phase-2 read and the put can be overwritten: run it during a quiet period for
+  non-versioned types. Versioned types are protected by the version check (`ConflictError`),
+  and the recipe skips those items.
 
 ---
 

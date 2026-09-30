@@ -60,6 +60,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`scripts/bumpver-pre-commit.sh`) re-locks during each version bump, so the "Bump version"
   commit includes `uv.lock`. `inv fullrelease` now refuses to start from a stale lock. (#22)
 
+### Fixed
+
+* **`resource_config` now inherits from the immediate parent, not the library root** (#15).
+  `DynamoDbResource` and `DynamoDbVersionedResource` built every subclass's config by merging
+  its own `resource_config` over the *library default*, so a class two or more levels down
+  silently lost whatever its intermediate base had set — both keys it didn't restate, and the
+  entire config if it declared none:
+
+  ```python
+  class Base(DynamoDbVersionedResource):
+      resource_config = ResourceConfig(compress_data=False, max_versions=5)
+
+  class Child(Base):
+      resource_config = ResourceConfig(max_versions=None)
+  # before: {'compress_data': True,  'max_versions': None}   <- Base's False reverted
+  # after:  {'compress_data': False, 'max_versions': None}
+
+  class Silent(Base): ...
+  # before: {'compress_data': True,  'max_versions': None}
+  # after:  {'compress_data': False, 'max_versions': 5}
+  ```
+
+  A subclass's `resource_config` is now shallow-merged over its nearest ancestor's effective
+  config. Restating `blob_fields` or `audit_config` still replaces that whole nested dict.
+  Direct subclasses of the two roots are unaffected.
+
+  **Check any resource class that sits below your own domain base.** Its effective
+  `compress_data`, `ttl_field`/`ttl_attribute_name`, `blob_fields`, `audit_config`,
+  `omit_none_attributes` or `max_versions` may change, which changes what new writes look
+  like (attribute layout, TTL, S3 offload, audit logging, version pruning).
+
+* **Reads detect the stored format from the item** (#15). `from_dynamodb_item` used to decide
+  compressed vs. uncompressed only from `compress_data`. It now decides from the item's
+  content: `data` is treated as the compressed envelope only if it is gzip that decodes to a
+  JSON object whose `resource_id` matches the item's own `pk`. This is correct for models with
+  their own field named `data`, and for GSI or TTL attributes that share a name with a model
+  field (`resource_id`, `created_at`, …).
+
+  Items written before the fix above under the wrong setting, including version history,
+  keep reading, and the next full write (`update_existing`, `restore_version`, `txn.put`, a
+  versioned `txn.update`) stores them in the corrected format. Until an item is rewritten,
+  it stays in its old format: a DynamoDB `filter_expression` on model fields cannot see
+  inside a legacy compressed item. See "Migrating legacy-format items" in `AGENT_KNOWLEDGE.md`
+  to rewrite them eagerly.
+
+  A malformed item with neither an envelope nor model fields, read through a compressed
+  class, now raises Pydantic's `ValidationError` instead of `KeyError: 'data'`.
+  A compressed class whose `data` is corrupt gzip still raises the decode error, as before.
+  But a `data` value that merely *looks* like gzip is no longer mistaken for the envelope:
+  such a value is a user `bytes` field on an item that reads fine as uncompressed.
+
+* **`bytes` fields round-trip on uncompressed resources** (#15). boto3 returns stored binary
+  attributes as `Binary`, which pydantic rejected for a `bytes` field. Top-level fields
+  annotated `bytes` or `bytes | None` now receive `bytes`. Fields typed `Any` still receive
+  `Binary`, as before.
+
 ## [21.0.0] 2026-08-24
 
 **Breaking.** Two changes to what the library raises, which together sort failures into the three
