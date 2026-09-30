@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `file://` URI to the blob file. The URI is unsigned, has no expiry (`expires_at=None`), and ignores
   the response overrides.
 
+### Internal
+
+* **CI on pull requests.** A GitHub Actions workflow (`.github/workflows/ci.yml`) now runs on
+  every pull request and on pushes to `main`. It has two jobs: `lint` (`black --check`,
+  `isort --check-only` and `ruff check` over `src/` and `tasks.py`, the same targets as `inv lint`)
+  and `test` (the full pytest suite on Python 3.10, with DynamoDB Local and MinIO via
+  pytest-docker). The `lint` job also runs `uv lock --check`, so a PR that changes dependencies
+  without re-locking fails. No library changes. (#22)
+* **`uv.lock` is current again, and releases keep it that way.** The committed lock still recorded
+  the project as 19.0.0 and was missing the `ruff>=0.16,<0.17` pin, so every `uv sync` rewrote it.
+  It is refreshed, with no resolved package versions changed. bumpver's new `pre_commit_hook`
+  (`scripts/bumpver-pre-commit.sh`) re-locks during each version bump, so the "Bump version"
+  commit includes `uv.lock`. `inv fullrelease` now refuses to start from a stale lock. (#22)
+
 ## [21.0.0] 2026-08-24
 
 **Breaking.** Two changes to what the library raises, which together sort failures into the three

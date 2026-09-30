@@ -46,6 +46,10 @@ the release aborts.
 The version number itself lives in `[tool.bumpver]` in `pyproject.toml` and is propagated by
 `bumpver` to `package_version` in `src/simplesingletable/__init__.py` and to the version
 line in `README.md`. Do not edit those by hand either.
+bumpver's `pre_commit_hook` (`scripts/bumpver-pre-commit.sh`) also re-runs `uv lock` so
+`uv.lock` records the new version in the same commit and tag. Whenever you change dependencies in
+`pyproject.toml`, run `uv lock` and commit `uv.lock` with it: CI's `lint` job runs
+`uv lock --check` and fails on a stale lock, and `inv fullrelease` refuses to start.
 
 ## Architecture Overview
 
