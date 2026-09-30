@@ -51,6 +51,23 @@ class AuditedUser(DynamoDbResource):
     role: Optional[str] = None
 
 
+class AuditedSecretUser(DynamoDbResource):
+    """Non-versioned resource with an audited-but-excluded secret."""
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        omit_none_attributes=True,
+        audit_config=AuditConfig(
+            enabled=True,
+            track_field_changes=True,
+            include_snapshot=True,
+            exclude_fields={"api_token"},
+        ),
+    )
+
+    name: str
+    api_token: str
+
+
 class Asset(DynamoDbResource):
     """Resource that uses a sparse GSI keyed off ``assigned_user_id``.
 
@@ -332,6 +349,45 @@ def test_transactional_create_emits_audit_and_bumps_stats(dynamodb_memory: Dynam
     # Stats bumped.
     after_stats = dynamodb_memory.get_stats()
     assert after_stats.counts_by_type.get("AuditedUser", 0) == starting_count + 1
+
+
+def test_transactional_audit_rows_omit_excluded_fields(dynamodb_memory: DynamoDbMemory) -> None:
+    """Transaction-generated audit rows honour exclude_fields in their snapshots (#18)."""
+    user = AuditedSecretUser(
+        name="Ivy",
+        api_token="tok-1",
+        resource_id="user-ivy",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    with dynamodb_memory.transaction(changed_by="admin") as txn:
+        txn.create(user)
+
+    with dynamodb_memory.transaction(changed_by="admin") as txn:
+        txn.update(
+            AuditedSecretUser,
+            resource_id=user.resource_id,
+            updates={"name": "Ivy2", "api_token": "tok-2"},
+            current=user,
+        )
+
+    current = dynamodb_memory.read_existing(user.resource_id, AuditedSecretUser)
+    assert current.api_token == "tok-2"
+    with dynamodb_memory.transaction(changed_by="admin") as txn:
+        txn.delete(current)
+
+    logs = _audit_logs_for(dynamodb_memory, user)
+    by_op = {op: [log for log in logs if log.operation == op] for op in ("CREATE", "UPDATE", "DELETE")}
+    assert {op: len(rows) for op, rows in by_op.items()} == {"CREATE": 1, "UPDATE": 1, "DELETE": 1}
+    assert len(logs) == 3
+
+    for log in logs:
+        assert "api_token" not in log.resource_snapshot
+        assert "name" in log.resource_snapshot
+
+    update_log = by_op["UPDATE"][0]
+    assert "api_token" not in update_log.changed_fields
+    assert "name" in update_log.changed_fields
 
 
 def test_transactional_update_emits_update_audit_with_diff(dynamodb_memory: DynamoDbMemory):

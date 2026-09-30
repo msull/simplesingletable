@@ -1484,11 +1484,12 @@ class LocalStorageMemory:
         resource: AnyDbResource,
         audit_config: dict,
     ) -> dict[str, Any] | None:
-        """Build resource snapshot with blob placeholders."""
+        """Build resource snapshot (minus exclude_fields) with blob placeholders."""
         if not audit_config.get("include_snapshot"):
             return None
 
-        snapshot = resource.model_dump()
+        exclude_fields = audit_config.get("exclude_fields", set()) or set()
+        snapshot = resource.model_dump(exclude=set(exclude_fields) or None)
         blob_fields_config = resource.resource_config.get("blob_fields", {}) or {}
 
         for field_name in blob_fields_config:

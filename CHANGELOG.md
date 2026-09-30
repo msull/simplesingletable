@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+* **`AuditConfig.exclude_fields` now redacts audit snapshots** (#18). Excluded fields were
+  already left out of `changed_fields`, but with `include_snapshot=True` they were still copied into
+  `AuditLog.resource_snapshot`. So a field such as `password_hash` listed there was persisted in every
+  CREATE, UPDATE, DELETE, restore and transaction audit row. Excluded fields are now omitted from the
+  snapshot as well, on both `DynamoDbMemory` and `LocalStorageMemory`. An excluded blob field is
+  dropped rather than replaced with a `__blob_ref__` placeholder. Blob fields that are not excluded
+  keep their placeholders. As a result, `AuditLogQuerier.get_field_history` no longer reports a CREATE
+  value for an excluded field.
+
+  `exclude_fields` covers `changed_fields` and `resource_snapshot` only. `audited_resource_id` still
+  holds the resource id. If `changed_by_field` names an excluded field, that field's value is still
+  recorded in `changed_by`.
+
+  **Security note:** audit rows written before this release may still contain values for fields
+  listed in `exclude_fields`. If those fields hold secrets or regulated data, purge or rewrite the
+  affected `AuditLog` rows. Code that read excluded keys from `resource_snapshot` will no longer
+  find them.
+
 ## [22.0.0] 2026-09-30
 
 ### Added
