@@ -60,6 +60,27 @@ class AuditedDocumentWithExclusions(DynamoDbResource):
     attachment: Optional[bytes] = None
 
 
+class AuditedDocumentPartialExclusion(DynamoDbResource):
+    """Excludes one blob field from audit while keeping the other."""
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        audit_config=AuditConfig(
+            enabled=True,
+            track_field_changes=True,
+            include_snapshot=True,
+            exclude_fields={"attachment"},
+        ),
+        blob_fields={
+            "content": BlobFieldConfig(compress=True, content_type="text/plain"),
+            "attachment": BlobFieldConfig(compress=False, content_type="application/octet-stream"),
+        },
+    )
+
+    title: str
+    content: Optional[str] = None
+    attachment: Optional[bytes] = None
+
+
 # ============================================================================
 # CREATE Operation Tests with Blobs
 # ============================================================================
@@ -502,3 +523,51 @@ def test_audit_blob_same_content_no_change(dynamodb_memory_with_s3: DynamoDbMemo
 
     # Content should NOT be in changed_fields since it didn't actually change
     assert update_log.changed_fields is None or "content" not in update_log.changed_fields
+
+
+# ============================================================================
+# exclude_fields redaction of snapshots (#18)
+# ============================================================================
+
+
+def test_audit_excluded_blob_fields_absent_from_snapshots(dynamodb_memory_with_s3: DynamoDbMemory) -> None:
+    """Excluded blob fields are dropped from snapshots rather than replaced with placeholders."""
+    doc = dynamodb_memory_with_s3.create_new(
+        AuditedDocumentWithExclusions,
+        {"title": "Doc", "content": "Content..." * 50, "attachment": b"bytes" * 20},
+        changed_by="author@example.com",
+    )
+    doc = dynamodb_memory_with_s3.update_existing(
+        doc,
+        {"title": "Updated Doc", "content": "New content..." * 60, "attachment": b"new" * 20},
+        changed_by="editor@example.com",
+    )
+    dynamodb_memory_with_s3.delete_existing(doc, changed_by="editor@example.com")
+
+    querier = AuditLogQuerier(dynamodb_memory_with_s3)
+    logs = querier.get_logs_for_resource("AuditedDocumentWithExclusions", doc.resource_id)
+    by_op = {log.operation: log for log in logs}
+    expected_titles = {"CREATE": "Doc", "UPDATE": "Updated Doc", "DELETE": "Updated Doc"}
+    assert set(by_op) == set(expected_titles)
+
+    for operation, title in expected_titles.items():
+        snapshot = by_op[operation].resource_snapshot
+        assert "content" not in snapshot
+        assert "attachment" not in snapshot
+        assert snapshot["title"] == title
+
+
+def test_audit_partial_blob_exclusion_keeps_placeholder(dynamodb_memory_with_s3: DynamoDbMemory) -> None:
+    """Blob fields that are not excluded still get a placeholder."""
+    doc = dynamodb_memory_with_s3.create_new(
+        AuditedDocumentPartialExclusion,
+        {"title": "Doc", "content": "Content..." * 50, "attachment": b"bytes" * 20},
+        changed_by="author@example.com",
+    )
+
+    querier = AuditLogQuerier(dynamodb_memory_with_s3)
+    logs = querier.get_logs_for_resource("AuditedDocumentPartialExclusion", doc.resource_id)
+    create_log = next(log for log in logs if log.operation == "CREATE")
+
+    assert "attachment" not in create_log.resource_snapshot
+    assert create_log.resource_snapshot["content"]["__blob_ref__"] is True

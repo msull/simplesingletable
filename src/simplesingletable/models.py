@@ -107,9 +107,9 @@ class AuditConfig(TypedDict, total=False):
       the library has one cached, e.g., from ``txn.read(...)`` or ``current=``).
       Without an old_resource, ``changed_fields`` is silently ``None``.
     - ``include_snapshot=True`` populates ``resource_snapshot`` on the audit row
-      with a full ``model_dump`` of the post-operation state (blob fields replaced
-      with metadata pointers, not raw bytes). Independent of
-      ``track_field_changes``.
+      with a ``model_dump`` of the post-operation state, minus ``exclude_fields``
+      (blob fields replaced with metadata pointers, not raw bytes). Independent
+      of ``track_field_changes``.
     - To recover a full state-at-time-T view, you need ``include_snapshot=True``.
       A diff alone (``track_field_changes=True``) lets you reconstruct the field
       changes but not the surrounding context.
@@ -138,7 +138,19 @@ class AuditConfig(TypedDict, total=False):
     """
 
     exclude_fields: set[str] | None
-    """Fields to exclude from audit logging (e.g., sensitive data)."""
+    """Top-level field names to omit from ``changed_fields`` and ``resource_snapshot``.
+
+    Applies to every audit row that carries a diff or snapshot (CREATE, UPDATE,
+    DELETE, restore and transaction rows alike), so this is the place to list
+    secrets and other sensitive data. Excluded blob fields are dropped rather than
+    replaced with a blob placeholder. Unknown names are ignored. Base fields
+    (``resource_id``, ``version``, ``created_at``, ``updated_at``) may be listed and
+    are then dropped from the snapshot.
+
+    Does not affect the audit row's identity or attribution: ``audited_resource_id``
+    always holds the resource id, and if ``changed_by_field`` names an excluded
+    field, its value is still recorded in ``changed_by``.
+    """
 
     include_snapshot: bool
     """Include full resource snapshot in audit log.
@@ -1107,7 +1119,7 @@ class AuditLog(DynamodbResource):
     """
 
     resource_snapshot: dict[str, Any] | None = None
-    """Full snapshot of the resource after the operation."""
+    """Snapshot of the resource after the operation, minus the resource's ``AuditConfig.exclude_fields``."""
 
     audit_metadata: dict[str, Any] = Field(default_factory=dict)
     """Custom audit metadata (e.g., reason for change, request ID, etc.)."""

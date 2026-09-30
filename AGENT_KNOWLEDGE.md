@@ -362,7 +362,7 @@ class BlobFieldConfig(TypedDict, total=False):
 class AuditConfig(TypedDict, total=False):
     enabled: bool                       # Enable audit logging
     track_field_changes: bool           # Track old/new values per field — needs an old_resource
-    exclude_fields: set[str] | None     # Fields to exclude from audit
+    exclude_fields: set[str] | None     # Omitted from changed_fields and resource_snapshot (not changed_by)
     include_snapshot: bool              # Include full resource snapshot on every audit row
     changed_by_required: bool | None    # Require changed_by parameter
     changed_by_field: str | None        # Field name for user/service identifier
@@ -375,8 +375,8 @@ Field interactions (the non-obvious parts):
   has one cached, e.g., from `txn.read(...)` or `txn.update(..., current=...)`).
   Without an old_resource, `changed_fields` is silently `None`.
 - `include_snapshot=True` populates `resource_snapshot` on the audit row with a
-  full `model_dump` of the post-operation state (blob fields replaced with
-  metadata pointers). Independent of `track_field_changes` but recommended
+  `model_dump` of the post-operation state, minus `exclude_fields` (blob fields
+  replaced with metadata pointers). Independent of `track_field_changes` but recommended
   alongside it, since a diff is only useful if the surrounding state is also
   recoverable.
 

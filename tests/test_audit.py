@@ -1,6 +1,7 @@
 """Tests for audit logging functionality."""
 
-from typing import Optional, ClassVar
+import json
+from typing import Any, ClassVar, Optional
 
 import pytest
 from pydantic import BaseModel
@@ -71,6 +72,98 @@ class NonAuditedResource(DynamoDbResource):
     """Resource without audit tracking."""
 
     name: str
+
+
+class AuditedAccount(DynamoDbResource):
+    """Non-versioned resource with a sensitive field excluded from audit."""
+
+    email: str
+    display_name: str
+    password_hash: str
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        audit_config=AuditConfig(
+            enabled=True,
+            track_field_changes=True,
+            include_snapshot=True,
+            exclude_fields={"password_hash"},
+        ),
+    )
+
+
+class AuditedVersionedAccount(DynamoDbVersionedResource):
+    """Versioned resource with a sensitive field excluded from audit."""
+
+    email: str
+    display_name: str
+    password_hash: str
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        compress_data=True,
+        audit_config=AuditConfig(
+            enabled=True,
+            track_field_changes=True,
+            include_snapshot=True,
+            exclude_fields={"password_hash"},
+        ),
+    )
+
+
+class AuditedBaseKeysExcluded(DynamoDbVersionedResource):
+    """Versioned resource that excludes every base key (plus a secret) from audit."""
+
+    owner: str
+    note: str
+    secret: str
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        compress_data=True,
+        audit_config=AuditConfig(
+            enabled=True,
+            track_field_changes=True,
+            include_snapshot=True,
+            changed_by_field="owner",
+            exclude_fields={"resource_id", "version", "created_at", "updated_at", "secret"},
+        ),
+    )
+
+
+class AuditedUnknownExclusion(DynamoDbResource):
+    """exclude_fields names a field the model does not have."""
+
+    name: str
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        audit_config=AuditConfig(
+            enabled=True,
+            track_field_changes=True,
+            include_snapshot=True,
+            exclude_fields={"no_such_field"},
+        ),
+    )
+
+
+class AuditedNoneExclusion(DynamoDbResource):
+    name: str
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        audit_config=AuditConfig(enabled=True, include_snapshot=True, exclude_fields=None),
+    )
+
+
+class AuditedEmptyExclusion(DynamoDbResource):
+    name: str
+
+    resource_config: ClassVar[ResourceConfig] = ResourceConfig(
+        audit_config=AuditConfig(enabled=True, include_snapshot=True, exclude_fields=set()),
+    )
+
+
+def _logs_by_op(logs: list[AuditLog]) -> dict[str, list[AuditLog]]:
+    by_op: dict[str, list[AuditLog]] = {}
+    for log in logs:
+        by_op.setdefault(log.operation, []).append(log)
+    return by_op
 
 
 class NestedData(BaseModel):
@@ -416,6 +509,8 @@ def test_audit_update_with_exclude_fields(dynamodb_memory: DynamoDbMemory):
     update_log = logs[0]
     assert "name" in update_log.changed_fields
     assert "owner_id" not in update_log.changed_fields  # Excluded
+    # Exclusions never turn a snapshot on
+    assert update_log.resource_snapshot is None
 
 
 def test_audit_update_no_changes_still_logs(dynamodb_memory: DynamoDbMemory):
@@ -651,3 +746,151 @@ def test_audit_query_with_pagination(dynamodb_memory: DynamoDbMemory):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ============================================================================
+# exclude_fields redaction of resource snapshots (#18)
+# ============================================================================
+
+
+def _assert_account_snapshot(log: AuditLog, email: str, display_name: str) -> None:
+    snapshot: dict[str, Any] = log.resource_snapshot
+    assert snapshot is not None
+    assert "password_hash" not in snapshot
+    assert snapshot["email"] == email
+    assert snapshot["display_name"] == display_name
+    assert "secret-" not in json.dumps(snapshot, default=str)
+
+
+def test_audit_exclude_fields_redacted_from_snapshots_non_versioned(dynamodb_memory: DynamoDbMemory) -> None:
+    account = dynamodb_memory.create_new(
+        AuditedAccount,
+        {"email": "a@example.com", "display_name": "Alice", "password_hash": "secret-1"},
+        changed_by="admin",
+    )
+    account = dynamodb_memory.update_existing(
+        account, {"display_name": "Alicia", "password_hash": "secret-2"}, changed_by="admin"
+    )
+    dynamodb_memory.delete_existing(account, changed_by="admin")
+
+    querier = AuditLogQuerier(dynamodb_memory)
+    by_op = _logs_by_op(querier.get_logs_for_resource("AuditedAccount", account.resource_id))
+
+    _assert_account_snapshot(by_op["CREATE"][0], "a@example.com", "Alice")
+    _assert_account_snapshot(by_op["UPDATE"][0], "a@example.com", "Alicia")
+    _assert_account_snapshot(by_op["DELETE"][0], "a@example.com", "Alicia")
+
+    update_log = by_op["UPDATE"][0]
+    assert "display_name" in update_log.changed_fields
+    assert "password_hash" not in update_log.changed_fields
+
+    assert querier.get_field_history("AuditedAccount", account.resource_id, "password_hash") == []
+
+
+def test_audit_exclude_fields_redacted_from_snapshots_versioned(dynamodb_memory: DynamoDbMemory) -> None:
+    account = dynamodb_memory.create_new(
+        AuditedVersionedAccount,
+        {"email": "v@example.com", "display_name": "Vera", "password_hash": "secret-1"},
+        changed_by="admin",
+    )
+    updated = dynamodb_memory.update_existing(
+        account, {"display_name": "Veronica", "password_hash": "secret-2"}, changed_by="admin"
+    )
+
+    querier = AuditLogQuerier(dynamodb_memory)
+    logs = querier.get_logs_for_resource("AuditedVersionedAccount", account.resource_id)
+    update_log = _logs_by_op(logs)["UPDATE"][0]
+
+    restored = dynamodb_memory.restore_version(account.resource_id, AuditedVersionedAccount, 1, changed_by="admin")
+    assert restored.password_hash == "secret-1"
+    dynamodb_memory.delete_existing(restored, changed_by="admin")
+
+    by_op = _logs_by_op(querier.get_logs_for_resource("AuditedVersionedAccount", account.resource_id))
+    assert len(by_op["UPDATE"]) == 2
+    restore_log = next(log for log in by_op["UPDATE"] if log.resource_id != update_log.resource_id)
+
+    _assert_account_snapshot(by_op["CREATE"][0], "v@example.com", "Vera")
+    _assert_account_snapshot(update_log, "v@example.com", updated.display_name)
+    _assert_account_snapshot(restore_log, "v@example.com", "Vera")
+    _assert_account_snapshot(by_op["DELETE"][0], "v@example.com", "Vera")
+
+    assert "display_name" in update_log.changed_fields
+    assert "password_hash" not in update_log.changed_fields
+
+    assert querier.get_field_history("AuditedVersionedAccount", account.resource_id, "password_hash") == []
+
+
+def test_audit_exclude_fields_redacted_from_emit_audit_log(dynamodb_memory: DynamoDbMemory) -> None:
+    account = dynamodb_memory.create_new(
+        AuditedAccount,
+        {"email": "e@example.com", "display_name": "Eve", "password_hash": "secret-1"},
+        changed_by="admin",
+    )
+
+    log = dynamodb_memory.emit_audit_log(operation="CUSTOM_EVENT", resource=account, changed_by="admin")
+
+    assert log is not None
+    _assert_account_snapshot(log, "e@example.com", "Eve")
+
+
+def test_audit_exclude_base_keys_from_snapshot(dynamodb_memory: DynamoDbMemory) -> None:
+    res = dynamodb_memory.create_new(AuditedBaseKeysExcluded, {"owner": "alice", "note": "n1", "secret": "s1"})
+    res = dynamodb_memory.update_existing(res, {"note": "n2"}, changed_by="bob")
+
+    # Persistence is unaffected by exclude_fields
+    stored = dynamodb_memory.read_existing(res.resource_id, AuditedBaseKeysExcluded)
+    assert stored.version == 2
+    assert stored.note == "n2"
+    assert stored.secret == "s1"
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+    dynamodb_memory.delete_existing(res)
+
+    querier = AuditLogQuerier(dynamodb_memory)
+    logs = querier.get_logs_for_resource("AuditedBaseKeysExcluded", res.resource_id)
+    by_op = _logs_by_op(logs)
+    assert {op: len(rows) for op, rows in by_op.items()} == {"CREATE": 1, "UPDATE": 1, "DELETE": 1}
+
+    for log in logs:
+        assert set(log.resource_snapshot) == {"owner", "note"}
+        assert log.audited_resource_id == res.resource_id
+        assert log.audited_resource_type == "AuditedBaseKeysExcluded"
+        assert log.created_at is not None
+
+    create_log = by_op["CREATE"][0]
+    update_log = by_op["UPDATE"][0]
+
+    # changed_by_field is not affected by exclude_fields
+    assert create_log.changed_by == "alice"
+    assert create_log.resource_id in {log.resource_id for log in querier.get_logs_by_changer("alice")}
+    assert update_log.changed_by == "bob"
+    assert update_log.resource_id in {log.resource_id for log in querier.get_logs_by_changer("bob")}
+
+    assert "note" in update_log.changed_fields
+    for excluded in ("resource_id", "version", "created_at", "updated_at", "secret"):
+        assert excluded not in update_log.changed_fields
+
+
+def test_audit_exclude_unknown_field_is_ignored(dynamodb_memory: DynamoDbMemory) -> None:
+    res = dynamodb_memory.create_new(AuditedUnknownExclusion, {"name": "one"})
+    dynamodb_memory.update_existing(res, {"name": "two"})
+
+    querier = AuditLogQuerier(dynamodb_memory)
+    by_op = _logs_by_op(querier.get_logs_for_resource("AuditedUnknownExclusion", res.resource_id))
+
+    create_snapshot = by_op["CREATE"][0].resource_snapshot
+    assert {"name", "resource_id", "created_at", "updated_at"} <= set(create_snapshot)
+    assert "name" in by_op["UPDATE"][0].changed_fields
+
+
+@pytest.mark.parametrize("resource_class", [AuditedNoneExclusion, AuditedEmptyExclusion])
+def test_audit_exclude_fields_none_or_empty_keeps_full_snapshot(
+    dynamodb_memory: DynamoDbMemory, resource_class: type[DynamoDbResource]
+) -> None:
+    instance = dynamodb_memory.create_new(resource_class, {"name": "full"})
+
+    querier = AuditLogQuerier(dynamodb_memory)
+    by_op = _logs_by_op(querier.get_logs_for_resource(resource_class.__name__, instance.resource_id))
+
+    assert set(by_op["CREATE"][0].resource_snapshot) == set(instance.model_dump())
