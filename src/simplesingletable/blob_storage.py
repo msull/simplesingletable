@@ -2,15 +2,19 @@ import gzip
 import json
 import threading
 import time
+import unicodedata
+import urllib.parse
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from .exceptions import BlobNotFoundError, BlobPreconditionFailedError, BlobTooLargeError
-from .models import BlobFieldConfig, BlobPlaceholder
+from .exceptions import BlobCompressedError, BlobNotFoundError, BlobPreconditionFailedError, BlobTooLargeError
+from .models import BlobFieldConfig, BlobPlaceholder, PresignedBlobUrl
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -29,6 +33,37 @@ def normalize_etag(etag: str | None) -> str | None:
     if etag is None:
         return None
     return '"' + etag.strip('"') + '"'
+
+
+MAX_PRESIGN_EXPIRES_IN = 604_800  # SigV4 hard limit: 7 days
+
+
+def validate_presign_expires_in(expires_in: int) -> None:
+    """Raise ValueError unless 1 <= expires_in <= MAX_PRESIGN_EXPIRES_IN."""
+    if not 1 <= expires_in <= MAX_PRESIGN_EXPIRES_IN:
+        raise ValueError(f"expires_in must be between 1 and {MAX_PRESIGN_EXPIRES_IN} seconds, got {expires_in}")
+
+
+def build_content_disposition(filename: str | None, *, inline: bool = False) -> str | None:
+    """Build a Content-Disposition value, or return None when filename is None and inline is False.
+
+    Follows RFC 6266 / RFC 5987: ``filename*`` carries the exact UTF-8 name, which
+    browsers prefer, and ``filename`` carries an ASCII fallback in which every
+    non-ASCII character, control character, ``"`` and ``\\`` is replaced with ``_``.
+    """
+    disposition = "inline" if inline else "attachment"
+    if filename is None:
+        return disposition if inline else None
+
+    fallback = "".join(
+        "_" if ord(ch) > 127 or ch in ('"', "\\") or unicodedata.category(ch) == "Cc" else ch for ch in filename
+    )
+    return f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{urllib.parse.quote(filename, safe='')}"
+
+
+def _with_sigv4(config: Config | None) -> Config:
+    sigv4 = Config(signature_version="s3v4")
+    return config.merge(sigv4) if config is not None else sigv4
 
 
 def _is_precondition_failed(error: ClientError) -> bool:
@@ -90,10 +125,22 @@ class S3BlobStorage:
         cache_max_items: int = 1000,
         cache_ttl_seconds: float | None = 900,  # 15 minutes default
         cache_max_item_size_bytes: int = 1024 * 1024,  # 1MB default
+        *,
+        presign_s3_client: Optional["S3Client"] = None,
     ):
+        """
+        Args:
+            presign_s3_client: Client used only to sign presigned URLs. It must be
+                configured with ``signature_version='s3v4'``. If it is omitted, one is
+                built or derived automatically; see ``presign_client``.
+        """
         self.bucket_name = bucket_name
         self.key_prefix = key_prefix or ""
         self._s3_client = s3_client
+        # Recorded before the lazy ``s3_client`` property can populate ``_s3_client``.
+        self._s3_client_injected = s3_client is not None
+        self._presign_s3_client = presign_s3_client
+        self._derived_presign: tuple[tuple, S3Client] | None = None
         self.connection_params = connection_params or {}
         self.endpoint_url = endpoint_url
 
@@ -114,6 +161,51 @@ class S3BlobStorage:
         if not self._s3_client:
             self._s3_client = boto3.client("s3", endpoint_url=self.endpoint_url, **self.connection_params)
         return self._s3_client
+
+    @property
+    def presign_client(self) -> "S3Client":
+        """Client used to sign presigned URLs. Always SigV4; never the operations client.
+
+        botocore defaults S3 presigning to SigV2 in most regions unless
+        ``signature_version`` is set explicitly, so presigning goes through a separate
+        client rather than reconfiguring ``s3_client``. Resolution order:
+
+        1. ``presign_s3_client`` passed to the constructor, used as-is.
+        2. When this instance builds its own operations client, a second client built
+           the same way with ``signature_version='s3v4'`` merged into its config.
+        3. When the operations client was injected, a sibling built from its endpoint,
+           region, config and current credentials. It is rebuilt whenever the
+           credentials rotate, so refreshed temporary credentials are picked up.
+        """
+        if self._presign_s3_client is not None:
+            return self._presign_s3_client
+
+        if not self._s3_client_injected:
+            params = dict(self.connection_params)
+            config = _with_sigv4(params.pop("config", None))
+            self._presign_s3_client = boto3.client("s3", endpoint_url=self.endpoint_url, config=config, **params)
+            return self._presign_s3_client
+
+        src = self.s3_client
+        # botocore-private: returns the client's live credential provider. Isolated here;
+        # ``presign_s3_client=`` is the escape hatch if botocore ever removes it.
+        creds = src._get_credentials()  # type: ignore[attr-defined]
+        if creds is None:
+            raise ValueError("Cannot presign: the injected S3 client has no credentials; pass presign_s3_client=")
+        frozen = creds.get_frozen_credentials()  # refreshes temporary credentials when due
+        cache_key = (frozen.access_key, frozen.secret_key, frozen.token)
+        if self._derived_presign is None or self._derived_presign[0] != cache_key:
+            client = boto3.client(
+                "s3",
+                endpoint_url=src.meta.endpoint_url,
+                region_name=src.meta.region_name,
+                config=_with_sigv4(src.meta.config),
+                aws_access_key_id=frozen.access_key,
+                aws_secret_access_key=frozen.secret_key,
+                aws_session_token=frozen.token,
+            )
+            self._derived_presign = (cache_key, client)
+        return self._derived_presign[1]
 
     def _build_s3_key(self, resource_type: str, resource_id: str, field_name: str, version: int | None = None) -> str:
         """Build S3 key for a blob field."""
@@ -487,6 +579,87 @@ class S3BlobStorage:
             "s3_key": s3_key,
             "etag": normalize_etag(response.get("ETag")),
         }
+
+    def generate_presigned_get(
+        self,
+        resource_type: str,
+        resource_id: str,
+        field_name: str,
+        version: int | None = None,
+        *,
+        expires_in: int = 900,
+        if_match: str | None = None,
+        response_content_disposition: str | None = None,
+        response_content_type: str | None = None,
+    ) -> PresignedBlobUrl:
+        """Mint a presigned ``get_object`` URL for a blob.
+
+        Every mint HEADs the object first, and every check applies **at mint time
+        only**: when the URL was minted the object existed, was not gzip-compressed,
+        and matched ``if_match``. ``If-Match`` is not signed into the URL, because a
+        plain browser navigation cannot send that header. Any replacement of the object
+        at this key while the URL is valid is served by the URL -- a re-``PUT`` to a
+        non-versioned key, or a ``copy_blob``/``register_external_blob`` into either a
+        non-versioned resource or a versioned resource's current-version key (those
+        write to the current version without creating a new one). Keep ``expires_in``
+        short and pass ``PresignedBlobUrl.etag`` back as ``if_match`` on the next mint to
+        detect a swap.
+
+        URLs are always SigV4, signed by ``presign_client``; the URL's host is that
+        client's endpoint. With temporary credentials the URL stops working when those
+        credentials expire, if that happens before ``expires_in`` runs out.
+
+        Args:
+            resource_type: Type name of the resource
+            resource_id: Unique ID of the resource
+            field_name: Name of the blob field
+            version: Optional version number for versioned resources
+            expires_in: URL lifetime in seconds, 1 to 604800 (the SigV4 limit)
+            if_match: ETag the stored object must have at mint time; quoted and unquoted
+                forms are both accepted.
+            response_content_disposition: ``Content-Disposition`` S3 should send back
+            response_content_type: ``Content-Type`` S3 should send back, overriding the
+                stored one
+
+        Raises:
+            ValueError: ``expires_in`` is out of range.
+            BlobNotFoundError: No object exists at the blob's key.
+            BlobCompressedError: The stored object is gzip-compressed.
+            BlobPreconditionFailedError: ``if_match`` did not match the stored object.
+        """
+        validate_presign_expires_in(expires_in)
+        if_match = normalize_etag(if_match)
+
+        head = self.head_blob(resource_type, resource_id, field_name, version)
+        s3_key = head["s3_key"]
+        if head["compressed"]:
+            raise BlobCompressedError(
+                f"Blob {s3_key} is gzip-compressed; a presigned URL would serve raw gzip bytes",
+                s3_key=s3_key,
+                bucket=self.bucket_name,
+                field_name=field_name,
+            )
+        if if_match is not None and head["etag"] != if_match:
+            raise BlobPreconditionFailedError(
+                f"Blob changed since it was last observed: {s3_key}",
+                s3_key=s3_key,
+                bucket=self.bucket_name,
+                expected_etag=if_match,
+            )
+
+        params: dict[str, Any] = {"Bucket": self.bucket_name, "Key": s3_key}
+        if response_content_disposition is not None:
+            params["ResponseContentDisposition"] = response_content_disposition
+        if response_content_type is not None:
+            params["ResponseContentType"] = response_content_type
+
+        url = self.presign_client.generate_presigned_url("get_object", Params=params, ExpiresIn=expires_in)
+        return PresignedBlobUrl(
+            url=url,
+            s3_key=s3_key,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
+            etag=head["etag"],
+        )
 
     def copy_blob_object(
         self,

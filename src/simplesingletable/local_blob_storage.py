@@ -9,9 +9,9 @@ from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
 
-from .blob_storage import normalize_etag
-from .exceptions import BlobNotFoundError, BlobPreconditionFailedError, BlobTooLargeError
-from .models import BlobFieldConfig, BlobPlaceholder
+from .blob_storage import normalize_etag, validate_presign_expires_in
+from .exceptions import BlobCompressedError, BlobNotFoundError, BlobPreconditionFailedError, BlobTooLargeError
+from .models import BlobFieldConfig, BlobPlaceholder, PresignedBlobUrl
 
 
 def _compute_etag(file_path: Path) -> str:
@@ -268,6 +268,57 @@ class LocalBlobStorage:
             "s3_key": s3_key,
             "etag": _compute_etag(file_path),
         }
+
+    def generate_presigned_get(
+        self,
+        resource_type: str,
+        resource_id: str,
+        field_name: str,
+        version: int | None = None,
+        *,
+        expires_in: int = 900,
+        if_match: str | None = None,
+        response_content_disposition: str | None = None,
+        response_content_type: str | None = None,
+    ) -> PresignedBlobUrl:
+        """Return a ``file://`` URI to a blob, after the same checks as ``S3BlobStorage``.
+
+        The URI is unsigned and never expires (``expires_at`` is ``None``), it is valid
+        only on this machine, and ``response_content_disposition`` /
+        ``response_content_type`` have no effect. It exists so that code and tests
+        written against ``DynamoDbMemory`` run unchanged on ``LocalStorageMemory``.
+
+        Raises:
+            ValueError: ``expires_in`` is out of range.
+            BlobNotFoundError: No blob exists at the key.
+            BlobCompressedError: The stored blob is gzip-compressed.
+            BlobPreconditionFailedError: ``if_match`` did not match the stored blob.
+        """
+        validate_presign_expires_in(expires_in)
+        if_match = normalize_etag(if_match)
+
+        head = self.head_blob(resource_type, resource_id, field_name, version)
+        s3_key = head["s3_key"]
+        if head["compressed"]:
+            raise BlobCompressedError(
+                f"Blob {s3_key} is gzip-compressed; a presigned URL would serve raw gzip bytes",
+                s3_key=s3_key,
+                field_name=field_name,
+            )
+        if if_match is not None and head["etag"] != if_match:
+            raise BlobPreconditionFailedError(
+                f"Blob changed since it was last observed: {s3_key}",
+                s3_key=s3_key,
+                expected_etag=if_match,
+            )
+
+        return PresignedBlobUrl(
+            # resolve(): as_uri() rejects relative paths, and storage_dir may be relative.
+            url=self._key_to_path(s3_key).resolve().as_uri(),
+            s3_key=s3_key,
+            expires_at=None,
+            etag=head["etag"],
+        )
 
     def copy_blob_object(
         self,

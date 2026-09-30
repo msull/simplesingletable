@@ -18,6 +18,7 @@ continues to work.
 """
 
 __all__ = [
+    "BlobCompressedError",
     "BlobError",
     "BlobNotFoundError",
     "BlobPreconditionFailedError",
@@ -217,3 +218,26 @@ class BlobTooLargeError(BlobError):
         self.s3_key = s3_key
         self.size_bytes = size_bytes
         self.max_bytes = max_bytes
+
+
+class BlobCompressedError(BlobError):
+    """A blob is gzip-compressed at rest and cannot be served as-is.
+
+    Raised when minting a presigned download for a blob whose stored object is
+    compressed. The compression flag lives in object metadata rather than
+    ``Content-Encoding``, so a browser would save the raw gzip bytes. Configure the
+    field with ``BlobFieldConfig(compress=False)`` to make it downloadable.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        s3_key: str | None = None,
+        bucket: str | None = None,
+        field_name: str | None = None,
+    ):
+        super().__init__(message)
+        self.s3_key = s3_key
+        self.bucket = bucket
+        self.field_name = field_name

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+* **Presigned blob downloads** (#17). `DynamoDbMemory.presign_blob_download(resource, field_name, *,
+  expires_in=900, if_match=None, filename=None, inline=False, content_type=None)` returns a
+  `PresignedBlobUrl` (`url`, `s3_key`, `expires_at`, `etag`) that a browser can fetch directly from S3.
+  Blob-backed files therefore no longer have to be proxied through Lambda, with its 6 MB response cap
+  and base64 inflation. `filename`/`inline` set `Content-Disposition` (RFC 6266, non-ASCII safe) and
+  `content_type` overrides the stored type. Both are signed query parameters, so they work in a plain
+  `<a href>`. The low-level form is `S3BlobStorage.generate_presigned_get(...)`.
+
+  URLs are always SigV4. botocore otherwise defaults S3 presigning to SigV2 in most regions unless
+  `signature_version` is set explicitly. Signing uses a separate presign client, and the client used
+  for every other S3 call is not reconfigured. `S3BlobStorage` accepts `presign_s3_client=` to supply
+  the signing client explicitly.
+
+  Minting a URL HEADs the object, and every check applies **at mint time only**. A missing object
+  raises `BlobNotFoundError`. A replaced object raises `BlobPreconditionFailedError` when `if_match` is
+  given. `If-Match` is deliberately not signed into the URL, because a browser navigation cannot send
+  that header. Once minted, the URL serves whatever is stored at its key until it expires. That
+  includes a re-`PUT` to a non-versioned resource's key, and a `copy_blob` or `register_external_blob`
+  into either kind of resource. On a versioned resource those two write to the current version's key
+  without creating a new version. Keep `expires_in` short, and use `PresignedBlobUrl.etag` with
+  `if_match` on the next mint to detect a swap.
+
+* **`BlobCompressedError`**, a `BlobError` (and therefore a `ValueError`) raised when presigning a blob
+  whose stored object is gzip-compressed. Compression is recorded in object metadata, not
+  `Content-Encoding`, so a browser would save raw gzip. The check reads the stored object, so it also
+  catches compressed objects in uncompressed fields, whether they arrived via
+  `register_external_blob(..., compressed=True)` or via a `copy_blob` from a compressed source (which
+  warns and copies as-is). Non-`bytes` values download as their stored JSON.
+
+* `LocalStorageMemory` / `LocalBlobStorage` implement the same method and validation, and return a
+  `file://` URI to the blob file. The URI is unsigned, has no expiry (`expires_at=None`), and ignores
+  the response overrides.
+
 ## [21.0.0] 2026-08-24
 
 **Breaking.** Two changes to what the library raises, which together sort failures into the three

@@ -7,6 +7,7 @@ from .dynamodb_memory import (
     exhaust_pagination,
 )
 from .exceptions import (
+    BlobCompressedError,
     BlobError,
     BlobNotFoundError,
     BlobPreconditionFailedError,
@@ -21,7 +22,7 @@ from .exceptions import (
 from .extras.audit import AuditLogQuerier
 from .local_blob_storage import LocalBlobStorage
 from .local_storage_memory import LocalStorageMemory
-from .models import AuditConfig, AuditLog
+from .models import AuditConfig, AuditLog, PresignedBlobUrl
 
 package_version = "21.0.0"
 
@@ -34,8 +35,10 @@ _ = AuditEntry
 _ = AuditLogQuerier
 _ = AuditConfig
 _ = AuditLog
+_ = PresignedBlobUrl
 _ = LocalStorageMemory
 _ = LocalBlobStorage
+_ = BlobCompressedError
 _ = BlobError
 _ = BlobNotFoundError
 _ = BlobPreconditionFailedError

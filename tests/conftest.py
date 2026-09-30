@@ -203,3 +203,40 @@ def dynamodb_memory_with_s3(local_dynamodb_test_table, dynamodb_via_docker, mini
     memory._s3_blob_storage = s3_blob_storage
 
     yield memory
+
+
+@pytest.fixture()
+def dynamodb_memory_with_library_built_s3(
+    local_dynamodb_test_table, dynamodb_via_docker, minio_via_docker, minio_s3_bucket
+):
+    """Like dynamodb_memory_with_s3, but S3BlobStorage builds its own clients from endpoint + connection params."""
+    from conftest import reset_local_dynamodb_test_table
+
+    reset_local_dynamodb_test_table(local_dynamodb_test_table)
+
+    memory = DynamoDbMemory(
+        logger=logger,
+        table_name=local_dynamodb_test_table.table_name,
+        endpoint_url=dynamodb_via_docker,
+        s3_bucket=minio_s3_bucket,
+        s3_key_prefix="test-blobs",
+        connection_params={
+            "aws_access_key_id": "unused",
+            "aws_secret_access_key": "unused",
+            "region_name": "us-west-2",
+        },
+    )
+
+    # No s3_client and no config: S3BlobStorage builds both its operations and presign clients.
+    memory._s3_blob_storage = S3BlobStorage(
+        bucket_name=minio_s3_bucket,
+        key_prefix="test-blobs",
+        endpoint_url=minio_via_docker,
+        connection_params={
+            "aws_access_key_id": "minioadmin",
+            "aws_secret_access_key": "minioadmin",
+            "region_name": "us-east-1",
+        },
+    )
+
+    yield memory

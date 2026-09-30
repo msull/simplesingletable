@@ -71,6 +71,20 @@ class AnalysisReport(DynamoDbVersionedResource):
         return f"status#{self.status}"
 
 
+# Example 3: Uncompressed bytes blob, downloadable via a presigned URL
+class UploadedFile(DynamoDbResource):
+    """A user file served to browsers directly from S3."""
+
+    filename: str
+    data: Optional[bytes] = None
+
+    resource_config = ResourceConfig(
+        compress_data=False,
+        # Presigned downloads need compress=False: S3 would otherwise serve raw gzip
+        blob_fields={"data": BlobFieldConfig(compress=False, content_type="application/pdf")},
+    )
+
+
 def main():
     # Initialize DynamoDbMemory with S3 configuration
     memory = DynamoDbMemory(
@@ -227,7 +241,17 @@ def main():
         documents[0].load_blob_fields(memory)
         print(f"Loaded blobs for: {documents[0].title}")
     
-    # Example 7: Cleanup
+    # Example 7: Presigned download - the browser fetches straight from S3
+    print("\n=== Presigned Download ===")
+
+    upload = memory.create_new(UploadedFile, {"filename": "report.pdf", "data": b"%PDF-1.4 ..."})
+    presigned = memory.presign_blob_download(upload, "data", filename=upload.filename, expires_in=300)
+    print(f"Download URL (expires {presigned.expires_at}): {presigned.url}")
+    # The checks hold at mint time only; pass presigned.etag as if_match on the next
+    # mint to detect whether the object was replaced in between.
+    memory.delete_existing(upload)
+
+    # Example 8: Cleanup
     print("\n=== Cleanup ===")
     
     # Deleting a resource also deletes its blobs from S3
