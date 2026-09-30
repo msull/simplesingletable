@@ -24,7 +24,7 @@ from .local_blob_storage import LocalBlobStorage
 from .local_storage_memory import LocalStorageMemory
 from .models import AuditConfig, AuditLog, PresignedBlobUrl
 
-package_version = "21.0.0"
+package_version = "22.0.0"
 
 _ = DynamoDbMemory
 _ = DynamoDbResource
