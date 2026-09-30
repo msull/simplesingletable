@@ -151,6 +151,9 @@ def stamp_changelog(c: Context, version: str, release_date: str = ""):
 
 @task
 def fullrelease(c: Context, major=False, minor=False, patch=False):
+    with from_repo_root(c):
+        # Refuse to release from a stale lock; the bumpver pre_commit_hook keeps it current after.
+        c.run("uv lock --check", pty=True)
     lint(c)
     with from_repo_root(c):
         c.run("pytest", pty=True)

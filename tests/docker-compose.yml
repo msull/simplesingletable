@@ -6,7 +6,10 @@ services:
       - 8000
   
   minio:
-    image: minio/minio:latest
+    # minio/minio was withdrawn from Docker Hub (pulls are denied); Chainguard publishes a
+    # free, pullable build whose entrypoint is the minio binary. It ships no curl, so there is
+    # no compose healthcheck: the minio_via_docker fixture polls /minio/health/live instead.
+    image: cgr.dev/chainguard/minio:latest
     ports:
       - 9000
       - 9001
@@ -14,8 +17,3 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
