@@ -288,6 +288,62 @@ class TestDeprecationWarnings:
                 {"col_idx": 0, "row_identifier": "r", "group_identifier": "g", "data": {}, "form_id": "f"}
             ).to_dynamodb_item()
 
+    def test_form_subclass_hook_override_keeps_working(self):
+        """A subclass that customised gsi1 the pre-GsiIndex way still writes and reads, with a warning."""
+        with pytest.warns(DeprecationWarning, match="CustomForm.db_get_gsi1pk"):
+
+            class CustomForm(Form):
+                def db_get_gsi1pk(self) -> str | None:
+                    return f"custom#{self.category}"
+
+        form = CustomForm.create_new(
+            {
+                "name": "f",
+                "category": "c",
+                "form_data_type_id": "t",
+                "form_data_type_version": 1,
+                "form_data_type_schema": [],
+                "columns": ["c"],
+                "groups": ["g"],
+            }
+        )
+        item = form.to_dynamodb_item(v0_object=True)
+        assert item["gsi1pk"] == "custom#c"
+        assert "gsi1" not in resolve_gsi_config(CustomForm).explicit
+        assert CustomForm.model_validate(form.model_dump()).category == "c"
+
+    def test_form_entry_subclass_hook_override_keeps_other_index(self):
+        with pytest.warns(DeprecationWarning, match="CustomEntry.db_get_gsi2pk"):
+
+            class CustomEntry(FormEntry):
+                def db_get_gsi2pk(self) -> str | None:
+                    return f"custom#{self.row_identifier}"
+
+        entry = CustomEntry.create_new(
+            {"col_idx": 0, "row_identifier": "r", "group_identifier": "g", "data": {}, "form_id": "f"}
+        )
+        item = entry.to_dynamodb_item(v0_object=True)
+        assert item["gsi2pk"] == "custom#r"
+        assert item["gsi1pk"] == entry.gsi1_partition_value()
+        assert set(resolve_gsi_config(CustomEntry).explicit) == {"gsi1"}
+
+    def test_dict_entry_warning_points_at_caller(self):
+        class AttributedThing(DynamoDbResource):
+            owner: str
+            gsi_config: ClassVar[dict] = {"gsi1": {"gsi1pk": lambda self: self.owner}}
+
+        thing = AttributedThing.create_new({"owner": "o"})
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            thing.to_dynamodb_item()
+        assert [w.filename for w in recorded if issubclass(w.category, DeprecationWarning)] == [__file__]
+
+    def test_inferred_pagination_warning_points_at_caller(self):
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            build_lek_data({"pk": "p", "sk": "s", "gsi2pk": "x"}, "gsi2", _resource_with({}))
+        assert [w.filename for w in recorded if issubclass(w.category, DeprecationWarning)] == [__file__]
+
     @pytest.mark.parametrize("script", ["local_storage_example.py", "blob_storage_example.py"])
     def test_examples_do_not_warn(self, script):
         with _NoDeprecationWarnings():

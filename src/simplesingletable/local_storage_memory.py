@@ -11,6 +11,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar, Optional, TypeVar
 
@@ -32,6 +33,20 @@ from .models import (
 from .utils import decode_pagination_key, encode_pagination_key, normalize_index_name
 
 AnyDbResource = TypeVar("AnyDbResource", bound=DynamoDbVersionedResource | DynamoDbResource)
+
+
+def _declared_sort_key(value: Any) -> tuple:
+    """Sort key for a declared index's sort attribute: missing first, then numbers, then everything else.
+
+    Groups by type so that a number (a valid ``N`` key value) and a string never compare directly.
+    """
+    if value is None:
+        return (0, 0, "")
+    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+        return (1, value, "")
+    return (2, 0, str(value))
+
+
 VersionedDbResourceOnly = TypeVar("VersionedDbResourceOnly", bound=DynamoDbVersionedResource)
 NonversionedDbResourceOnly = TypeVar("NonversionedDbResourceOnly", bound=DynamoDbResource)
 
@@ -1435,7 +1450,11 @@ class LocalStorageMemory:
         return True
 
     def _sort_items(
-        self, items: list[dict], index_name: str, ascending: bool, resource_class: type | None = None
+        self,
+        items: list[dict],
+        index_name: str,
+        ascending: bool,
+        resource_class: type[AnyDbResource] | None = None,
     ) -> list[dict]:
         """Sort items based on index."""
         # An index the resource declares explicitly sorts by its declared sort attribute, if any
@@ -1443,7 +1462,7 @@ class LocalStorageMemory:
         if declared is not None:
             if declared.sk_attribute is not None:
                 sk_attribute = declared.sk_attribute
-                items.sort(key=lambda x: x.get(sk_attribute, ""), reverse=not ascending)
+                items.sort(key=lambda x: _declared_sort_key(x.get(sk_attribute)), reverse=not ascending)
             return items
 
         # Normalized so a dashed index name (``gsi-1``) sorts like its undashed spelling

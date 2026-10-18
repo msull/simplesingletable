@@ -26,6 +26,8 @@ from .gsi import (
     TABLE_KEY_ATTRIBUTES,
     TYPE_INDEX_NAME,
     GsiConfigProblem,
+    GsiProblemKind,
+    dict_entry_attributes,
     legacy_view,
     resolve_gsi_config,
     warn_inferred_index,
@@ -93,18 +95,6 @@ table may legitimately have both.
 """
 
 
-def _config_entry_attributes(fields: dict) -> list[str]:
-    """The attribute names an entry declares, flattening tuple-declared pk/sk pairs."""
-    attributes = []
-    for key in fields:
-        # Combined definitions declare their pair as a tuple, e.g. ("gsi3pk", "gsi3sk")
-        if isinstance(key, tuple):
-            attributes.extend(key)
-        else:
-            attributes.append(key)
-    return attributes
-
-
 def _lek_attribute_groups(index_name: str, gsi_config: dict) -> list[list[str]]:
     """Attribute names that might carry ``index_name``'s key, as ranked candidate groups.
 
@@ -138,9 +128,7 @@ def _lek_attribute_groups(index_name: str, gsi_config: dict) -> list[list[str]]:
         # attribute is only sought where there is reason to think one exists: the resource
         # declares it, or the index is configured at all (in which case the item deciding is
         # the long-standing behavior).
-        declares_sort_attribute = any(
-            sort_attribute in _config_entry_attributes(fields) for fields in gsi_config.values()
-        )
+        declares_sort_attribute = any(sort_attribute in dict_entry_attributes(fields) for fields in gsi_config.values())
         if index_name == "gsi3" or entry is not None or declares_sort_attribute:
             groups = [[f"{index_name}pk", sort_attribute]]
         else:
@@ -155,7 +143,7 @@ def _lek_attribute_groups(index_name: str, gsi_config: dict) -> list[list[str]]:
                 break
 
     if entry is not None:
-        declared = _config_entry_attributes(entry)
+        declared = dict_entry_attributes(entry)
         named_for_this_index = [a for a in declared if normalize_index_name(a).startswith(normalized)]
         others = [a for a in declared if a not in named_for_this_index]
         declared_group = named_for_this_index + others
@@ -241,7 +229,7 @@ def _gsi_config_problems(
 
     problems: list[GsiConfigProblem] = []
 
-    def problem(index_name: Any, kind: str, message: str) -> None:
+    def problem(index_name: Any, kind: GsiProblemKind, message: str) -> None:
         problems.append(
             GsiConfigProblem(resource_class=qualname, index_name=str(index_name), kind=kind, message=message)
         )
@@ -265,7 +253,7 @@ def _gsi_config_problems(
             )
 
     for label, fields in resolved.legacy.items():
-        declared = set(_config_entry_attributes(fields))
+        declared = set(dict_entry_attributes(fields))
         if isinstance(label, str) and label in indexes:
             if declared != written(indexes[label]):
                 problem(

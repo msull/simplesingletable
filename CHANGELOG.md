@@ -64,7 +64,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are no longer overridden, so calling them directly now returns `None`. The values are still
   written to the same attributes. Code that called them for the key value should call the new
   `Form.gsi1_partition_value()` and `FormEntry.gsi1_partition_value()` /
-  `FormEntry.gsi2_partition_value()`, which return exactly what the hooks returned.
+  `FormEntry.gsi2_partition_value()`, which return exactly what the hooks returned. A subclass that
+  customised an index by overriding `db_get_gsi1pk` / `db_get_gsi2pk` keeps working: `Form` and
+  `FormEntry` leave that index to the hook (with its `DeprecationWarning`) rather than raising
+  `GsiConfigError`. Migrate such an override to `gsi1_partition_value()` / `gsi2_partition_value()`.
+  A subclass hook that called `super().db_get_gsi1pk()` now gets `None` from it; call
+  `super().gsi1_partition_value()` instead.
 
 * The README examples and `examples/local_storage_example.py` / `examples/blob_storage_example.py`
   use `GsiIndex` instead of the deprecated hooks.

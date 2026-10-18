@@ -13,6 +13,8 @@ attributes to indexes by inference.
 This module must not import ``models`` (models imports it).
 """
 
+import os
+import sys
 import warnings
 import weakref
 from collections.abc import Callable
@@ -47,17 +49,34 @@ LEGACY_GSI_HOOK_INDEXES: dict[str, str] = {
 """The index each deprecated GSI hook is bound to by convention."""
 
 GsiKeyValue = tuple[str, Callable[[Any], Any]]
+"""An ``(attribute name, value function)`` pair; the function receives the resource and returns the value."""
 
 GsiProblemKind = Literal[
-    "invalid_declaration",  # structural: from resolve_gsi_config
-    "legacy_hook_conflict",  # structural: from resolve_gsi_config
-    "missing_index",  # the rest: from validate_gsi_config's table comparison
+    "invalid_declaration",
+    "legacy_hook_conflict",
+    "missing_index",
     "key_schema_mismatch",
     "label_mismatch",
     "unbound_attributes",
     "legacy_hook_unbound",
     "type_index_mismatch",
 ]
+"""What a :class:`GsiConfigProblem` is about.
+
+Structural, from the declarations alone (``resolve_gsi_config``):
+
+- ``invalid_declaration``: a ``GsiIndex`` is keyed badly or shares an attribute with another entry.
+- ``legacy_hook_conflict``: an overridden ``db_get_gsi*`` hook writes an attribute a ``GsiIndex`` declares.
+
+From comparing with the table (``DynamoDbMemory.validate_gsi_config``):
+
+- ``missing_index``: a ``GsiIndex`` names an index the table does not have.
+- ``key_schema_mismatch``: a ``GsiIndex``'s attributes differ from the index's key schema.
+- ``label_mismatch``: a dict entry's label names an index whose keys differ from the entry's attributes.
+- ``unbound_attributes``: a dict entry's attributes are the keys of no index on the table.
+- ``legacy_hook_unbound``: an overridden hook's attributes are the keys of no index on the table.
+- ``type_index_mismatch``: the table's ``gsitype`` index is not keyed ``gsitype`` / ``gsitypesk``.
+"""
 
 
 class GsiConfigProblem(BaseModel):
@@ -72,16 +91,18 @@ class GsiConfigProblem(BaseModel):
     """The index name, dict label, or legacy hook name being checked."""
 
     kind: GsiProblemKind
+    """What the problem is about; see :data:`GsiProblemKind`. Match on this rather than on ``message``."""
 
     message: str
+    """A human-readable description of the problem."""
 
 
 def _is_absent(value: Any) -> bool:
     """Whether a value function's result means "not in this index".
 
     ``""`` is absent because DynamoDB rejects an empty string as an index key value, and
-    ``False`` because a BOOL is never a valid key value (``self.is_active and f"..."``). ``0`` is a
-    valid ``N`` key value, so it is compared with ``is`` rather than ``==`` and is not absent.
+    ``False`` because a BOOL is never a valid key value (``self.is_active and f"..."``). ``False`` is
+    tested by identity so that ``0`` (which ``== False``) stays present: it is a valid ``N`` key value.
     """
     return value is None or value is False or (isinstance(value, str) and value == "")
 
@@ -161,6 +182,7 @@ class GsiIndex:
 
     @property
     def pk_attribute(self) -> str:
+        """The index's HASH attribute name."""
         return self.pk[0]
 
     @property
@@ -201,6 +223,8 @@ class GsiIndex:
 
 
 class ResolvedGsiConfig(NamedTuple):
+    """A resource class's ``get_gsi_config()`` split into explicit declarations and deprecated dict entries."""
+
     explicit: dict[str, GsiIndex]
     """Index name -> declaration."""
 
@@ -224,10 +248,11 @@ def _first_warning(resource_class: type, key: str) -> bool:
     return True
 
 
-def _entry_attributes(fields: dict) -> list[str]:
+def dict_entry_attributes(fields: dict) -> list[str]:
     """The attribute names a dict-form entry writes, flattening tuple-declared pk/sk pairs."""
     attributes = []
     for key in fields:
+        # Combined definitions declare their pair as a tuple, e.g. ("gsi3pk", "gsi3sk")
         if isinstance(key, tuple):
             attributes.extend(key)
         else:
@@ -243,7 +268,7 @@ def resolve_gsi_config(resource_class: type) -> ResolvedGsiConfig:
     ``GsiIndex`` and another entry, or an attribute written by a ``GsiIndex`` and an overridden
     legacy hook (which runs last and would silently overwrite it).
 
-    Dict entries emit a ``DeprecationWarning`` once per (class, label).
+    Emits no warnings: callers that use the dict entries call :func:`warn_legacy_entries`.
     """
     resolved = ResolvedGsiConfig(explicit={}, legacy={})
     qualname = resource_class.__qualname__
@@ -277,7 +302,7 @@ def resolve_gsi_config(resource_class: type) -> ResolvedGsiConfig:
         for attribute in index.attributes:
             writers.setdefault(attribute, []).append(repr(name))
     for label, fields in resolved.legacy.items():
-        for attribute in _entry_attributes(fields):
+        for attribute in dict_entry_attributes(fields):
             writers.setdefault(attribute, []).append(repr(label))
     for name, index in resolved.explicit.items():
         for attribute in index.attributes:
@@ -307,19 +332,34 @@ def resolve_gsi_config(resource_class: type) -> ResolvedGsiConfig:
             f"Invalid GSI configuration on {qualname}:\n" + "\n".join(f"- {p.message}" for p in problems), problems
         )
 
-    _warn_legacy_entries(resource_class, resolved.legacy)
     return resolved
 
 
-def _warn_legacy_entries(resource_class: type, legacy: dict[Any, dict]) -> None:
-    for label in legacy:
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__)) + os.sep
+
+
+def _warn_at_caller(message: str) -> None:
+    """Emit a DeprecationWarning attributed to the nearest frame outside this package.
+
+    Library call depth varies by entry point (a write, a read, a transaction, a paginated query), so a
+    fixed ``stacklevel`` would land on library code; this attributes it to the user's call instead.
+    """
+    stacklevel = 2  # sys._getframe(1), our caller, is stacklevel 2 to warnings.warn
+    frame = sys._getframe(1)
+    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(_PACKAGE_DIR):
+        frame = frame.f_back
+        stacklevel += 1
+    warnings.warn(message, DeprecationWarning, stacklevel=stacklevel)
+
+
+def warn_legacy_entries(resource_class: type, resolved: ResolvedGsiConfig) -> None:
+    """Warn, once per (class, label), that ``resolved`` contains deprecated dict-form entries."""
+    for label in resolved.legacy:
         if _first_warning(resource_class, f"entry:{label!r}"):
-            warnings.warn(
+            _warn_at_caller(
                 f"{resource_class.__qualname__}.gsi_config entry {label!r} uses the dict form, whose index and "
                 "partition/sort keys are inferred. Declare it as GsiIndex(pk=(...), sk=(...)) keyed by the deployed "
-                "index name. The dict form will be removed in the next major release.",
-                DeprecationWarning,
-                stacklevel=4,
+                "index name. The dict form will be removed in the next major release."
             )
 
 
@@ -334,11 +374,9 @@ def legacy_view(resolved: ResolvedGsiConfig) -> dict[Any, dict]:
 def warn_inferred_index(resource_class: type, index_name: str) -> None:
     """Warn, once per (class, index), that a pagination key is being inferred for an undeclared index."""
     if _first_warning(resource_class, f"index:{index_name}"):
-        warnings.warn(
+        _warn_at_caller(
             f"{resource_class.__qualname__} declares no GsiIndex for index {index_name!r}; its pagination key is "
-            "inferred from attribute naming conventions. Declare it with GsiIndex.",
-            DeprecationWarning,
-            stacklevel=3,
+            "inferred from attribute naming conventions. Declare it with GsiIndex."
         )
 
 

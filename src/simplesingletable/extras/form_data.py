@@ -18,6 +18,18 @@ from pydantic import BaseModel, Field
 from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource, GsiIndex, PaginatedList
 from simplesingletable.dynamodb_memory import AnyDbResource
 from simplesingletable.extras.singleton import SingletonResource
+from simplesingletable.gsi import LEGACY_GSI_HOOK_INDEXES
+
+
+def _without_hooked_indexes(cls: type, config: dict[str, GsiIndex]) -> dict[str, GsiIndex]:
+    """Drop each index whose deprecated ``db_get_gsi*`` hook a subclass still overrides.
+
+    Before ``GsiIndex``, ``Form`` and ``FormEntry`` overrode the hooks themselves, so a subclass customised the
+    index value by overriding the hook again. Leaving the hook in charge of that index keeps such a subclass
+    writing its own value (with the hook's DeprecationWarning) instead of failing with ``legacy_hook_conflict``.
+    """
+    hooked = {LEGACY_GSI_HOOK_INDEXES[hook] for hook in cls._overridden_legacy_gsi_hooks()}
+    return {name: index for name, index in config.items() if name not in hooked}
 
 
 class FormConfig(SingletonResource):
@@ -147,11 +159,19 @@ class Form(BaseFormData, DynamoDbVersionedResource):
 
     @classmethod
     def get_gsi_config(cls) -> dict[str, GsiIndex]:
-        return {
-            "gsi1": GsiIndex(
-                pk=("gsi1pk", lambda self: self.gsi1_partition_value()), sk="pk", description="forms by category"
-            ),
-        }
+        """Configure gsi1 for listing forms by category (see `gsi1_partition_value`).
+
+        Override `gsi1_partition_value` to customise the key; a subclass still overriding the deprecated
+        `db_get_gsi1pk` keeps that hook in charge of gsi1.
+        """
+        return _without_hooked_indexes(
+            cls,
+            {
+                "gsi1": GsiIndex(
+                    pk=("gsi1pk", lambda self: self.gsi1_partition_value()), sk="pk", description="forms by category"
+                ),
+            },
+        )
 
     @property
     def summary_column(self) -> str:
@@ -203,18 +223,26 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
 
     @classmethod
     def get_gsi_config(cls) -> dict[str, GsiIndex]:
-        return {
-            "gsi1": GsiIndex(
-                pk=("gsi1pk", lambda self: self.gsi1_partition_value()),
-                sk="pk",
-                description="form entries for one form",
-            ),
-            "gsi2": GsiIndex(
-                pk=("gsi2pk", lambda self: self.gsi2_partition_value()),
-                sk="pk",
-                description="form entries for one row",
-            ),
-        }
+        """Configure gsi1 (entries for one form) and gsi2 (entries for one row).
+
+        Override `gsi1_partition_value` / `gsi2_partition_value` to customise the keys; a subclass still overriding
+        the deprecated `db_get_gsi1pk` / `db_get_gsi2pk` keeps that hook in charge of the index.
+        """
+        return _without_hooked_indexes(
+            cls,
+            {
+                "gsi1": GsiIndex(
+                    pk=("gsi1pk", lambda self: self.gsi1_partition_value()),
+                    sk="pk",
+                    description="form entries for one form",
+                ),
+                "gsi2": GsiIndex(
+                    pk=("gsi2pk", lambda self: self.gsi2_partition_value()),
+                    sk="pk",
+                    description="form entries for one row",
+                ),
+            },
+        )
 
     def gsi1_partition_value(self) -> str:
         """Utilize gsi1 to track all Form entries for a particular form;
@@ -223,6 +251,13 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
         separations included in the pk, e.g. by a group, or a specific column of a group.
         """
         return self.get_unique_key_prefix() + f"#{self.form_id}"
+
+    def gsi2_partition_value(self) -> str:
+        """Utilize gsi2 to track all Form entries for a particular group / row identifier, allowing efficient retrieval
+        of a specific row's worth of data."""
+        # row then group, to allow looking up across the resource_id across all groups as well as looking up by row_id
+        # without knowing the group
+        return f"{self.get_unique_key_prefix()}#{self.form_id}#{self.row_identifier}#{self.group_identifier}"
 
     @classmethod
     def retrieve_all_form_entries_for_form(
@@ -259,13 +294,6 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
             pagination_key=pagination_key,
             ascending=ascending,
         )
-
-    def gsi2_partition_value(self) -> str:
-        """Utilize gsi2 to track all Form entries for a particular group / row identifier, allowing efficient retrieval
-        of a specific row's worth of data."""
-        # row then group, to allow looking up across the resource_id across all groups as well as looking up by row_id
-        # without knowing the group
-        return f"{self.get_unique_key_prefix()}#{self.form_id}#{self.row_identifier}#{self.group_identifier}"
 
     @classmethod
     def retrieve_all_entries_for_row(

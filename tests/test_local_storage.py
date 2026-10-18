@@ -367,6 +367,13 @@ def test_local_storage__explicit_gsi_ranging_on_pk_sorts_by_pk(local_storage: Lo
     assert [r.resource_id for r in results] == sorted(r.resource_id for r in created)
 
 
+def test_local_storage__explicit_gsi_sort_tolerates_numeric_and_missing_values(local_storage: LocalStorageMemory):
+    """A numeric sort value (0 included) sorts alongside items lacking the attribute instead of raising."""
+    items = [{"gsi4sk": 2}, {}, {"gsi4sk": 0}, {"gsi4sk": 1}]
+    ordered = local_storage._sort_items(items, "gsi4", True, resource_class=ResourceWithExplicitGsi)
+    assert [x.get("gsi4sk") for x in ordered] == [None, 0, 1, 2]
+
+
 def test_local_storage__blob_storage(local_storage: LocalStorageMemory):
     """Test blob field storage and retrieval."""
     # Create resource with blob data

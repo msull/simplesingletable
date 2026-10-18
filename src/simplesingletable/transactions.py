@@ -20,7 +20,7 @@ from .exceptions import (
     TransactionError,
     VersionConflictError,
 )
-from .gsi import resolve_gsi_config
+from .gsi import resolve_gsi_config, warn_legacy_entries
 from .models import DynamoDbResource, DynamoDbVersionedResource, clean_data
 from .utils import generate_date_sortable_id, marshall
 
@@ -754,6 +754,7 @@ class TransactionContext:
         keys_to_remove: set[str] = set()
 
         resolved = resolve_gsi_config(type(projected))
+        warn_legacy_entries(type(projected), resolved)
         # Explicit declarations are all-or-nothing: an absent index REMOVEs every attribute it writes.
         for index in resolved.explicit.values():
             values = index.compute(projected)

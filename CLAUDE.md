@@ -92,17 +92,24 @@ Extended patterns in `simplesingletable/extras/`:
 ## Key Design Patterns
 
 ### GSI Configuration
-Resources can define GSIs either statically or dynamically:
+Declare each index with a `GsiIndex` (in `simplesingletable/gsi.py`), keyed by the **deployed index
+name**, either statically or dynamically:
 ```python
 # Static (in model)
 class MyResource(DynamoDbResource):
-    gsi_config: ClassVar[GSIConfig] = GSIConfig(...)
+    gsi_config: ClassVar[dict[str, GsiIndex]] = {
+        "gsi1": GsiIndex(pk=("gsi1pk", lambda self: f"owner#{self.owner_id}"), sk="pk"),
+    }
 
 # Dynamic (via classmethod)
 @classmethod
-def get_gsi_config(cls) -> GSIConfig:
-    return GSIConfig(...)
+def get_gsi_config(cls) -> dict[str, GsiIndex]:
+    return {"gsi3": GsiIndex(pk=("gsi3pk", fn), sk=("gsi3sk", fn2), description="by assignee")}
 ```
+- `sk` is `(attribute, fn)`, `"pk"`/`"sk"` for an index ranging on the table key, or `None`.
+- `DynamoDbMemory.validate_gsi_config(*classes)` checks declarations against `DescribeTable`.
+- Deprecated (warn, removed next major): dict-form entries (`{"label": {"gsi1pk": fn}}`) and overriding
+  `db_get_gsi1pk` / `db_get_gsi2pk` / `db_get_gsi3pk_and_sk`. Do not write new code using them.
 
 ### Version Management
 - Versions stored as separate items in DynamoDB

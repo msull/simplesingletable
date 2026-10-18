@@ -23,7 +23,7 @@ from humanize import naturalsize, precisedelta
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter, ValidationError
 from typing_extensions import NotRequired  # typing.NotRequired requires py3.11
 
-from .gsi import GsiIndex, resolve_gsi_config, warn_legacy_hook
+from .gsi import LEGACY_GSI_HOOK_ATTRIBUTES, GsiIndex, resolve_gsi_config, warn_legacy_entries, warn_legacy_hook
 from .utils import _now, generate_date_sortable_id
 
 if TYPE_CHECKING:
@@ -253,7 +253,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
     created_at: datetime
     updated_at: datetime
 
-    gsi_config: ClassVar[dict[str, "GsiIndex | dict"]] = {}
+    gsi_config: ClassVar[dict[str, GsiIndex | dict]] = {}
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None, blob_fields=None)
 
     _blob_placeholders: dict[str, BlobPlaceholder] = PrivateAttr(default_factory=dict)
@@ -266,8 +266,9 @@ class BaseDynamoDbResource(BaseModel, ABC):
         Override this method to provide dynamic GSI configuration.
         By default, returns the class variable gsi_config.
 
-        Keys of `GsiIndex` values are deployed index names; dict-form values (deprecated) are keyed by a
-        free label.
+        Returns:
+            Dictionary mapping each deployed index name to its `GsiIndex`, or (deprecated dict form) each free
+            label to its field configuration.
         """
         return cls.gsi_config
 
@@ -282,12 +283,10 @@ class BaseDynamoDbResource(BaseModel, ABC):
         This can be useful for filtering out all the base attributes, e.g. when calling pydantic's model_dump.
         """
 
-    LEGACY_GSI_HOOKS: ClassVar[tuple[str, ...]] = ("db_get_gsi1pk", "db_get_gsi2pk", "db_get_gsi3pk_and_sk")
-
     @classmethod
     def _overridden_legacy_gsi_hooks(cls) -> list[str]:
         """Legacy GSI hooks this class (or an ancestor below the library base) overrides."""
-        return [n for n in cls.LEGACY_GSI_HOOKS if getattr(cls, n) is not getattr(BaseDynamoDbResource, n)]
+        return [n for n in LEGACY_GSI_HOOK_ATTRIBUTES if getattr(cls, n) is not getattr(BaseDynamoDbResource, n)]
 
     @classmethod
     def _warn_on_legacy_gsi_hooks(cls) -> None:
@@ -503,6 +502,7 @@ class BaseDynamoDbResource(BaseModel, ABC):
     def _apply_gsi_configuration(self, dynamodb_data: dict) -> None:
         """Apply dynamic GSI configuration to DynamoDB item."""
         resolved = resolve_gsi_config(type(self))
+        warn_legacy_entries(type(self), resolved)
         # Explicit declarations: all-or-nothing per index
         for index in resolved.explicit.values():
             if (values := index.compute(self)) is not None:

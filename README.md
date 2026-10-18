@@ -98,6 +98,12 @@ class MyResource(DynamoDbVersionedResource):
   attributes are written (and `recompute_gsis=True` in a transaction REMOVEs them). `0` is written,
   so a value function's type must match the attribute type the table declares.
 - `description` is free text for the access pattern; the dict key is always the index name.
+- The built-in type index cannot be declared: a `GsiIndex` keyed `"gsitype"` raises `GsiConfigError`
+  (customise it with `db_get_gsitypepk` / `db_get_gsitypesk`).
+- When migrating, delete each `db_get_gsi1pk` / `db_get_gsi2pk` / `db_get_gsi3pk_and_sk` override as you
+  add the `GsiIndex` that replaces it. A `GsiIndex` writing an attribute that a still-overridden hook also
+  writes raises `GsiConfigError` (kind `legacy_hook_conflict`) on every write and read, since the hook
+  would silently overwrite the declared value.
 
 **Validating against your table.** `DynamoDbMemory.validate_gsi_config(*classes)` compares the
 declarations with the table's `DescribeTable` key schemas and raises `GsiConfigError` (with
