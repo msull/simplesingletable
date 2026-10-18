@@ -14,7 +14,22 @@ from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
 from .blob_storage import S3BlobStorage, build_content_disposition
-from .exceptions import BlobCompressedError, BlobNotFoundError, ResourceExistsError, VersionConflictError
+from .exceptions import (
+    BlobCompressedError,
+    BlobNotFoundError,
+    GsiConfigError,
+    ResourceExistsError,
+    VersionConflictError,
+)
+from .gsi import (
+    LEGACY_GSI_HOOK_ATTRIBUTES,
+    TABLE_KEY_ATTRIBUTES,
+    TYPE_INDEX_NAME,
+    GsiConfigProblem,
+    legacy_view,
+    resolve_gsi_config,
+    warn_inferred_index,
+)
 from .models import (
     AuditLog,
     BlobPlaceholder,
@@ -151,7 +166,12 @@ def _lek_attribute_groups(index_name: str, gsi_config: dict) -> list[list[str]]:
 
 
 def build_lek_data(db_item: dict, index_name: str | None, resource_class: type[AnyDbResource]) -> dict:
-    """Build LastEvaluatedKey data dynamically based on index configuration."""
+    """Build LastEvaluatedKey data dynamically based on index configuration.
+
+    An index the resource declares with a ``GsiIndex`` (matched by exact name, never normalized)
+    gets its key straight from the declaration. Everything after that is the deprecated inference
+    path, for dict-form entries and legacy hooks; it warns and will be removed in the next major.
+    """
     lek_data = {"pk": db_item["pk"], "sk": db_item["sk"]}
 
     if not index_name:
@@ -165,9 +185,20 @@ def build_lek_data(db_item: dict, index_name: str | None, resource_class: type[A
             lek_data["gsitypesk"] = db_item["gsitypesk"]
         return lek_data
 
+    resolved = resolve_gsi_config(resource_class)
+    declared = resolved.explicit.get(index_name)  # exact match only, never normalized
+    if declared is not None:
+        for attribute in declared.key_attributes:
+            if attribute not in TABLE_KEY_ATTRIBUTES:
+                if attribute not in db_item:
+                    raise RuntimeError(f"Item lacks key attribute {attribute!r} of index {index_name!r}")
+                lek_data[attribute] = db_item[attribute]
+        return lek_data
+
+    warn_inferred_index(resource_class, index_name)
     # A GSI key is at most one partition attribute plus one sort attribute; anything more
     # in the LEK would be rejected by DynamoDB as not matching the index's key schema.
-    for group in _lek_attribute_groups(index_name, resource_class.get_gsi_config()):
+    for group in _lek_attribute_groups(index_name, legacy_view(resolved)):
         pk_attribute = next((a for a in group if a in db_item and a.endswith("pk")), None)
         sk_attribute = next((a for a in group if a in db_item and a.endswith("sk")), None)
         if pk_attribute is None and sk_attribute is None:
@@ -180,6 +211,98 @@ def build_lek_data(db_item: dict, index_name: str | None, resource_class: type[A
         return lek_data
 
     raise RuntimeError(f"Unsupported index {index_name=}")
+
+
+def _table_index_schemas(table: dict) -> dict[str, tuple[str, str | None]]:
+    """``{IndexName: (hash attribute, range attribute or None)}`` for a DescribeTable ``Table``'s GSIs."""
+    schemas = {}
+    for index in table.get("GlobalSecondaryIndexes", []):
+        hash_attribute = next(k["AttributeName"] for k in index["KeySchema"] if k["KeyType"] == "HASH")
+        range_attribute = next((k["AttributeName"] for k in index["KeySchema"] if k["KeyType"] == "RANGE"), None)
+        schemas[index["IndexName"]] = (hash_attribute, range_attribute)
+    return schemas
+
+
+def _format_schema(schema: tuple[str, str | None]) -> str:
+    hash_attribute, range_attribute = schema
+    return f"HASH {hash_attribute!r}" + (f", RANGE {range_attribute!r}" if range_attribute else ", no RANGE")
+
+
+def _gsi_config_problems(
+    resource_class: type[AnyDbResource], indexes: dict[str, tuple[str, str | None]]
+) -> list[GsiConfigProblem]:
+    """Every mismatch between ``resource_class``'s GSI declarations and a table with ``indexes``."""
+    qualname = resource_class.__qualname__
+    try:
+        resolved = resolve_gsi_config(resource_class)
+    except GsiConfigError as e:
+        # Structural problems make the table comparison meaningless for this class.
+        return list(e.problems)
+
+    problems: list[GsiConfigProblem] = []
+
+    def problem(index_name: Any, kind: str, message: str) -> None:
+        problems.append(
+            GsiConfigProblem(resource_class=qualname, index_name=str(index_name), kind=kind, message=message)
+        )
+
+    def written(schema: tuple[str, str | None]) -> set[str]:
+        return {a for a in schema if a is not None} - TABLE_KEY_ATTRIBUTES
+
+    for name, index in resolved.explicit.items():
+        if name not in indexes:
+            message = f"GsiIndex {name!r} names no index on the table (indexes: {sorted(indexes)})"
+            similar = [x for x in indexes if normalize_index_name(x) == normalize_index_name(name)]
+            if len(similar) == 1:
+                message += f"; did you mean {similar[0]!r}?"
+            problem(name, "missing_index", message)
+        elif indexes[name] != (index.pk_attribute, index.sk_attribute):
+            problem(
+                name,
+                "key_schema_mismatch",
+                f"GsiIndex {name!r} declares {_format_schema((index.pk_attribute, index.sk_attribute))}, "
+                f"but the table's index has {_format_schema(indexes[name])}",
+            )
+
+    for label, fields in resolved.legacy.items():
+        declared = set(_config_entry_attributes(fields))
+        if isinstance(label, str) and label in indexes:
+            if declared != written(indexes[label]):
+                problem(
+                    label,
+                    "label_mismatch",
+                    f"gsi_config entry {label!r} names index {label!r}, whose key attributes the library writes "
+                    f"are {sorted(written(indexes[label]))}, but the entry declares {sorted(declared)}",
+                )
+        elif not any(written(schema) == declared for schema in indexes.values()):
+            problem(
+                label,
+                "unbound_attributes",
+                f"gsi_config entry {label!r} declares {sorted(declared)}, which no index on the table uses as its keys",
+            )
+
+    for hook in resource_class._overridden_legacy_gsi_hooks():
+        hook_attributes = LEGACY_GSI_HOOK_ATTRIBUTES[hook]
+        if len(hook_attributes) == 1:
+            bound = any(schema[0] == hook_attributes[0] for schema in indexes.values())
+        else:
+            bound = hook_attributes in indexes.values()
+        if not bound:
+            problem(
+                hook,
+                "legacy_hook_unbound",
+                f"{hook} is overridden, but no index on the table has key {list(hook_attributes)}",
+            )
+
+    if TYPE_INDEX_NAME in indexes and indexes[TYPE_INDEX_NAME] != ("gsitype", "gsitypesk"):
+        problem(
+            TYPE_INDEX_NAME,
+            "type_index_mismatch",
+            f"the table's {TYPE_INDEX_NAME!r} index has {_format_schema(indexes[TYPE_INDEX_NAME])}, "
+            "but the library writes HASH 'gsitype', RANGE 'gsitypesk'",
+        )
+
+    return problems
 
 
 def transact_write_safe(client: "DynamoDBClient", transact_items: list):
@@ -610,6 +733,41 @@ class DynamoDbMemory:
             track_stats=False,  # Audit table doesn't need its own stats counter.
         )
         return self._audit_view
+
+    def validate_gsi_config(
+        self,
+        *resource_classes: type[AnyDbResource],
+        raise_on_error: bool = True,
+    ) -> list[GsiConfigProblem]:
+        """Compare each resource class's GSI declarations against the live table's indexes (DescribeTable).
+
+        Returns every problem found (empty list when all declarations match). With raise_on_error (the
+        default) raises GsiConfigError carrying ``.problems`` when any are found — call it from a test to
+        turn an index/declaration mismatch into a CI failure. ``AuditLog`` subclasses are checked against
+        the audit table (``self.audit_view``).
+
+        ``LocalStorageMemory`` has no equivalent: it has no table schema to compare against.
+        """
+        if not resource_classes:
+            raise TypeError("validate_gsi_config requires at least one resource class")
+
+        described: dict[tuple[int, str], dict[str, tuple[str, str | None]]] = {}
+        problems: list[GsiConfigProblem] = []
+        for resource_class in resource_classes:
+            memory = self.audit_view if issubclass(resource_class, AuditLog) else self
+            cache_key = (id(memory.dynamodb_client), memory.table_name)
+            if cache_key not in described:
+                table = memory.dynamodb_client.describe_table(TableName=memory.table_name)["Table"]
+                described[cache_key] = _table_index_schemas(table)
+            problems.extend(_gsi_config_problems(resource_class, described[cache_key]))
+
+        if raise_on_error and problems:
+            raise GsiConfigError(
+                "GSI configuration does not match table:\n"
+                + "\n".join(f"- {p.resource_class}: {p.message}" for p in problems),
+                problems,
+            )
+        return problems
 
     def create_new(
         self,

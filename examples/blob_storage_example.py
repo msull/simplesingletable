@@ -8,7 +8,7 @@ query performance.
 
 from typing import Optional
 
-from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource, DynamoDbResource
+from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource, DynamoDbResource, GsiIndex
 from simplesingletable.models import ResourceConfig, BlobFieldConfig
 
 
@@ -66,9 +66,15 @@ class AnalysisReport(DynamoDbVersionedResource):
         }
     )
     
-    def db_get_gsi1pk(self) -> str | None:
-        """Enable querying by status."""
-        return f"status#{self.status}"
+    @classmethod
+    def get_gsi_config(cls) -> dict[str, GsiIndex]:
+        return {
+            "gsi1": GsiIndex(
+                pk=("gsi1pk", lambda self: f"status#{self.status}"),
+                sk="pk",
+                description="Enable querying by status.",
+            ),
+        }
 
 
 # Example 3: Uncompressed bytes blob, downloadable via a presigned URL

@@ -15,7 +15,7 @@ from typing import Literal
 from boto3.dynamodb.conditions import Key
 from pydantic import BaseModel, Field
 
-from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource, PaginatedList
+from simplesingletable import DynamoDbMemory, DynamoDbVersionedResource, GsiIndex, PaginatedList
 from simplesingletable.dynamodb_memory import AnyDbResource
 from simplesingletable.extras.singleton import SingletonResource
 
@@ -138,12 +138,20 @@ class Form(BaseFormData, DynamoDbVersionedResource):
         """Return a list of deleted column names."""
         return [self.columns[i] for i in self.deleted_columns]
 
-    def db_get_gsi1pk(self) -> str | None:
+    def gsi1_partition_value(self) -> str:
         """Utilize gsi1 to track forms by category;
 
         This GSI automatically sorts by the pk / resource_id attribute, which sorts lexicographically by created_at.
         """
         return self.get_unique_key_prefix() + f"#{self.category}"
+
+    @classmethod
+    def get_gsi_config(cls) -> dict[str, GsiIndex]:
+        return {
+            "gsi1": GsiIndex(
+                pk=("gsi1pk", lambda self: self.gsi1_partition_value()), sk="pk", description="forms by category"
+            ),
+        }
 
     @property
     def summary_column(self) -> str:
@@ -193,7 +201,22 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
         d = data
         return f"{ef.resource_id}#{d.group_identifier}#{d.col_idx}#{d.row_identifier}"
 
-    def db_get_gsi1pk(self) -> str | None:
+    @classmethod
+    def get_gsi_config(cls) -> dict[str, GsiIndex]:
+        return {
+            "gsi1": GsiIndex(
+                pk=("gsi1pk", lambda self: self.gsi1_partition_value()),
+                sk="pk",
+                description="form entries for one form",
+            ),
+            "gsi2": GsiIndex(
+                pk=("gsi2pk", lambda self: self.gsi2_partition_value()),
+                sk="pk",
+                description="form entries for one row",
+            ),
+        }
+
+    def gsi1_partition_value(self) -> str:
         """Utilize gsi1 to track all Form entries for a particular form;
 
         This GSI automatically sorts by the pk / resource_id attribute, allowing retrieval based on the
@@ -237,7 +260,7 @@ class FormEntry(StoredFormData, DynamoDbVersionedResource):
             ascending=ascending,
         )
 
-    def db_get_gsi2pk(self) -> str | None:
+    def gsi2_partition_value(self) -> str:
         """Utilize gsi2 to track all Form entries for a particular group / row identifier, allowing efficient retrieval
         of a specific row's worth of data."""
         # row then group, to allow looking up across the resource_id across all groups as well as looking up by row_id

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from .blob_storage import build_content_disposition
 from .exceptions import BlobCompressedError, BlobNotFoundError, ResourceExistsError, VersionConflictError
+from .gsi import resolve_gsi_config
 from .local_blob_storage import LocalBlobStorage, _compute_etag
 from .models import (
     AuditLog,
@@ -1329,7 +1330,7 @@ class LocalStorageMemory:
 
             # Sort items based on index
             if index_name:
-                matching_items = self._sort_items(matching_items, index_name, ascending)
+                matching_items = self._sort_items(matching_items, index_name, ascending, resource_class=resource_class)
 
             # Load resources and build blob placeholders
             loaded_resources = []
@@ -1433,8 +1434,18 @@ class LocalStorageMemory:
         # Fallback: include the item if we can't parse the condition
         return True
 
-    def _sort_items(self, items: list[dict], index_name: str, ascending: bool) -> list[dict]:
+    def _sort_items(
+        self, items: list[dict], index_name: str, ascending: bool, resource_class: type | None = None
+    ) -> list[dict]:
         """Sort items based on index."""
+        # An index the resource declares explicitly sorts by its declared sort attribute, if any
+        declared = resolve_gsi_config(resource_class).explicit.get(index_name) if resource_class else None
+        if declared is not None:
+            if declared.sk_attribute is not None:
+                sk_attribute = declared.sk_attribute
+                items.sort(key=lambda x: x.get(sk_attribute, ""), reverse=not ascending)
+            return items
+
         # Normalized so a dashed index name (``gsi-1``) sorts like its undashed spelling
         # rather than falling through unsorted.
         normalized = normalize_index_name(index_name) if index_name else index_name

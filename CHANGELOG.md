@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+* **Explicit GSI declarations: `GsiIndex`** (#11). A `gsi_config` / `get_gsi_config()` entry can now be
+  a `GsiIndex`, keyed by the **deployed index name**, that states the index's partition and sort
+  attributes outright:
+
+  ```python
+  from simplesingletable import GsiIndex
+
+  @classmethod
+  def get_gsi_config(cls):
+      return {
+          "gsi-1": GsiIndex(
+              pk=("gsi1pk", lambda self: f"things#{self.owner_id}"),
+              sk=("gsi1sk", lambda self: self.resource_id),
+              description="lookup by owner",
+          ),
+          "gsi2": GsiIndex(pk=("gsi2pk", ...), sk="pk"),  # index ranges on the table's own pk
+      }
+  ```
+
+  Pagination keys for explicitly declared indexes are built from the declaration alone, with no
+  index-name normalization, naming convention or attribute-suffix inference. That fixes the one setup
+  that previously had to be guessed: custom attribute names behind a descriptive label. A `GsiIndex`
+  is written all-or-nothing. If its partition value (or function-backed sort value) is `None`, `""`
+  or `False`, none of its attributes are written, and `recompute_gsis=True` REMOVEs all of them.
+  Unlike the dict form, a value of `0` *is* written. A value function's type must match the index
+  attribute's declared type: a numeric `0` (or any non-string value) written to an `S`-typed index
+  attribute fails the whole write with a `ValidationException`, where the dict form silently
+  omitted a `0`.
+  `GsiIndex.from_pair(pk_attr, sk_attr, fn)` takes a function returning `(pk, sk) | None`, like the
+  tuple form. `LocalStorageMemory` now sorts queries on any explicitly declared index by its sort
+  attribute; previously only gsi1/gsi2/gsi3/gsitype were sorted. Dict and `GsiIndex` entries can be
+  mixed while migrating. A `GsiIndex` keyed `"gsitype"`, one that writes an attribute another entry
+  also writes, or one that writes an attribute an overridden `db_get_gsi1pk` / `db_get_gsi2pk` /
+  `db_get_gsi3pk_and_sk` also writes, raises `GsiConfigError` (a `ValueError`), whose `.problems`
+  lists each `GsiConfigProblem`.
+
+* **`DynamoDbMemory.validate_gsi_config(*resource_classes, raise_on_error=True)`** (#11) compares each
+  class's GSI declarations against the table's `DescribeTable` key schemas and returns or raises
+  (`GsiConfigError.problems`) every mismatch it finds: invalid declarations, a `GsiIndex` colliding
+  with a legacy hook, missing index, wrong key schema, a dict label that names one index while
+  declaring another's attributes, attributes no index uses, legacy hooks with no matching index, and
+  a malformed `gsitype` index. Call it from a test to turn a pagination
+  bug into a CI failure. `AuditLog` classes are checked against the audit table.
+
+### Changed
+
+* `AuditLog` and `extras.form_data` (`Form`, `FormEntry`) declare their indexes with `GsiIndex`.
+  Index names, attribute names and stored values are unchanged. `AuditLog.get_gsi_config()` now
+  returns `GsiIndex` values, so code that indexed into it as dicts (`config["gsi1"]["gsi1pk"]`) should
+  use `config["gsi1"].compute(audit_log)` instead.
+
+* **Behaviour change:** `Form.db_get_gsi1pk()` and `FormEntry.db_get_gsi1pk()` / `db_get_gsi2pk()`
+  are no longer overridden, so calling them directly now returns `None`. The values are still
+  written to the same attributes. Code that called them for the key value should call the new
+  `Form.gsi1_partition_value()` and `FormEntry.gsi1_partition_value()` /
+  `FormEntry.gsi2_partition_value()`, which return exactly what the hooks returned.
+
+* The README examples and `examples/local_storage_example.py` / `examples/blob_storage_example.py`
+  use `GsiIndex` instead of the deprecated hooks.
+
+### Deprecated
+
+* **Dict-form `gsi_config` entries** (`{"label": {"gsi1pk": fn}}`, including tuple keys), and
+  overriding **`db_get_gsi1pk` / `db_get_gsi2pk` / `db_get_gsi3pk_and_sk`** (#11). Both bind attributes
+  to indexes by inference and now emit `DeprecationWarning`: hook overrides at class definition (once
+  per overriding function, including one defined on a mixin), dict entries on first use, once per
+  class. A pagination query on an index no `GsiIndex` declares also
+  warns once. Behaviour is unchanged. Both forms will be removed in the next major release. Migrate
+  each entry to `GsiIndex` keyed by its deployed index name, using `sk="pk"` for indexes that range
+  on the table pk and `from_pair` for tuple entries, then run `validate_gsi_config` to confirm.
+
 ### Fixed
 
 * **`AuditConfig.exclude_fields` now redacts audit snapshots** (#18). Excluded fields were

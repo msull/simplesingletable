@@ -61,23 +61,59 @@ batteries-included" functionality for common DynamoDB use cases.
 
 ### GSI (Global Secondary Index) Configuration
 
-The library supports both static and dynamic GSI configuration:
+Declare each index with a `GsiIndex`, keyed by the **deployed index name**. It states the index's
+partition and sort attributes outright, so writes, pagination keys and validation all come from the
+declaration rather than from naming conventions:
 
 ```python
+from simplesingletable import GsiIndex
+
+
 class MyResource(DynamoDbVersionedResource):
+    owner_id: str
+    assignee: str | None = None
+
     # Static configuration
-    gsi_config: ClassVar[Dict[str, IndexFieldConfig]] = {
-        "status": {
-            "pk": lambda self: f"status#{self.status}",
-            "sk": lambda self: self.resource_id,  # Sort by creation time
-        }
+    gsi_config: ClassVar[dict[str, GsiIndex]] = {
+        # On the standard table, gsi1 and gsi2 range on the table's own pk: say so with sk="pk"
+        "gsi1": GsiIndex(pk=("gsi1pk", lambda self: f"owner#{self.owner_id}"), sk="pk"),
+        # An index with its own sort attribute; sparse, since the pk is None when unassigned
+        "gsi3": GsiIndex(
+            pk=("gsi3pk", lambda self: self.assignee and f"assignee#{self.assignee}"),
+            sk=("gsi3sk", lambda self: self.created_at.isoformat()),
+            description="by assignee",
+        ),
     }
 
     # Or dynamic configuration via get_gsi_config()
     @classmethod
-    def get_gsi_config(cls) -> Dict[str, IndexFieldConfig]:
-        return {"dynamic_index": {"pk": lambda self: f"type#{self.type}"}}
+    def get_gsi_config(cls) -> dict[str, GsiIndex]:
+        return {"gsi-2": GsiIndex.from_pair("gsi2pk", "gsi2sk", lambda self: (f"owner#{self.owner_id}", self.resource_id))}
 ```
+
+- `sk` is a `(attribute, function)` pair for a sort attribute the library writes, `"pk"` / `"sk"` for an
+  index that ranges on the table's own key, or `None` for a hash-only index.
+- `GsiIndex.from_pair(pk_attr, sk_attr, fn)` takes one function returning `(pk, sk)` or `None`.
+- An entry is written all-or-nothing: if any of its values is `None`, `""` or `False`, none of its
+  attributes are written (and `recompute_gsis=True` in a transaction REMOVEs them). `0` is written,
+  so a value function's type must match the attribute type the table declares.
+- `description` is free text for the access pattern; the dict key is always the index name.
+
+**Validating against your table.** `DynamoDbMemory.validate_gsi_config(*classes)` compares the
+declarations with the table's `DescribeTable` key schemas and raises `GsiConfigError` (with
+`.problems`) on any mismatch, so a wrong index name or key schema fails CI instead of breaking
+pagination in production. `AuditLog` is checked against the audit table. `LocalStorageMemory` has
+no equivalent, since it has no table schema.
+
+```python
+def test_gsi_config_matches_table(memory):
+    memory.validate_gsi_config(Thing, Order, AuditLog)
+```
+
+**Deprecated:** the dict form (`{"label": {"gsi1pk": fn}}`, including tuple keys) and overriding the
+`db_get_gsi1pk` / `db_get_gsi2pk` / `db_get_gsi3pk_and_sk` hooks still work, but bind attributes
+to indexes by inference and emit a `DeprecationWarning`. They will be removed in the next major
+release.
 
 ### Extras Module (`src/simplesingletable/extras/`)
 
@@ -147,7 +183,7 @@ inv fullrelease --patch         # Complete release cycle (lint, test, bump, buil
 ### Resource Definition Pattern
 
 ```python
-from simplesingletable import DynamoDbVersionedResource
+from simplesingletable import DynamoDbVersionedResource, GsiIndex
 
 
 class MyResource(DynamoDbVersionedResource):
@@ -168,8 +204,9 @@ class MyResource(DynamoDbVersionedResource):
     )
 
     # Optional: GSI configuration for secondary access patterns
-    def db_get_gsi1pk(self) -> str | None:
-        return f"status#{self.status}"
+    @classmethod
+    def get_gsi_config(cls) -> dict[str, GsiIndex]:
+        return {"gsi1": GsiIndex(pk=("gsi1pk", lambda self: f"status#{self.status}"), sk="pk")}
 ```
 
 A subclass's `resource_config` is shallow-merged over its nearest parent's effective config,
@@ -284,11 +321,18 @@ class MyResource(DynamoDbVersionedResource):
     status: str
     category: str
     
-    def db_get_gsi1pk(self) -> str | None:
-        # Sparse GSI - only index active items
-        if self.status == "active":
-            return f"{self.get_unique_key_prefix()}#{self.category}"
-        return None
+    @classmethod
+    def get_gsi_config(cls) -> dict[str, GsiIndex]:
+        return {
+            # Sparse GSI - only index active items
+            "gsi1": GsiIndex(
+                pk=(
+                    "gsi1pk",
+                    lambda self: f"{self.get_unique_key_prefix()}#{self.category}" if self.status == "active" else None,
+                ),
+                sk="pk",
+            ),
+        }
     
     @classmethod
     def query_by_category_kwargs(cls, category: str):

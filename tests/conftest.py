@@ -240,3 +240,81 @@ def dynamodb_memory_with_library_built_s3(
     )
 
     yield memory
+
+
+_LOCAL_CONNECTION_PARAMS = {
+    "aws_access_key_id": "unused",
+    "aws_secret_access_key": "unused",
+    "region_name": "us-west-2",
+}
+
+
+def _memory_with_single_index(dynamodb_via_docker, name_prefix, index_name, key_schema, attribute_types):
+    """Create a table with one GSI, yield a DynamoDbMemory on it, then drop the table.
+
+    ``key_schema`` is ``[(attribute, "HASH"|"RANGE"), ...]``; ``attribute_types`` maps each index
+    attribute to its DynamoDB scalar type.
+    """
+    table_name = f"{name_prefix}-{uuid4().hex}"
+    client = boto3.client("dynamodb", endpoint_url=dynamodb_via_docker, **_LOCAL_CONNECTION_PARAMS)
+    resource = boto3.resource("dynamodb", endpoint_url=dynamodb_via_docker, **_LOCAL_CONNECTION_PARAMS)
+
+    resource.create_table(
+        TableName=table_name,
+        KeySchema=[
+            {"AttributeName": "pk", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+            *({"AttributeName": a, "AttributeType": t} for a, t in attribute_types.items()),
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": index_name,
+                "KeySchema": [{"AttributeName": a, "KeyType": k} for a, k in key_schema],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    resource.Table(table_name).wait_until_exists()
+
+    try:
+        yield DynamoDbMemory(
+            logger=logger,
+            table_name=table_name,
+            endpoint_url=dynamodb_via_docker,
+            connection_params=_LOCAL_CONNECTION_PARAMS,
+        )
+    finally:
+        client.delete_table(TableName=table_name)
+
+
+@pytest.fixture()
+def memory_with_custom_index(dynamodb_via_docker) -> DynamoDbMemory:
+    """A table whose only GSI is ``owner-index``, keyed on custom attributes ``ownerKey`` / ``createdKey``.
+
+    Neither the index name nor the attribute names follow the gsiN convention, so nothing can be
+    inferred: only an explicit ``GsiIndex`` declaration can bind them.
+    """
+    yield from _memory_with_single_index(
+        dynamodb_via_docker,
+        "custom-gsi-test-table",
+        "owner-index",
+        [("ownerKey", "HASH"), ("createdKey", "RANGE")],
+        {"ownerKey": "S", "createdKey": "S"},
+    )
+
+
+@pytest.fixture()
+def memory_with_numeric_index(dynamodb_via_docker) -> DynamoDbMemory:
+    """A table whose only GSI is ``score-index``, hash key ``scoreKey`` typed ``N``, no range key."""
+    yield from _memory_with_single_index(
+        dynamodb_via_docker,
+        "numeric-gsi-test-table",
+        "score-index",
+        [("scoreKey", "HASH")],
+        {"scoreKey": "N"},
+    )

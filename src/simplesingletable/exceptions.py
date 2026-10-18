@@ -4,18 +4,25 @@ Every exception here subclasses ``ValueError``, which is what these APIs raised
 before the types existed. Existing ``except ValueError`` handlers keep working
 unchanged; new code can catch the specific type it cares about.
 
-Two families live here:
+Three families live here:
 
 * **Conflicts** (:class:`ConflictError` and below) -- a write was rejected because
   the stored state was not what the caller expected. These are retryable-by-reread,
   and are the ones an HTTP layer wants to map to 409 rather than 400.
 * **Blob errors** (:class:`BlobError` and below) -- S3-backed field storage.
+* **GSI configuration errors** (:class:`GsiConfigError`) -- a resource's GSI declarations are
+  malformed, conflict with each other, or do not match the table's indexes.
 
 The transaction types (:class:`TransactionError` and below) also live here so that
 there is one home for the hierarchy; ``simplesingletable.transactions`` re-exports
 them, so ``from simplesingletable.transactions import VersionConflictError``
 continues to work.
 """
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .gsi import GsiConfigProblem
 
 __all__ = [
     "BlobCompressedError",
@@ -24,6 +31,7 @@ __all__ = [
     "BlobPreconditionFailedError",
     "BlobTooLargeError",
     "ConflictError",
+    "GsiConfigError",
     "ResourceExistsError",
     "ResourceNotFoundError",
     "TransactionConditionFailedError",
@@ -149,6 +157,17 @@ class VersionConflictError(TransactionConditionFailedError):
         )
         self.expected_version = expected_version
         self.actual_version = actual_version
+
+
+class GsiConfigError(ValueError):
+    """A resource's GSI declarations are malformed, or do not match the table's indexes.
+
+    ``problems`` holds one :class:`~simplesingletable.gsi.GsiConfigProblem` per mismatch found.
+    """
+
+    def __init__(self, message: str, problems: list["GsiConfigProblem"] | None = None):
+        super().__init__(message)
+        self.problems = problems or []
 
 
 class ResourceNotFoundError(Exception):

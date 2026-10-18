@@ -535,8 +535,10 @@ Costs and caveats:
 > 3. Ask the user if unsure
 >
 > Common GSI naming conventions vary by project:
-> - **Legacy**: `gsi1`, `gsi2`, `gsi3` — these have a built-in assumption that the sort key is `pk` (the table's partition key). This means you cannot define a custom sort key for these indices.
-> - **Modern**: `gsi-1`, `gsi-2`, `gsi-3` (or any custom name) — these allow fully custom sort keys (e.g., `gsi-1sk`). Use this naming to get full control over both partition and sort keys.
+> - **Legacy**: `gsi1`, `gsi2`, `gsi3` — on the standard table, `gsi1` and `gsi2` range on `pk` (the table's partition key), so declare them with `sk="pk"`.
+> - **Modern**: `gsi-1`, `gsi-2`, `gsi-3` (or any custom name) — usually with their own sort attribute (e.g., `gsi1sk`).
+>
+> Whatever the names, a `GsiIndex` declaration states the index name and its attributes explicitly (see below), and `memory.validate_gsi_config(...)` checks them against the table.
 
 ### Default Table (from create_standard_dynamodb_table)
 
@@ -549,16 +551,39 @@ The utility function `create_standard_dynamodb_table` creates these indices:
 
 However, many production projects define their own table with different GSI names and schemas.
 
-### How GSI Key Names Map to Index Names
+### Binding Attributes to Indexes: `GsiIndex`
 
-The convention is: `{index_name}pk` for the partition key, `{index_name}sk` for the sort key. Examples:
-- Index `"gsi1"` → attributes `gsi1pk` (partition), sort key is `pk` (legacy hardcoded)
-- Index `"gsi-1"` → attributes `gsi-1pk` (partition), `gsi-1sk` (sort key, fully custom)
-- Index `"gsi3"` → attributes `gsi3pk` (partition), `gsi3sk` (sort key)
+Declare every index with a `GsiIndex`, keyed by the **deployed index name** (exactly as the table
+defines it; it is never normalized, so `"gsi1"` and `"gsi-1"` are different indexes). The declaration
+names the attributes outright, so nothing is inferred from index or attribute naming:
+
+- `pk=(attribute, fn)` — the partition attribute the library writes, and the function computing it.
+- `sk=(attribute, fn)` — a sort attribute the library writes; or `sk="pk"` / `sk="sk"` when the index
+  ranges on the table's own key (the standard `gsi1`/`gsi2`); or `sk=None` for a hash-only index.
+- `description=` — free text naming the access pattern.
+- `GsiIndex.from_pair(pk_attr, sk_attr, fn)` — one function returning `(pk, sk)` or `None`.
+
+An entry is all-or-nothing: if any of its values is `None`, `""` or `False`, none of its attributes
+are written (and `recompute_gsis=True` in a transaction REMOVEs all of them). `0` *is* written, so a
+value function's type must match the attribute type the table declares (a number written to an
+`S` attribute fails the write with a `ValidationException`).
+
+`gsitype` is built in and cannot be declared; customise it with `db_get_gsitypepk` /
+`db_get_gsitypesk`.
+
+Check declarations against the real table in a test (`AuditLog` is checked against the audit table):
+
+```python
+def test_gsi_config_matches_table(memory):
+    memory.validate_gsi_config(TaskResource, ApiKey, AuditLog)  # raises GsiConfigError on mismatch
+```
 
 ### Static GSI Configuration (ClassVar)
 
 ```python
+from simplesingletable import GsiIndex
+
+
 class TaskResource(DynamoDbResource):
     title: str
     category: str
@@ -566,19 +591,20 @@ class TaskResource(DynamoDbResource):
     assigned_to: str
     completed: bool = False
 
-    # Keys in the dict match the GSI index names on the DynamoDB table
-    gsi_config: ClassVar[dict] = {
-        "gsi-1": {
-            "gsi-1pk": lambda self: f"category#{self.category}",
-            "gsi-1sk": lambda self: self.title,  # Custom sort key (only works with non-legacy GSI names)
-        },
-        "gsi-2": {
-            "gsi-2pk": lambda self: f"assignee#{self.assigned_to}",
-        },
-        "gsi3": {
-            "gsi3pk": lambda self: f"priority#{self.priority}",
-            "gsi3sk": lambda self: self.title,
-        },
+    # Keys are the deployed GSI index names on the DynamoDB table
+    gsi_config: ClassVar[dict[str, GsiIndex]] = {
+        "gsi-1": GsiIndex(
+            pk=("gsi1pk", lambda self: f"category#{self.category}"),
+            sk=("gsi1sk", lambda self: self.title),
+        ),
+        "gsi-2": GsiIndex(
+            pk=("gsi2pk", lambda self: f"assignee#{self.assigned_to}"),
+            sk=("gsi2sk", lambda self: self.resource_id),
+        ),
+        "gsi3": GsiIndex(
+            pk=("gsi3pk", lambda self: f"priority#{self.priority}"),
+            sk=("gsi3sk", lambda self: self.title),
+        ),
     }
 ```
 
@@ -593,14 +619,15 @@ class ApiKey(DynamoDbResource):
     @classmethod
     def get_gsi_config(cls):
         return {
-            "gsi-1": {"gsi-1pk": lambda self: f"USER#{self.username}"},
-            "gsi-2": {"gsi-2pk": lambda self: f"KEYHASH#{self.key_hash}" if self.is_active else None},
+            "gsi1": GsiIndex(pk=("gsi1pk", lambda self: f"USER#{self.username}"), sk="pk"),
+            "gsi2": GsiIndex(pk=("gsi2pk", lambda self: f"KEYHASH#{self.key_hash}" if self.is_active else None), sk="pk"),
         }
 ```
 
 ### Conditional / Sparse GSIs
 
-Return `None` to exclude items from a GSI. This is the recommended pattern for filtering by state:
+Return `None` (or `""` / `False`) to exclude items from a GSI. This is the recommended pattern for
+filtering by state:
 
 ```python
 class TrainingLink(DynamoDbVersionedResource):
@@ -610,11 +637,10 @@ class TrainingLink(DynamoDbVersionedResource):
 
     @classmethod
     def get_gsi_config(cls):
-        def _gsi1pk_value(self):
-            if self.active:
-                return cls.get_unique_key_prefix()  # Only index active items
-            return None  # Exclude inactive from GSI
-        return {"gsi1": {"gsi1pk": _gsi1pk_value}}
+        return {
+            # Only index active items
+            "gsi1": GsiIndex(pk=("gsi1pk", lambda self: self.active and cls.get_unique_key_prefix()), sk="pk"),
+        }
 ```
 
 ### Query Helper Pattern (Recommended)
@@ -629,10 +655,10 @@ class ConversationResource(DynamoDbResource):
     @classmethod
     def get_gsi_config(cls):
         return {
-            "gsi3": {
-                "gsi3pk": lambda self: f"{cls.get_unique_key_prefix()}#{self.username}",
-                "gsi3sk": lambda self: self.updated_at.isoformat(),
-            }
+            "gsi3": GsiIndex(
+                pk=("gsi3pk", lambda self: f"{cls.get_unique_key_prefix()}#{self.username}"),
+                sk=("gsi3sk", lambda self: self.updated_at.isoformat()),
+            )
         }
 
     @classmethod
@@ -664,10 +690,10 @@ class SpedNote(DynamoDbResource):
     @classmethod
     def get_gsi_config(cls):
         return {
-            "gsi3": {
-                "gsi3pk": lambda self: f"{cls.get_unique_key_prefix()}#{self.student_id}",
-                "gsi3sk": lambda self: f"{self.service_date.timestamp():.6f}",
-            }
+            "gsi3": GsiIndex(
+                pk=("gsi3pk", lambda self: f"{cls.get_unique_key_prefix()}#{self.student_id}"),
+                sk=("gsi3sk", lambda self: f"{self.service_date.timestamp():.6f}"),
+            )
         }
 
     @classmethod
@@ -686,9 +712,23 @@ class SpedNote(DynamoDbResource):
         return {"index_name": "gsi3", "key_condition": key_condition, "resource_class": cls}
 ```
 
-### Legacy GSI Methods (Older Pattern)
+### Legacy GSI Forms (Deprecated)
 
-Some older code uses method overrides instead of `gsi_config`/`get_gsi_config()`:
+> **Deprecated; removed in the next major release.** These forms bind attributes to indexes by
+> inference (index-name normalization and attribute suffixes) and emit a `DeprecationWarning`:
+> hook overrides at class definition, dict entries on first use. Behaviour is unchanged until removal.
+
+Older code uses dict-form `gsi_config` entries, whose key is only a label and whose pk/sk are
+inferred from the attribute suffix:
+
+```python
+gsi_config = {
+    "by-owner": {"gsi1pk": lambda self: f"owner#{self.owner_id}", "gsi1sk": lambda self: self.name},
+    "gsi3": {("gsi3pk", "gsi3sk"): lambda self: (f"category#{self.category}", self.name)},
+}
+```
+
+or method overrides:
 
 ```python
 class MyResource(DynamoDbVersionedResource):
@@ -703,6 +743,21 @@ class MyResource(DynamoDbVersionedResource):
     def db_get_gsi3pk_and_sk(self) -> tuple[str, str] | None:
         return (f"category#{self.category}", self.name)
 ```
+
+Migration to `GsiIndex` (keep attribute names and value functions exactly as they are, so stored
+items do not change):
+
+| Legacy form | `GsiIndex` equivalent |
+|---|---|
+| dict entry keyed by a label (`"by-owner": {...}`) | key it by the deployed index name; move the label to `description=` |
+| `{"gsi1pk": fn, "gsi1sk": fn2}` | `GsiIndex(pk=("gsi1pk", fn), sk=("gsi1sk", fn2))` |
+| `{"gsi1pk": fn}` on an index ranging on the table pk | `GsiIndex(pk=("gsi1pk", fn), sk="pk")` |
+| tuple key `{("gsi3pk", "gsi3sk"): fn}` | `GsiIndex.from_pair("gsi3pk", "gsi3sk", fn)` |
+| `db_get_gsi1pk` / `db_get_gsi2pk` override | delete it; add `"gsi1"` / `"gsi2"`: `GsiIndex(pk=("gsi1pk", ...), sk="pk")` |
+| `db_get_gsi3pk_and_sk` override | delete it; add `"gsi3": GsiIndex.from_pair("gsi3pk", "gsi3sk", fn)` |
+
+A `GsiIndex` writing the same attribute as a still-overridden hook raises `GsiConfigError`, since
+the hook would overwrite it. After migrating, run `memory.validate_gsi_config(...)` to confirm.
 
 ---
 

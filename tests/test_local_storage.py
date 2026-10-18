@@ -8,7 +8,7 @@ from boto3.dynamodb.conditions import Key
 from logzero import logger
 from pydantic import BaseModel
 
-from simplesingletable import DynamoDbResource, DynamoDbVersionedResource, LocalStorageMemory
+from simplesingletable import DynamoDbResource, DynamoDbVersionedResource, GsiIndex, LocalStorageMemory
 from simplesingletable.models import BlobFieldConfig, ResourceConfig
 
 
@@ -321,6 +321,50 @@ def test_local_storage__gsi_query(local_storage: LocalStorageMemory):
     assert cat1_r1.resource_id in resource_ids
     assert cat1_r2.resource_id in resource_ids
     assert cat2_r1.resource_id not in resource_ids
+
+
+class ResourceWithExplicitGsi(DynamoDbResource):
+    """Resource declaring indexes beyond the gsi1/gsi2/gsi3 names LocalStorageMemory knows how to sort."""
+
+    category: str
+    rank: str
+
+    gsi_config: ClassVar[dict] = {
+        "gsi4": GsiIndex(pk=("gsi4pk", lambda self: f"category#{self.category}"), sk=("gsi4sk", lambda self: self.rank)),
+        "by-category": GsiIndex(pk=("gsi5pk", lambda self: f"category#{self.category}"), sk="pk"),
+    }
+
+
+@pytest.mark.parametrize("ascending", [True, False])
+def test_local_storage__explicit_gsi_sorts_by_declared_sort_attribute(local_storage: LocalStorageMemory, ascending):
+    for rank in ["b", "c", "a", "d"]:
+        local_storage.create_new(ResourceWithExplicitGsi, {"category": "A", "rank": rank})
+    local_storage.create_new(ResourceWithExplicitGsi, {"category": "B", "rank": "e"})
+
+    results = local_storage.paginated_dynamodb_query(
+        resource_class=ResourceWithExplicitGsi,
+        index_name="gsi4",
+        key_condition=Key("gsi4pk").eq("category#A"),
+        ascending=ascending,
+        results_limit=10,
+    )
+
+    expected = ["a", "b", "c", "d"]
+    assert [r.rank for r in results] == (expected if ascending else expected[::-1])
+
+
+def test_local_storage__explicit_gsi_ranging_on_pk_sorts_by_pk(local_storage: LocalStorageMemory):
+    created = [local_storage.create_new(ResourceWithExplicitGsi, {"category": "A", "rank": "x"}) for _ in range(4)]
+
+    results = local_storage.paginated_dynamodb_query(
+        resource_class=ResourceWithExplicitGsi,
+        index_name="by-category",
+        key_condition=Key("gsi5pk").eq("category#A"),
+        ascending=True,
+        results_limit=10,
+    )
+
+    assert [r.resource_id for r in results] == sorted(r.resource_id for r in created)
 
 
 def test_local_storage__blob_storage(local_storage: LocalStorageMemory):
