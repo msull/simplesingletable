@@ -9,7 +9,7 @@ from typing import ClassVar, Optional
 from logzero import logger
 from pydantic import BaseModel
 
-from simplesingletable import DynamoDbResource, DynamoDbVersionedResource, LocalStorageMemory
+from simplesingletable import DynamoDbResource, DynamoDbVersionedResource, GsiIndex, LocalStorageMemory
 from simplesingletable.models import BlobFieldConfig, ResourceConfig
 
 
@@ -22,9 +22,15 @@ class Task(DynamoDbVersionedResource):
     completed: bool = False
     category: str
 
-    def db_get_gsi1pk(self) -> str | None:
-        """Enable querying by category."""
-        return f"category#{self.category}"
+    @classmethod
+    def get_gsi_config(cls) -> dict[str, GsiIndex]:
+        return {
+            "gsi1": GsiIndex(
+                pk=("gsi1pk", lambda self: f"category#{self.category}"),
+                sk="pk",
+                description="Enable querying by category.",
+            ),
+        }
 
 
 class Note(BaseModel):

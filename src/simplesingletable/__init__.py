@@ -13,6 +13,7 @@ from .exceptions import (
     BlobPreconditionFailedError,
     BlobTooLargeError,
     ConflictError,
+    GsiConfigError,
     ResourceExistsError,
     ResourceNotFoundError,
     TransactionConditionFailedError,
@@ -20,6 +21,7 @@ from .exceptions import (
     VersionConflictError,
 )
 from .extras.audit import AuditLogQuerier
+from .gsi import GsiConfigProblem, GsiIndex, GsiProblemKind
 from .local_blob_storage import LocalBlobStorage
 from .local_storage_memory import LocalStorageMemory
 from .models import AuditConfig, AuditLog, PresignedBlobUrl
@@ -36,6 +38,9 @@ _ = AuditLogQuerier
 _ = AuditConfig
 _ = AuditLog
 _ = PresignedBlobUrl
+_ = GsiIndex
+_ = GsiConfigProblem
+_ = GsiProblemKind
 _ = LocalStorageMemory
 _ = LocalBlobStorage
 _ = BlobCompressedError
@@ -44,6 +49,7 @@ _ = BlobNotFoundError
 _ = BlobPreconditionFailedError
 _ = BlobTooLargeError
 _ = ConflictError
+_ = GsiConfigError
 _ = ResourceExistsError
 _ = ResourceNotFoundError
 _ = TransactionConditionFailedError

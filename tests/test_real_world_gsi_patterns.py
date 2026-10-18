@@ -19,8 +19,11 @@ index while declaring another's attributes. The index name supplied at query tim
 identifies the index.
 """
 
+import warnings
+
 import pytest
 
+from simplesingletable import GsiIndex
 from simplesingletable.dynamodb_memory import build_lek_data
 
 
@@ -154,6 +157,126 @@ def test_dashed_index_names(shape, gsi_config, index_name, expected):
     lek = build_lek_data(DASHED_ITEM, index_name, _resource_with(gsi_config))
 
     assert lek == {"pk": DASHED_ITEM["pk"], "sk": "v0", **{a: DASHED_ITEM[a] for a in expected}}, shape
+
+
+def _on_pk(n):
+    """An index on gsi{n}pk that ranges on the table's own pk (the undashed gsi1/gsi2 shape)."""
+    return GsiIndex(pk=(f"gsi{n}pk", _value), sk="pk")
+
+
+def _own_sk(n, **kwargs):
+    """An index on gsi{n}pk with its own gsi{n}sk sort attribute."""
+    return GsiIndex(pk=(f"gsi{n}pk", _value), sk=(f"gsi{n}sk", _value), **kwargs)
+
+
+def _pair(n):
+    """The explicit form of a tuple-declared ``(gsi{n}pk, gsi{n}sk)`` pair."""
+    return GsiIndex.from_pair(f"gsi{n}pk", f"gsi{n}sk", _value)
+
+
+# Explicit-form twins of every observed shape: same item, same index queried, same expected key.
+EXPLICIT_UNDASHED_PATTERNS = [
+    (
+        "explicit: two pk-only indexes, one of them sparse",
+        {"gsi1": _on_pk(1), "gsi2": _on_pk(2)},
+        "gsi2", ["gsi2pk"],
+    ),
+    (
+        "explicit: pk-only index alongside one with its own sort attribute",
+        {"gsi1": _on_pk(1), "gsi3": _own_sk(3)},
+        "gsi3", ["gsi3pk", "gsi3sk"],
+    ),
+    (
+        "explicit: tuple-declared pk/sk pair",
+        {"gsi2": _on_pk(2), "gsi3": _pair(3)},
+        "gsi3", ["gsi3pk", "gsi3sk"],
+    ),
+    (
+        "explicit: three indexes, the last tuple-declared",
+        {"gsi1": _on_pk(1), "gsi2": _on_pk(2), "gsi3": _pair(3)},
+        "gsi1", ["gsi1pk"],
+    ),
+    (
+        "explicit: a fourth index, beyond the three the library originally assumed",
+        {"gsi3": _own_sk(3), "gsi4": _own_sk(4)},
+        "gsi4", ["gsi4pk", "gsi4sk"],
+    ),
+    (
+        "explicit: five indexes, two of them sparse and pk-only",
+        {"gsi3": _own_sk(3), "gsi4": _own_sk(4), "gsi1": _on_pk(1), "gsi2": _on_pk(2), "gsi5": _own_sk(5)},
+        "gsi5", ["gsi5pk", "gsi5sk"],
+    ),
+    (
+        "explicit: two tuple-declared pairs",
+        {"gsi3": _pair(3), "gsi4": _pair(4)},
+        "gsi4", ["gsi4pk", "gsi4sk"],
+    ),
+    (
+        "explicit: no gsi_config at all -- legacy db_get_gsiNpk overrides",
+        {"gsi1": _on_pk(1)}, "gsi1", ["gsi1pk"],
+    ),
+    (
+        "explicit: no gsi_config at all -- legacy db_get_gsi3pk_and_sk override",
+        {"gsi3": _own_sk(3)}, "gsi3", ["gsi3pk", "gsi3sk"],
+    ),
+]
+
+EXPLICIT_DASHED_PATTERNS = [
+    (
+        "explicit: label is the dashed index name, tuple-declared pair",
+        {"gsi-1": _pair(1)},
+        "gsi-1", ["gsi1pk", "gsi1sk"],
+    ),
+    (
+        "explicit: label is the dashed index name, separately declared pk and sk",
+        {"gsi-3": _own_sk(3)},
+        "gsi-3", ["gsi3pk", "gsi3sk"],
+    ),
+    (
+        "explicit: three dashed indexes on one resource, all tuple-declared",
+        {"gsi-1": _pair(1), "gsi-2": _pair(2), "gsi-3": _pair(3)},
+        "gsi-2", ["gsi2pk", "gsi2sk"],
+    ),
+    (
+        "explicit: single sparse dashed index",
+        {"gsi-3": _pair(3)},
+        "gsi-3", ["gsi3pk", "gsi3sk"],
+    ),
+    (
+        "explicit: undashed label while the deployed index name is dashed",
+        {"gsi-3": _own_sk(3)},
+        "gsi-3", ["gsi3pk", "gsi3sk"],
+    ),
+    (
+        "explicit: dashed index names with no gsi_config at all",
+        {"gsi-1": _own_sk(1)}, "gsi-1", ["gsi1pk", "gsi1sk"],
+    ),
+    (
+        "explicit: descriptive label naming no index at all",
+        {"gsi-1": _own_sk(1, description="by-owner")},
+        "gsi-1", ["gsi1pk", "gsi1sk"],
+    ),
+]
+
+
+@pytest.mark.parametrize("shape,gsi_config,index_name,expected", EXPLICIT_UNDASHED_PATTERNS)
+def test_explicit_undashed_index_names(shape, gsi_config, index_name, expected):
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        lek = build_lek_data(UNDASHED_ITEM, index_name, _resource_with(gsi_config))
+
+    assert lek == {"pk": UNDASHED_ITEM["pk"], "sk": "v0", **{a: UNDASHED_ITEM[a] for a in expected}}, shape
+    assert not [w for w in recorded if issubclass(w.category, DeprecationWarning)], shape
+
+
+@pytest.mark.parametrize("shape,gsi_config,index_name,expected", EXPLICIT_DASHED_PATTERNS)
+def test_explicit_dashed_index_names(shape, gsi_config, index_name, expected):
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        lek = build_lek_data(DASHED_ITEM, index_name, _resource_with(gsi_config))
+
+    assert lek == {"pk": DASHED_ITEM["pk"], "sk": "v0", **{a: DASHED_ITEM[a] for a in expected}}, shape
+    assert not [w for w in recorded if issubclass(w.category, DeprecationWarning)], shape
 
 
 @pytest.mark.parametrize("item", [UNDASHED_ITEM, DASHED_ITEM])

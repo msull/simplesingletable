@@ -23,6 +23,7 @@ from humanize import naturalsize, precisedelta
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter, ValidationError
 from typing_extensions import NotRequired  # typing.NotRequired requires py3.11
 
+from .gsi import LEGACY_GSI_HOOK_ATTRIBUTES, GsiIndex, resolve_gsi_config, warn_legacy_entries, warn_legacy_hook
 from .utils import _now, generate_date_sortable_id
 
 if TYPE_CHECKING:
@@ -252,21 +253,22 @@ class BaseDynamoDbResource(BaseModel, ABC):
     created_at: datetime
     updated_at: datetime
 
-    gsi_config: ClassVar[dict[str, dict]] = {}
+    gsi_config: ClassVar[dict[str, GsiIndex | dict]] = {}
     resource_config: ClassVar[ResourceConfig] = ResourceConfig(compress_data=None, max_versions=None, blob_fields=None)
 
     _blob_placeholders: dict[str, BlobPlaceholder] = PrivateAttr(default_factory=dict)
     _blob_versions: dict[str, int] = PrivateAttr(default_factory=dict)
 
     @classmethod
-    def get_gsi_config(cls) -> dict[str, dict]:
+    def get_gsi_config(cls) -> dict[str, GsiIndex | dict]:
         """Get the GSI configuration for this resource.
 
         Override this method to provide dynamic GSI configuration.
         By default, returns the class variable gsi_config.
 
         Returns:
-            Dictionary mapping GSI names to their field configurations.
+            Dictionary mapping each deployed index name to its `GsiIndex`, or (deprecated dict form) each free
+            label to its field configuration.
         """
         return cls.gsi_config
 
@@ -281,7 +283,23 @@ class BaseDynamoDbResource(BaseModel, ABC):
         This can be useful for filtering out all the base attributes, e.g. when calling pydantic's model_dump.
         """
 
-    # override these in resource classes to enable secondary lookups on the latest version of the resource
+    @classmethod
+    def _overridden_legacy_gsi_hooks(cls) -> list[str]:
+        """Legacy GSI hooks this class (or an ancestor below the library base) overrides."""
+        return [n for n in LEGACY_GSI_HOOK_ATTRIBUTES if getattr(cls, n) is not getattr(BaseDynamoDbResource, n)]
+
+    @classmethod
+    def _warn_on_legacy_gsi_hooks(cls) -> None:
+        """Emit a DeprecationWarning for each legacy GSI hook override, once per overriding function.
+
+        Resolved through the MRO rather than ``cls.__dict__``, so a hook defined on a plain mixin still
+        warns on the first resource class that picks it up.
+        """
+        for hook in cls._overridden_legacy_gsi_hooks():
+            warn_legacy_hook(cls, hook)
+
+    # Deprecated: declare a GsiIndex in gsi_config instead. Overriding these binds an attribute to an
+    # index by convention (gsi1pk -> gsi1, gsi2pk -> gsi2, gsi3pk/gsi3sk -> gsi3).
     def db_get_gsi1pk(self) -> str | None:
         pass
 
@@ -483,9 +501,15 @@ class BaseDynamoDbResource(BaseModel, ABC):
 
     def _apply_gsi_configuration(self, dynamodb_data: dict) -> None:
         """Apply dynamic GSI configuration to DynamoDB item."""
-        # Apply dynamic GSI configuration
-        gsi_config = self.get_gsi_config()
-        for fields in gsi_config.values():
+        resolved = resolve_gsi_config(type(self))
+        warn_legacy_entries(type(self), resolved)
+        # Explicit declarations: all-or-nothing per index
+        for index in resolved.explicit.values():
+            if (values := index.compute(self)) is not None:
+                dynamodb_data.update(values)
+
+        # Apply dynamic GSI configuration (deprecated dict form)
+        for fields in resolved.legacy.values():
             for key, value_or_func in fields.items():
                 # Handle tuple keys like ("gsi3pk", "gsi3sk")
                 if isinstance(key, tuple):
@@ -634,8 +658,10 @@ class BaseDynamoDbResource(BaseModel, ABC):
         excluded_keys = {"pk", "sk", "gsitypesk", "gsitype", "_blob_fields", "_blob_versions", "_version_token"}
 
         # Add any dynamic GSI fields to exclusion
-        gsi_config = cls.get_gsi_config()
-        for fields in gsi_config.values():
+        resolved = resolve_gsi_config(cls)
+        for index in resolved.explicit.values():
+            excluded_keys.update(index.attributes)
+        for fields in resolved.legacy.values():
             for key in fields:
                 # Handle tuple keys like ("gsi3pk", "gsi3sk")
                 if isinstance(key, tuple):
@@ -727,6 +753,7 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         super().__pydantic_init_subclass__(**kwargs)
         # Merge this class's resource_config over its nearest ancestor's (not the library root)
         cls._resolve_resource_config()
+        cls._warn_on_legacy_gsi_hooks()
 
     def get_db_resource_base_keys(self) -> set[str]:
         return {"resource_id", "created_at", "updated_at"}
@@ -858,6 +885,7 @@ class DynamoDbVersionedResource(BaseDynamoDbResource, ABC):
         super().__pydantic_init_subclass__(**kwargs)
         # Merge this class's resource_config over its nearest ancestor's (not the library root)
         cls._resolve_resource_config()
+        cls._warn_on_legacy_gsi_hooks()
 
     def to_dynamodb_item(self, v0_object: bool = False):
         """Convert resource to DynamoDB item format.
@@ -1125,22 +1153,26 @@ class AuditLog(DynamodbResource):
     """Custom audit metadata (e.g., reason for change, request ID, etc.)."""
 
     @classmethod
-    def get_gsi_config(cls) -> dict[str, dict]:
+    def get_gsi_config(cls) -> dict[str, GsiIndex]:
         """Configure GSIs for querying audit logs."""
         prefix = cls.get_unique_key_prefix()
         return {
-            cls.INDEX_BY_RESOURCE: {
-                "gsi1pk": lambda self: f"{prefix}#{self.audited_resource_type}#{self.audited_resource_id}",
-            },
-            cls.INDEX_BY_TYPE: {
-                "gsi2pk": lambda self: f"{prefix}#{self.audited_resource_type}",
-            },
-            cls.INDEX_BY_CHANGER: {
-                # Sparse: only populated when changed_by is set, so audit rows with no
-                # attribution don't appear in this index.
-                "gsi3pk": lambda self: f"{prefix}#changer#{self.changed_by}" if self.changed_by else None,
-                "gsi3sk": lambda self: self.created_at.isoformat() if self.changed_by else None,
-            },
+            cls.INDEX_BY_RESOURCE: GsiIndex(
+                pk=("gsi1pk", lambda self: f"{prefix}#{self.audited_resource_type}#{self.audited_resource_id}"),
+                sk="pk",
+                description="audit rows for one resource",
+            ),
+            cls.INDEX_BY_TYPE: GsiIndex(
+                pk=("gsi2pk", lambda self: f"{prefix}#{self.audited_resource_type}"),
+                sk="pk",
+                description="audit rows for one resource type",
+            ),
+            cls.INDEX_BY_CHANGER: GsiIndex(
+                # Sparse: absent when changed_by is unset, so unattributed rows stay out of this index.
+                pk=("gsi3pk", lambda self: f"{prefix}#changer#{self.changed_by}" if self.changed_by else None),
+                sk=("gsi3sk", lambda self: self.created_at.isoformat()),
+                description="audit rows by who made the change",
+            ),
         }
 
 

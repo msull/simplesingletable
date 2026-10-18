@@ -232,13 +232,11 @@ def test_audit_log_gsi_config():
 
     # Check gsi1 - resource-specific queries
     assert "gsi1" in gsi_config
-    gsi1_pk = gsi_config["gsi1"]["gsi1pk"](audit_log)
-    assert gsi1_pk == "_INTERNAL#AuditLog#User#user123"
+    assert gsi_config["gsi1"].compute(audit_log) == {"gsi1pk": "_INTERNAL#AuditLog#User#user123"}
 
     # Check gsi2 - resource type queries
     assert "gsi2" in gsi_config
-    gsi2_pk = gsi_config["gsi2"]["gsi2pk"](audit_log)
-    assert gsi2_pk == "_INTERNAL#AuditLog#User"
+    assert gsi_config["gsi2"].compute(audit_log) == {"gsi2pk": "_INTERNAL#AuditLog#User"}
 
 
 def test_audit_log_gsitypesk_uses_created_at():

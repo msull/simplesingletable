@@ -58,6 +58,9 @@ txn.update(
 )
 ```
 
+With `recompute_gsis=True`, a `GsiIndex` whose value (partition, or function-backed sort) is
+`None`, `""` or `False` REMOVEs all of its attributes, so the item leaves that sparse index.
+
 #### Put (full-state overwrite of an existing resource)
 
 `txn.put` writes the entire current state of a **non-versioned** resource via
