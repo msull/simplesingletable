@@ -87,6 +87,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+* **Writing back a non-versioned resource read without its blobs keeps them.** A `DynamoDbResource` read with
+  `load_blobs=False` and then written with `update_existing` (on `DynamoDbMemory` or `LocalStorageMemory`) or with a
+  transaction `put` was stored with `_blob_fields` listing only the blob fields the write carried data for. A later
+  read with `load_blobs=True` then loaded none of the others, although they were still stored. Blob fields that were
+  read without their data are now kept on the item's list. The resource `update_existing` returns keeps their
+  placeholders, so `load_blob_fields` loads them, and updating it again keeps them too. A blob field the update sets
+  or clears is written as before.
+
+  This changes behaviour the test suite described as expected (blobs not re-supplied in the update were dropped from
+  the list). Items written before this release that lost blob fields from their list are not repaired: a normal read
+  returns those fields as `None`, but the blobs are still stored and `read_blob(resource, field_name)` returns them,
+  so writing that value back with `update_existing` lists the field again.
+
 * **`AuditConfig.exclude_fields` now redacts audit snapshots** (#18). Excluded fields were
   already left out of `changed_fields`, but with `include_snapshot=True` they were still copied into
   `AuditLog.resource_snapshot`. So a field such as `password_hash` listed there was persisted in every
