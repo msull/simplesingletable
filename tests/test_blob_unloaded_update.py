@@ -1,7 +1,7 @@
 """A non-versioned resource read without its blobs, then written back, keeps its stored blobs listed.
 
-The item's ``_blob_fields`` list is what a later read loads blobs from, so a write that leaves a field off it makes
-the blob unreachable even though it is still stored.
+The item's ``_blob_fields`` list is what a later read and ``load_blob_fields`` load blobs from, so a write that
+leaves a field off it stops them loading that blob, although it is still stored.
 """
 
 import tempfile
@@ -72,6 +72,7 @@ def test_the_returned_resource_can_load_its_blobs(memory):
     updated.load_blob_fields(memory)
     assert updated.body == BODY
     assert updated.attachment == ATTACHMENT
+    assert sorted(loaded.get_unloaded_blob_fields()) == ["attachment", "body"]
 
 
 def test_updating_the_returned_resource_again_keeps_its_blobs(memory):
@@ -94,6 +95,7 @@ def test_a_blob_set_by_the_update_is_written_and_the_other_kept(memory):
     updated = memory.update_existing(loaded, {"body": {"text": "new"}})
 
     assert updated.get_unloaded_blob_fields() == ["attachment"]
+    assert sorted(loaded.get_unloaded_blob_fields()) == ["attachment", "body"]
     reread = _read(memory, note.resource_id, load_blobs=True)
     assert reread.body == {"text": "new"}
     assert reread.attachment == ATTACHMENT
@@ -104,6 +106,19 @@ def test_a_cleared_blob_is_no_longer_listed(memory):
 
     loaded = _read(memory, note.resource_id, load_blobs=False)
     updated = memory.update_existing(loaded, {"title": "b"}, clear_fields={"body"})
+
+    assert updated.get_unloaded_blob_fields() == ["attachment"]
+    assert sorted(loaded.get_unloaded_blob_fields()) == ["attachment", "body"]
+    reread = _read(memory, note.resource_id, load_blobs=True)
+    assert reread.body is None
+    assert reread.attachment == ATTACHMENT
+
+
+def test_a_blob_set_to_none_by_the_update_is_no_longer_listed(memory):
+    note = _create(memory)
+
+    loaded = _read(memory, note.resource_id, load_blobs=False)
+    updated = memory.update_existing(loaded, {"title": "b", "body": None})
 
     assert updated.get_unloaded_blob_fields() == ["attachment"]
     reread = _read(memory, note.resource_id, load_blobs=True)
