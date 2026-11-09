@@ -93,7 +93,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read with `load_blobs=True` then loaded none of the others, although they were still stored. Blob fields that were
   read without their data are now kept on the item's list. The resource `update_existing` returns keeps their
   placeholders, so `load_blob_fields` loads them, and updating it again keeps them too. A blob field the update sets
-  or clears is written as before.
+  or clears is written as before. Assigning `None` directly to a blob attribute of a resource read without it no longer
+  clears it: to clear it, pass `None` in `update_existing`'s update dict or name it in `clear_fields`, or load the field
+  before assigning `None`.
 
   This changes behaviour the test suite described as expected (blobs not re-supplied in the update were dropped from
   the list). Items written before this release that lost blob fields from their list are not repaired: a normal read
