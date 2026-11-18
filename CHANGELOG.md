@@ -105,6 +105,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   affected `AuditLog` rows. Code that read excluded keys from `resource_snapshot` will no longer
   find them.
 
+* **Deleting a resource's S3 blobs no longer deletes another resource's.** `S3BlobStorage.delete_all_blobs`
+  listed objects under a prefix that ended at the resource id, without its trailing `/`. So deleting a
+  resource with id `alex` also deleted every blob of the same resource type whose id starts with `alex`,
+  such as `alexander`. On `DynamoDbMemory`, `delete_existing` of a non-versioned resource and
+  `delete_all_versions` call it for any resource class with `blob_fields`. The prefix now keeps the
+  trailing `/`. `LocalBlobStorage` was not affected.
+
 ## [22.0.0] 2026-09-30
 
 ### Added

@@ -791,8 +791,9 @@ class S3BlobStorage:
                 self._cache_stats.current_items -= 1
                 del self._cache[cache_key]
 
-        # Build prefix for all blobs of this resource
-        prefix = self._build_s3_key(resource_type, resource_id, "", None).rstrip("/")
+        # Build prefix for all blobs of this resource. It keeps its trailing "/", so deleting
+        # "alex" does not also match the keys of "alexander".
+        prefix = self._build_s3_key(resource_type, resource_id, "", None)
 
         # List all objects with this prefix
         paginator = self.s3_client.get_paginator("list_objects_v2")
