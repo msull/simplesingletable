@@ -232,13 +232,10 @@ class TestPrivateAttrBugfix:
         # Update (without modifying blob fields)
         updated = memory.update_existing(loaded, {"description": "New Desc"})
 
-        # After update, we get a fresh read from DB
+        # The blob was not loaded, so the field is still None, and it stays unloaded rather than dropped:
+        # the item keeps listing it and the returned resource can load it
         assert updated.blob_content is None
-        # When updating without modifying blob fields, the _blob_fields
-        # list is not preserved (blob fields become regular None values)
-        # This is expected behavior - if you want to preserve blobs,
-        # you need to re-supply them in the update
-        assert not updated.has_unloaded_blobs()
+        assert updated.get_unloaded_blob_fields() == ["blob_content"]
 
         # But if we update with a blob field, it should work
         # Note: Due to mock S3, the blob is not actually stored, so it appears in the resource

@@ -547,12 +547,13 @@ class BaseDynamoDbResource(BaseModel, ABC):
             tuple[dict, dict] if blob fields are configured with data
         """
         if blob_fields_config:
-            # Include blob fields that have data OR have version references
+            # Include blob fields that have data, have version references, or were read without their data
+            # (still stored, so the item keeps listing them)
             blob_fields_with_data = [k for k, v in blob_fields_data.items() if v is not None]
             blob_fields_with_versions = list(self._blob_versions.keys()) if self._blob_versions else []
+            blob_fields_unloaded = [k for k in self._blob_placeholders if k in blob_fields_config]
 
-            # Combine both lists (union of fields with data and fields with version refs)
-            all_blob_fields = list(set(blob_fields_with_data + blob_fields_with_versions))
+            all_blob_fields = list(set(blob_fields_with_data + blob_fields_with_versions + blob_fields_unloaded))
             if all_blob_fields:
                 dynamodb_data["_blob_fields"] = all_blob_fields
 
@@ -861,7 +862,13 @@ class DynamoDbResource(BaseDynamoDbResource, ABC):
         kwargs = self.model_dump()
         kwargs.update(update_kwargs)
         kwargs.update({"resource_id": self.resource_id, "created_at": self.created_at, "updated_at": now})
-        return self.__class__.model_validate(kwargs)
+        updated = self.__class__.model_validate(kwargs)
+        # A blob field read without its data and not set or cleared by this update is still stored: keep its
+        # placeholder, so the write lists it and the returned resource can load it
+        updated._blob_placeholders = {
+            name: placeholder for name, placeholder in self._blob_placeholders.items() if name not in update_kwargs
+        }
+        return updated
 
 
 # for backwards compatibility
